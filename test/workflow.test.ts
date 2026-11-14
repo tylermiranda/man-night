@@ -58,6 +58,7 @@ describe('Man Night PWA Worker & Seed', () => {
       stats: { total_dinners: number; total_places: number };
       thisWeek: { dinner: { week_key: string; host_slug: string; status: string } };
       upcoming: Array<{ host_slug: string; dinner_date: string }>;
+      recentDinners: Array<{ dinner_date: string; restaurant_name: string | null; restaurant_address: string | null }>;
     };
 
     expect(data.stats.total_dinners).toBe(614);
@@ -67,6 +68,9 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(data.thisWeek.dinner.status).toBe('night_poll');
     expect(data.upcoming[0].host_slug).toBe('tyler');
     expect(data.upcoming[1].host_slug).toBe('heath');
+    expect(data.recentDinners[0].dinner_date).toBe('2026-11-10');
+    expect(data.recentDinners[0].restaurant_name).toBe('El Mexico Cafe');
+    expect(data.recentDinners[0].restaurant_address).toContain('2544 S Seneca St');
   });
 
   it('blocks unauthenticated requests on production host and prevents dev-header spoofing', async () => {
@@ -266,5 +270,15 @@ describe('Man Night PWA Worker & Seed', () => {
     const callBody = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
     expect(callBody.labels).toContain('auto-fix');
     expect(callBody.labels).toContain('user-reported');
+
+    const listRes = await worker.fetch(makeReq('/api/issues'), env);
+    expect(listRes.status).toBe(200);
+    const listBody = (await listRes.json()) as {
+      issues: Array<{ title: string; github_issue_number: number; webhook_status: string }>;
+    };
+    expect(listBody.issues.length).toBeGreaterThanOrEqual(1);
+    expect(listBody.issues[0].title).toBe('Poplar missing suite');
+    expect(listBody.issues[0].github_issue_number).toBe(42);
+    expect(listBody.issues[0].webhook_status).toBe('github_created');
   });
 });

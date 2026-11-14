@@ -268,6 +268,16 @@ const historicalDinners = [...histByWeek.entries()]
       if (scoreB !== scoreA) return scoreB - scoreA;
       return b.dinnerDate.localeCompare(a.dinnerDate);
     })[0];
+    let restaurant = chosen.restaurant;
+    let rawLocation = chosen.rawLocation;
+    let chosenVia = 'seed';
+    if (weekKey === '2026-W46' && !restaurant) {
+      restaurant = byKey.get('el mexico') || restaurants.find((r) => r.id === 7) || null;
+      if (restaurant && !rawLocation) {
+        rawLocation = restaurant.address || 'El Mexico Cafe, 2544 S Seneca St, Wichita, KS 67217, USA';
+      }
+      chosenVia = 'backfill';
+    }
     return {
       weekKey,
       dinnerDate: chosen.dinnerDate,
@@ -275,12 +285,12 @@ const historicalDinners = [...histByWeek.entries()]
       dayOfWeek: chosen.dayOfWeek,
       hostSlug: chosen.hostSlug,
       hostLabel: chosen.hostLabel,
-      restaurantId: chosen.restaurant ? chosen.restaurant.id : null,
-      rawLocation: chosen.rawLocation,
+      restaurantId: restaurant ? restaurant.id : null,
+      rawLocation,
       rawSummary: chosen.rawSummary,
       icsUid: chosen.icsUid,
       status: 'completed',
-      chosenVia: 'seed',
+      chosenVia,
       isHistorical: 1,
     };
   })

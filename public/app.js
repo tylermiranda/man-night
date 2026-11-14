@@ -357,14 +357,44 @@ function renderWeekView() {
     </div>
   `;
 
-  // Last completed dinner rating prompt + Up Next
+  // Last completed dinner rating prompt + memory refresher
   const lastCompleted = b.recentDinners?.[0];
+  const lastPlaceTitle = lastCompleted
+    ? lastCompleted.restaurant_name || lastCompleted.raw_location?.split(',')[0] || 'Place not set'
+    : '';
+  const lastPlaceAddr = lastCompleted ? lastCompleted.restaurant_address || lastCompleted.raw_location || '' : '';
+  const priorSpotsHtml = (b.recentDinners || [])
+    .slice(1, 4)
+    .map((r) => {
+      const placeTxt = r.restaurant_name || r.raw_location?.split(',')[0] || 'Unlinked';
+      const placeEl = r.restaurant_id
+        ? `<button class="link-btn" style="font-size:12px;" data-action="focus-place" data-place-id="${r.restaurant_id}">${esc(placeTxt)}</button>`
+        : `<span style="color:var(--muted);">${esc(placeTxt)}</span>`;
+      return `
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:12px;padding:4px 0;">
+          <span class="tabular" style="color:var(--muted);">${fmtShortDate(r.dinner_date)} · ${esc(r.host_label)}</span>
+          <span style="text-align:right;font-weight:600;">${placeEl}</span>
+        </div>
+      `;
+    })
+    .join('');
+
   const rateCard = lastCompleted
     ? `
       <div class="card">
-        <div class="card-kicker"><span>Last dinner</span><span>${fmtShortDate(lastCompleted.dinner_date)}</span></div>
-        <div style="font-weight:700;font-size:16px;margin-bottom:4px;">${esc(lastCompleted.restaurant_name || lastCompleted.raw_summary || 'Man Night')}</div>
-        <div style="font-size:13px;color:var(--muted);margin-bottom:12px;">Hosted by ${esc(lastCompleted.host_label)}${lastCompleted.restaurant_address ? ` · ${esc(lastCompleted.restaurant_address)}` : ''}</div>
+        <div class="card-kicker">
+          <span>Last dinner</span>
+          ${
+            lastCompleted.restaurant_id
+              ? `<button class="badge badge-ok" style="border:0;cursor:pointer;" data-action="focus-place" data-place-id="${lastCompleted.restaurant_id}">View place →</button>`
+              : `<button class="badge badge-red" style="border:0;cursor:pointer;" data-action="open-backfill" data-dinner-id="${lastCompleted.id}" data-date="${esc(lastCompleted.dinner_date)}">Set place →</button>`
+          }
+        </div>
+        <div style="font-weight:750;font-size:17px;margin-bottom:4px;">${esc(lastPlaceTitle)}</div>
+        <div style="font-size:13px;color:var(--muted);margin-bottom:${lastPlaceAddr ? '3px' : '12px'};">
+          ${esc(lastCompleted.day_of_week || 'Tuesday')}, ${fmtShortDate(lastCompleted.dinner_date)} · Hosted by ${esc(lastCompleted.host_label)}${lastCompleted.restaurant_visits ? ` · ${lastCompleted.restaurant_visits} visits` : ''}
+        </div>
+        ${lastPlaceAddr ? `<div style="font-size:12px;color:var(--muted);margin-bottom:12px;">${esc(lastPlaceAddr)}</div>` : ''}
         <div class="star-row" style="margin-bottom:10px;">
           ${[1, 2, 3, 4, 5].map((n) => `<button class="star-btn ${state.ratingScore >= n ? 'on' : ''}" data-action="set-star" data-score="${n}">★</button>`).join('')}
         </div>
@@ -372,6 +402,14 @@ function renderWeekView() {
           <input id="rate-dish-input" class="input" style="flex:1;min-height:36px;" placeholder="Standout dish or note (optional)" />
           <button class="btn btn-sm btn-primary" data-action="submit-rate" data-dinner-id="${lastCompleted.id}">Save rating</button>
         </div>
+        ${
+          priorSpotsHtml
+            ? `<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line);">
+                 <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.04em;color:var(--muted);margin-bottom:4px;">Recent spots</div>
+                 ${priorSpotsHtml}
+               </div>`
+            : ''
+        }
       </div>
     `
     : '';
@@ -811,6 +849,38 @@ function renderPickerOptions(mode, dinnerId, q) {
     .join('');
 }
 
+async function refreshRecentIssuesList() {
+  const el = document.getElementById('recent-issues-list');
+  if (!el) return;
+  try {
+    const data = await api('/api/issues');
+    const items = (data.issues || []).slice(0, 6);
+    if (!items.length) {
+      el.innerHTML = '<div style="font-size:12px;color:var(--muted);">No reports submitted yet.</div>';
+      return;
+    }
+    el.innerHTML = items
+      .map((it) => {
+        const badgeCls = it.webhook_status?.includes('github') ? 'badge-ok' : 'badge-muted';
+        const linkHtml = it.github_issue_url
+          ? `<a href="${esc(it.github_issue_url)}" target="_blank" rel="noopener" style="font-weight:700;font-size:12px;">#${it.github_issue_number} ↗</a>`
+          : `<span class="badge badge-muted">#${it.id}</span>`;
+        return `
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--line);font-size:12px;">
+            <div style="min-width:0;">
+              <div style="font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(it.title)}</div>
+              <div style="color:var(--muted);">${esc(it.category)} · <span class="badge ${badgeCls}" style="padding:1px 6px;font-size:10px;">${esc(it.webhook_status)}</span></div>
+            </div>
+            <div style="flex-shrink:0;">${linkHtml}</div>
+          </div>
+        `;
+      })
+      .join('');
+  } catch {
+    el.innerHTML = '<div style="font-size:12px;color:var(--muted);">Could not load recent reports.</div>';
+  }
+}
+
 function openReportIssueModal() {
   const ctx = `Tab: ${state.tab}; Week: ${state.bootstrap?.thisWeek?.dinner?.week_key || 'none'} (${state.bootstrap?.thisWeek?.dinner?.status || 'none'})`;
   openModal(`
@@ -831,8 +901,13 @@ function openReportIssueModal() {
         <button class="btn btn-secondary btn-sm" data-action="close-modal">Close</button>
         <button id="issue-submit-btn" class="btn btn-primary btn-sm" data-action="submit-issue" data-ctx="${esc(ctx)}">Submit issue</button>
       </div>
+      <div style="margin-top:8px;padding-top:10px;border-top:1px solid var(--line);">
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.04em;color:var(--muted);margin-bottom:4px;">Recent reports</div>
+        <div id="recent-issues-list"><div style="font-size:12px;color:var(--muted);">Loading recent reports…</div></div>
+      </div>
     </div>
   `);
+  refreshRecentIssuesList();
 }
 
 function openPassSwapModal() {
@@ -950,7 +1025,8 @@ document.addEventListener('click', async (e) => {
         await api(`/api/dinners/${dinnerId}/backfill`, { method: 'POST', body: JSON.stringify({ restaurantId: placeId }) });
         closeModal();
         toast('History place updated!');
-        await loadHistory(false);
+        await refreshBootstrap();
+        if (state.tab === 'history') await loadHistory(false);
       } else {
         await api('/api/week/pick-place', { method: 'POST', body: JSON.stringify({ dinnerId, restaurantId: placeId }) });
         closeModal();
@@ -967,7 +1043,8 @@ document.addEventListener('click', async (e) => {
       if (mode === 'backfill') {
         await api(`/api/dinners/${dinnerId}/backfill`, { method: 'POST', body: JSON.stringify({ restaurantId: created.place.id }) });
         closeModal();
-        await loadHistory(false);
+        await refreshBootstrap();
+        if (state.tab === 'history') await loadHistory(false);
       } else {
         await api('/api/week/pick-place', { method: 'POST', body: JSON.stringify({ dinnerId, restaurantId: created.place.id }) });
         closeModal();
@@ -1051,6 +1128,7 @@ document.addEventListener('click', async (e) => {
       } else {
         fb.innerHTML = `<div class="badge badge-muted" style="padding:8px 12px;border-radius:10px;">Saved report #${res.issue?.id} (${esc(res.issue?.webhook_status)})</div>`;
       }
+      await refreshRecentIssuesList();
       actEl.disabled = false;
     }
   } catch (err) {

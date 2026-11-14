@@ -1,6 +1,18 @@
 import { buildDirectionsUrl, syncLockedPlaceToCalendar } from './gcal';
 import { sendWebPushToSubscribers } from './push';
-import type { DinnerRow, Env, RestaurantRow, UserRow } from './types';
+import type { DinnerRow, Env, RatingViewRow, RestaurantRow, UserRow } from './types';
+
+async function recalcRestaurantAvgRating(db: D1Database, restaurantId: number | null): Promise<void> {
+  if (!restaurantId) return;
+  await db
+    .prepare(
+      `UPDATE restaurants
+       SET avg_rating = (SELECT ROUND(AVG(score), 2) FROM ratings WHERE restaurant_id = ?)
+       WHERE id = ?`,
+    )
+    .bind(restaurantId, restaurantId)
+    .run();
+}
 
 function pickRandomIndex(max: number): number {
   const buf = new Uint32Array(1);
@@ -231,6 +243,17 @@ export async function lockPlace(
     .bind(restaurant.id, restaurant.address || restaurant.name, targetDay, newDate, newWeekKey, chosenVia, dinnerId)
     .run();
 
+  await env.DB.prepare('UPDATE ratings SET restaurant_id = ? WHERE dinner_id = ?')
+    .bind(restaurant.id, dinnerId)
+    .run();
+  await recalcRestaurantAvgRating(env.DB, restaurant.id);
+  if (existing.restaurant_id && existing.restaurant_id !== restaurant.id) {
+    await recalcRestaurantAvgRating(env.DB, existing.restaurant_id);
+  }
+
+  const updatedRestaurant = (await env.DB.prepare('SELECT * FROM restaurants WHERE id = ?')
+    .bind(restaurant.id)
+    .first<RestaurantRow>())!;
   const updated = (await env.DB.prepare('SELECT * FROM dinners WHERE id = ?').bind(dinnerId).first<DinnerRow>())!;
   const note =
     voteSummary ||
@@ -238,18 +261,18 @@ export async function lockPlace(
       ? `Locked by 4:00 PM noon-rule vote (${updated.day_of_week} ${updated.dinner_date}).`
       : `Picked in advance by ${updated.host_label} for ${updated.day_of_week} ${updated.dinner_date} (no vote).`);
 
-  const cal = await syncLockedPlaceToCalendar(env, updated, restaurant, note);
+  const cal = await syncLockedPlaceToCalendar(env, updated, updatedRestaurant, note);
   if (cal.eventId) {
     await env.DB.prepare('UPDATE dinners SET gcal_event_id = ? WHERE id = ?').bind(cal.eventId, dinnerId).run();
   }
 
-  const mapsUrl = buildDirectionsUrl(restaurant);
+  const mapsUrl = buildDirectionsUrl(updatedRestaurant);
   await sendWebPushToSubscribers(
     env,
     {
-      title: `Place locked: ${restaurant.name}`,
+      title: `Place locked: ${updatedRestaurant.name}`,
       body: wasEarlyAdvanceLock
-        ? `${updated.host_label} picked ${restaurant.name} for ${updated.day_of_week} (${updated.dinner_date}) — no vote needed`
+        ? `${updated.host_label} picked ${updatedRestaurant.name} for ${updated.day_of_week} (${updated.dinner_date}) — no vote needed`
         : `${updated.day_of_week} 6:30 PM · ${chosenVia === 'noon_draw' ? 'Noon draw result' : `Picked by ${updated.host_label}`}`,
       tag: `place-lock-${dinnerId}`,
       url: mapsUrl,
@@ -262,7 +285,7 @@ export async function lockPlace(
     'notify_place',
   );
 
-  return { dinner: updated, restaurant, calendar: { synced: cal.synced, reason: cal.reason } };
+  return { dinner: updated, restaurant: updatedRestaurant, calendar: { synced: cal.synced, reason: cal.reason } };
 }
 
 export async function openNoonDraw(env: Env, dinnerId: number): Promise<{ dinner: DinnerRow; candidates: RestaurantRow[] }> {
@@ -448,27 +471,34 @@ export async function submitRating(
   dish: string,
   comment: string,
 ) {
-  const dinner = await db.prepare('SELECT restaurant_id FROM dinners WHERE id = ?').bind(dinnerId).first<{ restaurant_id: number | null }>();
+  const dinner = await db
+    .prepare('SELECT id, restaurant_id FROM dinners WHERE id = ?')
+    .bind(dinnerId)
+    .first<{ id: number; restaurant_id: number | null }>();
+  if (!dinner) throw new Error('Dinner not found');
+
+  const cleanDish = dish.trim().slice(0, 140);
+  const cleanComment = comment.trim().slice(0, 500);
+
   await db
     .prepare(
       `INSERT INTO ratings (dinner_id, restaurant_id, user_slug, score, dish, comment, rated_at)
        VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
        ON CONFLICT(dinner_id, user_slug)
-       DO UPDATE SET score = excluded.score, dish = excluded.dish, comment = excluded.comment, rated_at = datetime('now')`,
+       DO UPDATE SET restaurant_id = excluded.restaurant_id, score = excluded.score, dish = excluded.dish, comment = excluded.comment, rated_at = datetime('now')`,
     )
-    .bind(dinnerId, dinner?.restaurant_id ?? null, userSlug, score, dish.slice(0, 120), comment.slice(0, 300))
+    .bind(dinnerId, dinner.restaurant_id ?? null, userSlug, score, cleanDish, cleanComment)
     .run();
 
-  if (dinner?.restaurant_id) {
-    await db
-      .prepare(
-        `UPDATE restaurants
-         SET avg_rating = (SELECT ROUND(AVG(score), 2) FROM ratings WHERE restaurant_id = ?)
-         WHERE id = ?`,
-      )
-      .bind(dinner.restaurant_id, dinner.restaurant_id)
-      .run();
-  }
+  await recalcRestaurantAvgRating(db, dinner.restaurant_id);
+
+  return {
+    dinner_id: dinnerId,
+    restaurant_id: dinner.restaurant_id,
+    score,
+    dish: cleanDish,
+    comment: cleanComment,
+  };
 }
 
 export async function applyRotationOverride(
@@ -560,7 +590,8 @@ export async function backfillDinnerPlace(
   const restaurant = await db.prepare('SELECT * FROM restaurants WHERE id = ?').bind(restaurantId).first<RestaurantRow>();
   if (!restaurant) throw new Error('Restaurant not found');
 
-  const hadPrevious = dinner.restaurant_id !== null;
+  const prevRestaurantId = dinner.restaurant_id;
+  const hadPrevious = prevRestaurantId !== null;
   await db
     .prepare(
       `UPDATE dinners
@@ -573,7 +604,7 @@ export async function backfillDinnerPlace(
     .bind(restaurant.id, restaurant.address || restaurant.name, dinnerId)
     .run();
 
-  if (!hadPrevious || dinner.restaurant_id !== restaurant.id) {
+  if (!hadPrevious || prevRestaurantId !== restaurant.id) {
     await db
       .prepare(
         `UPDATE restaurants
@@ -585,10 +616,96 @@ export async function backfillDinnerPlace(
       .run();
   }
 
+  await db.prepare('UPDATE ratings SET restaurant_id = ? WHERE dinner_id = ?')
+    .bind(restaurant.id, dinnerId)
+    .run();
+  await recalcRestaurantAvgRating(db, restaurant.id);
+  if (prevRestaurantId && prevRestaurantId !== restaurant.id) {
+    await recalcRestaurantAvgRating(db, prevRestaurantId);
+  }
+
   return {
     dinner: (await db.prepare('SELECT * FROM dinners WHERE id = ?').bind(dinnerId).first<DinnerRow>())!,
     restaurant: (await db.prepare('SELECT * FROM restaurants WHERE id = ?').bind(restaurant.id).first<RestaurantRow>())!,
   };
+}
+
+export async function getPlaceReviews(db: D1Database, placeId: number, currentUserSlug: string) {
+  const place = await db
+    .prepare(
+      `SELECT r.*,
+              (SELECT COUNT(*) FROM ratings rt WHERE rt.restaurant_id = r.id) AS rating_count
+       FROM restaurants r
+       WHERE r.id = ?`,
+    )
+    .bind(placeId)
+    .first<RestaurantRow>();
+  if (!place) throw new Error('Restaurant not found');
+
+  const reviews = (
+    await db
+      .prepare(
+        `SELECT rt.id, rt.dinner_id, rt.restaurant_id, rt.user_slug, u.name AS user_name,
+                rt.score, rt.dish, rt.comment, rt.rated_at,
+                d.dinner_date, d.day_of_week, d.host_label
+         FROM ratings rt
+         LEFT JOIN users u ON u.slug = rt.user_slug
+         LEFT JOIN dinners d ON d.id = rt.dinner_id
+         WHERE rt.restaurant_id = ?
+         ORDER BY COALESCE(d.dinner_date, rt.rated_at) DESC, rt.rated_at DESC, rt.id DESC`,
+      )
+      .bind(placeId)
+      .all<RatingViewRow>()
+  ).results ?? [];
+
+  const visits = (
+    await db
+      .prepare(
+        `SELECT d.id, d.week_key, d.dinner_date, d.day_of_week, d.host_slug, d.host_label,
+                (SELECT rt.score FROM ratings rt WHERE rt.dinner_id = d.id AND rt.user_slug = ?) AS my_score,
+                (SELECT COUNT(*) FROM ratings rt WHERE rt.dinner_id = d.id) AS rating_count,
+                (SELECT ROUND(AVG(rt.score), 2) FROM ratings rt WHERE rt.dinner_id = d.id) AS dinner_avg_rating
+         FROM dinners d
+         WHERE d.restaurant_id = ? AND d.status = 'completed'
+         ORDER BY d.dinner_date DESC
+         LIMIT 12`,
+      )
+      .bind(currentUserSlug, placeId)
+      .all()
+  ).results ?? [];
+
+  return { place, reviews, visits };
+}
+
+export async function getDinnerReviews(db: D1Database, dinnerId: number) {
+  const dinner = await db
+    .prepare(
+      `SELECT d.id, d.week_key, d.dinner_date, d.day_of_week, d.host_slug, d.host_label,
+              d.restaurant_id, d.raw_location,
+              r.name AS restaurant_name, r.address AS restaurant_address, r.avg_rating AS restaurant_avg_rating
+       FROM dinners d
+       LEFT JOIN restaurants r ON r.id = d.restaurant_id
+       WHERE d.id = ?`,
+    )
+    .bind(dinnerId)
+    .first();
+  if (!dinner) throw new Error('Dinner not found');
+
+  const reviews = (
+    await db
+      .prepare(
+        `SELECT rt.id, rt.dinner_id, rt.restaurant_id, rt.user_slug, u.name AS user_name,
+                rt.score, rt.dish, rt.comment, rt.rated_at
+         FROM ratings rt
+         LEFT JOIN users u ON u.slug = rt.user_slug
+         WHERE rt.dinner_id = ?
+         ORDER BY rt.rated_at DESC, rt.id DESC`,
+      )
+      .bind(dinnerId)
+      .all<RatingViewRow>()
+  ).results ?? [];
+
+  return { dinner, reviews };
 }
 
 async function signStandardWebhook(secret: string, msgId: string, timestamp: string, payload: string): Promise<string> {
@@ -763,13 +880,35 @@ export async function getBootstrapPayload(env: Env, currentUser: UserRow) {
 
   const recentDinners = (
     await env.DB.prepare(
-      `SELECT d.*, r.name AS restaurant_name, r.address AS restaurant_address, r.visit_count AS restaurant_visits
+      `SELECT d.*,
+              r.name AS restaurant_name,
+              r.address AS restaurant_address,
+              r.visit_count AS restaurant_visits,
+              r.avg_rating AS restaurant_avg_rating,
+              (SELECT COUNT(*) FROM ratings rt WHERE rt.dinner_id = d.id) AS rating_count,
+              (SELECT ROUND(AVG(rt.score), 2) FROM ratings rt WHERE rt.dinner_id = d.id) AS dinner_avg_rating
        FROM dinners d
        LEFT JOIN restaurants r ON r.id = d.restaurant_id
        WHERE d.status = 'completed'
        ORDER BY d.dinner_date DESC LIMIT 8`,
     ).all()
   ).results ?? [];
+
+  const lastDinnerId = (recentDinners[0] as { id?: number } | undefined)?.id ?? null;
+  const lastDinnerRatings: RatingViewRow[] = lastDinnerId
+    ? (
+        await env.DB.prepare(
+          `SELECT rt.id, rt.dinner_id, rt.restaurant_id, rt.user_slug, u.name AS user_name,
+                  rt.score, rt.dish, rt.comment, rt.rated_at
+           FROM ratings rt
+           LEFT JOIN users u ON u.slug = rt.user_slug
+           WHERE rt.dinner_id = ?
+           ORDER BY rt.rated_at DESC, rt.id DESC`,
+        )
+          .bind(lastDinnerId)
+          .all<RatingViewRow>()
+      ).results ?? []
+    : [];
 
   const counts = await env.DB.prepare(
     `SELECT
@@ -824,6 +963,7 @@ export async function getBootstrapPayload(env: Env, currentUser: UserRow) {
       : null,
     upcoming,
     recentDinners,
+    lastDinnerRatings,
     vapidPublicKey: env.VAPID_PUBLIC_KEY ?? null,
     appUrl: env.APP_URL,
     githubRepo: env.GITHUB_REPO,

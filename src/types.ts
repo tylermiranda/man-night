@@ -44,6 +44,22 @@ export interface RestaurantRow {
   visit_count: number;
   last_visited: string | null;
   avg_rating: number | null;
+  rating_count?: number;
+}
+
+export interface RatingViewRow {
+  id: number;
+  dinner_id: number;
+  restaurant_id: number | null;
+  user_slug: string;
+  user_name: string | null;
+  score: number;
+  dish: string;
+  comment: string;
+  rated_at: string;
+  dinner_date?: string;
+  day_of_week?: string;
+  host_label?: string;
 }
 
 export type DinnerStatus =

@@ -11,8 +11,10 @@ const state = {
   placesSort: 'visits',
   placesFilter: 'all',
   selectedPlaceId: null,
+  placeReviews: {},
   walkStep: 0,
   ratingScore: 5,
+  modalRatingScore: 5,
   pickerDay: 'Tuesday',
   deferredInstallPrompt: null,
   installBannerDismissed: localStorage.getItem('mn_install_dismissed') === '1',
@@ -80,6 +82,31 @@ function avatarHtml(slug, name, size = '') {
   const cls = u?.avatar_class || 'avn';
   const init = u?.initials || (name || '?').slice(0, 1).toUpperCase();
   return `<span class="av ${cls} ${size}">${esc(init)}</span>`;
+}
+
+function starsText(score) {
+  const s = Math.max(0, Math.min(5, Number(score) || 0));
+  return `${'★'.repeat(s)}${'☆'.repeat(5 - s)}`;
+}
+
+function renderReviewItem(r, showDate = false) {
+  const name = r.user_name || r.user_slug;
+  const hasDetails = Boolean(r.dish || r.comment);
+  return `
+    <div class="review-item">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
+        <div style="display:flex;align-items:center;gap:6px;">
+          ${avatarHtml(r.user_slug, name, 'sm')}
+          <strong style="font-size:13px;">${esc(name)}</strong>
+          ${showDate && r.dinner_date ? `<span class="tabular" style="font-size:11px;color:var(--muted);">· ${fmtShortDate(r.dinner_date)}</span>` : ''}
+        </div>
+        <span class="review-stars" aria-label="${r.score} out of 5 stars">${starsText(r.score)}</span>
+      </div>
+      ${r.dish ? `<div class="review-dish">🍽️ ${esc(r.dish)}</div>` : ''}
+      ${r.comment ? `<div style="margin-top:4px;color:var(--ink);">${esc(r.comment)}</div>` : ''}
+      ${!hasDetails ? `<div style="margin-top:3px;font-size:12px;color:var(--muted);">Rated ${r.score}/5</div>` : ''}
+    </div>
+  `;
 }
 
 function toast(msg) {
@@ -163,6 +190,8 @@ async function enableWebPush() {
 async function refreshBootstrap() {
   state.bootstrap = await api('/api/bootstrap');
   const { user, stats } = state.bootstrap;
+  const myLast = (state.bootstrap.lastDinnerRatings || []).find((r) => r.user_slug === user.slug);
+  state.ratingScore = myLast ? Number(myLast.score) : 5;
   document.getElementById('hdr-count').textContent = stats?.total_dinners ?? 614;
   document.getElementById('user-avatar').className = `av ${user.avatar_class}`;
   document.getElementById('user-avatar').textContent = user.initials;
@@ -397,49 +426,72 @@ function renderWeekView() {
 
   // Last completed dinner rating prompt + memory refresher
   const lastCompleted = b.recentDinners?.[0];
+  const lastRatings = b.lastDinnerRatings || [];
+  const myLastRating = lastRatings.find((r) => r.user_slug === me.slug);
   const lastPlaceTitle = lastCompleted
     ? lastCompleted.restaurant_name || lastCompleted.raw_location?.split(',')[0] || 'Place not set'
     : '';
   const lastPlaceAddr = lastCompleted ? lastCompleted.restaurant_address || lastCompleted.raw_location || '' : '';
+  const lastAvg = lastCompleted?.dinner_avg_rating ?? lastCompleted?.restaurant_avg_rating;
+  const lastRatingCount = lastCompleted?.rating_count || lastRatings.length || 0;
   const priorSpotsHtml = (b.recentDinners || [])
     .slice(1, 4)
     .map((r) => {
       const placeTxt = r.restaurant_name || r.raw_location?.split(',')[0] || 'Unlinked';
+      const spotAvg = r.dinner_avg_rating ?? r.restaurant_avg_rating;
+      const ratingBadge = spotAvg != null
+        ? `<span class="badge badge-star tabular" style="padding:1px 6px;font-size:10px;margin-right:4px;">★ ${Number(spotAvg).toFixed(1)}</span>`
+        : '';
       const placeEl = r.restaurant_id
         ? `<button class="link-btn" style="font-size:12px;" data-action="focus-place" data-place-id="${r.restaurant_id}">${esc(placeTxt)}</button>`
         : `<span style="color:var(--muted);">${esc(placeTxt)}</span>`;
       return `
         <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:12px;padding:4px 0;">
           <span class="tabular" style="color:var(--muted);">${fmtShortDate(r.dinner_date)} · ${esc(r.host_label)}</span>
-          <span style="text-align:right;font-weight:600;">${placeEl}</span>
+          <span style="text-align:right;font-weight:600;">${ratingBadge}${placeEl}</span>
         </div>
       `;
     })
     .join('');
+
+  const lastReviewsHtml = lastRatings.length
+    ? `<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line);">
+         <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.04em;color:var(--muted);margin-bottom:6px;">Crew reviews (${lastRatings.length})</div>
+         <div class="review-list">${lastRatings.map((r) => renderReviewItem(r, false)).join('')}</div>
+       </div>`
+    : '';
 
   const rateCard = lastCompleted
     ? `
       <div class="card">
         <div class="card-kicker">
           <span>Last dinner</span>
-          ${
-            lastCompleted.restaurant_id
-              ? `<button class="badge badge-ok" style="border:0;cursor:pointer;" data-action="focus-place" data-place-id="${lastCompleted.restaurant_id}">View place →</button>`
-              : `<button class="badge badge-red" style="border:0;cursor:pointer;" data-action="open-backfill" data-dinner-id="${lastCompleted.id}" data-date="${esc(lastCompleted.dinner_date)}">Set place →</button>`
-          }
+          <div style="display:flex;align-items:center;gap:6px;">
+            ${lastAvg != null ? `<span class="badge badge-star tabular">★ ${Number(lastAvg).toFixed(1)}${lastRatingCount ? ` (${lastRatingCount})` : ''}</span>` : ''}
+            ${
+              lastCompleted.restaurant_id
+                ? `<button class="badge badge-ok" style="border:0;cursor:pointer;" data-action="focus-place" data-place-id="${lastCompleted.restaurant_id}">View place →</button>`
+                : `<button class="badge badge-red" style="border:0;cursor:pointer;" data-action="open-backfill" data-dinner-id="${lastCompleted.id}" data-date="${esc(lastCompleted.dinner_date)}">Set place →</button>`
+            }
+          </div>
         </div>
         <div style="font-weight:750;font-size:17px;margin-bottom:4px;">${esc(lastPlaceTitle)}</div>
         <div style="font-size:13px;color:var(--muted);margin-bottom:${lastPlaceAddr ? '3px' : '12px'};">
           ${esc(lastCompleted.day_of_week || 'Tuesday')}, ${fmtShortDate(lastCompleted.dinner_date)} · Hosted by ${esc(lastCompleted.host_label)}${lastCompleted.restaurant_visits ? ` · ${lastCompleted.restaurant_visits} visits` : ''}
         </div>
         ${lastPlaceAddr ? `<div style="font-size:12px;color:var(--muted);margin-bottom:12px;">${esc(lastPlaceAddr)}</div>` : ''}
-        <div class="star-row" style="margin-bottom:10px;">
-          ${[1, 2, 3, 4, 5].map((n) => `<button class="star-btn ${state.ratingScore >= n ? 'on' : ''}" data-action="set-star" data-score="${n}">★</button>`).join('')}
+        <div id="last-dinner-stars" class="star-row" style="margin-bottom:8px;">
+          ${[1, 2, 3, 4, 5].map((n) => `<button type="button" class="star-btn ${state.ratingScore >= n ? 'on' : ''}" data-action="set-star" data-score="${n}">★</button>`).join('')}
         </div>
-        <div style="display:flex;gap:8px;">
-          <input id="rate-dish-input" class="input" style="flex:1;min-height:36px;" placeholder="Standout dish or note (optional)" />
-          <button class="btn btn-sm btn-primary" data-action="submit-rate" data-dinner-id="${lastCompleted.id}">Save rating</button>
+        ${myLastRating ? `<div style="font-size:12px;color:var(--ok);font-weight:600;margin-bottom:8px;">✓ Your review (${myLastRating.score}/5) is saved</div>` : ''}
+        <div class="stack" style="gap:8px;">
+          <input id="rate-dish-input" class="input" style="min-height:36px;" placeholder="Standout dish (optional)" value="${esc(myLastRating?.dish || '')}" />
+          <textarea id="rate-comment-input" class="textarea" style="min-height:60px;" placeholder="Review note — food, vibe, would go back? (optional)">${esc(myLastRating?.comment || '')}</textarea>
+          <div style="display:flex;justify-content:flex-end;">
+            <button class="btn btn-sm btn-primary" data-action="submit-rate" data-dinner-id="${lastCompleted.id}">${myLastRating ? 'Update review' : 'Post review'}</button>
+          </div>
         </div>
+        ${lastReviewsHtml}
         ${
           priorSpotsHtml
             ? `<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line);">
@@ -540,18 +592,24 @@ function renderHistoryView() {
   for (const [month, items] of grouped.entries()) {
     listHtml += `<div class="month-heading">${esc(month)}</div><div class="card" style="padding:0 16px;">`;
     for (const d of items) {
+      const ratingPill = d.rating_count > 0 && d.dinner_avg_rating != null
+        ? `<button class="badge badge-star tabular" style="border:0;cursor:pointer;margin-left:6px;" data-action="open-review-modal" data-dinner-id="${d.id}">★ ${Number(d.dinner_avg_rating).toFixed(1)} (${d.rating_count})</button>`
+        : '';
       const placeCell = d.restaurant_id
         ? `<button class="link-btn" style="color:var(--ink);font-size:14px;text-align:left;" data-action="focus-place" data-place-id="${d.restaurant_id}">${esc(d.restaurant_name)}</button>
-           ${d.restaurant_visits ? `<span style="font-size:12px;color:var(--muted);margin-left:6px;">(${d.restaurant_visits}×)</span>` : ''}`
-        : `<button class="link-btn" data-action="open-backfill" data-dinner-id="${d.id}" data-date="${esc(d.dinner_date)}">+ Add the place</button>`;
+           ${d.restaurant_visits ? `<span style="font-size:12px;color:var(--muted);margin-left:6px;">(${d.restaurant_visits}×)</span>` : ''}
+           ${ratingPill}`
+        : `<button class="link-btn" data-action="open-backfill" data-dinner-id="${d.id}" data-date="${esc(d.dinner_date)}">+ Add the place</button>
+           ${ratingPill}`;
       listHtml += `
         <div class="history-row">
           <div class="tabular" style="font-size:13px;color:var(--muted);">${fmtDate(d.dinner_date)}</div>
           <div class="h-day" style="font-size:13px;color:var(--muted);">${esc(d.day_of_week.slice(0, 3))}</div>
           <div>${placeCell}</div>
-          <div style="display:flex;align-items:center;gap:6px;">
+          <div style="display:flex;align-items:center;gap:8px;justify-content:flex-end;">
             ${avatarHtml(d.host_slug, d.host_label, 'sm')}
             <span style="font-size:13px;font-weight:600;">${esc(d.host_label)}</span>
+            <button class="btn btn-outline btn-sm" style="min-height:26px;padding:2px 8px;font-size:11px;" data-action="open-review-modal" data-dinner-id="${d.id}">${d.my_score != null ? `★ ${d.my_score} · Edit` : 'Rate'}</button>
           </div>
         </div>
       `;
@@ -595,12 +653,22 @@ function getFilteredPlaces() {
     list = list.filter((p) => (p.visit_count || 0) >= 3 && p.last_visited && p.last_visited <= cutoffTwoYearsAgo);
   } else if (state.placesFilter === 'one_hit') {
     list = list.filter((p) => (p.visit_count || 0) === 1);
+  } else if (state.placesFilter === 'reviewed') {
+    list = list.filter((p) => (p.rating_count || 0) > 0 || p.avg_rating != null);
   }
 
   if (q) {
     list = list.filter((p) => p.name.toLowerCase().includes(q) || (p.address || '').toLowerCase().includes(q));
   }
-  if (state.placesSort === 'recent') {
+  if (state.placesSort === 'rating') {
+    list.sort(
+      (a, b) =>
+        ((b.avg_rating ?? -1) - (a.avg_rating ?? -1)) ||
+        ((b.rating_count ?? 0) - (a.rating_count ?? 0)) ||
+        (b.visit_count - a.visit_count) ||
+        a.name.localeCompare(b.name),
+    );
+  } else if (state.placesSort === 'recent') {
     list.sort((a, b) => (b.last_visited || '').localeCompare(a.last_visited || ''));
   } else if (state.placesSort === 'alpha') {
     list.sort((a, b) => a.name.localeCompare(b.name));
@@ -610,12 +678,96 @@ function getFilteredPlaces() {
   return list;
 }
 
+function renderSelectedPlaceCard(selected) {
+  if (!selected) return '';
+  const cached = state.placeReviews[selected.id];
+  const place = cached?.place || selected;
+  const ratingCount = place.rating_count ?? (cached?.reviews?.length ?? 0);
+  const gmaps = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(place.address || place.name)}`;
+  const ratingBadgeHtml =
+    place.avg_rating != null
+      ? `<span class="badge badge-star tabular">★ ${Number(place.avg_rating).toFixed(1)} · ${ratingCount} ${ratingCount === 1 ? 'review' : 'reviews'}</span>`
+      : `<span class="badge badge-muted">No reviews yet</span>`;
+  const visits = cached?.visits || [];
+  const targetVisit = visits.find((v) => v.my_score != null) || visits[0] || null;
+  const rateBtnHtml = targetVisit
+    ? `<button id="selected-place-rate-btn" class="btn btn-sm btn-outline" data-action="open-review-modal" data-dinner-id="${targetVisit.id}">${targetVisit.my_score != null ? 'Edit review' : '+ Write review'}</button>`
+    : '';
+  const reviewsBody = cached
+    ? cached.reviews?.length
+      ? `<div class="review-list">${cached.reviews.map((r) => renderReviewItem(r, true)).join('')}</div>`
+      : `<div style="font-size:13px;color:var(--muted);">No crew reviews yet for this spot.</div>`
+    : `<div style="font-size:13px;color:var(--muted);">Loading reviews…</div>`;
+
+  return `
+    <section class="card">
+      <div class="card-kicker">
+        <span>Selected spot</span>
+        <span id="selected-place-rating-badge">${ratingBadgeHtml}</span>
+      </div>
+      <div style="font-weight:750;font-size:18px;line-height:1.2;">${esc(place.name)}</div>
+      <div style="font-size:13px;color:var(--muted);margin-top:3px;">
+        ${place.visit_count} ${place.visit_count === 1 ? 'visit' : 'visits'}${place.last_visited ? ` · Last ${fmtDate(place.last_visited)}` : ''}
+      </div>
+      <div style="font-size:12px;color:var(--muted);margin-top:2px;margin-bottom:10px;">${esc(place.address || place.city)}</div>
+      <div class="btn-row" style="margin-bottom:12px;">
+        <a class="btn btn-sm btn-primary" href="${esc(gmaps)}" target="_blank" rel="noopener">Directions ↗</a>
+        <button class="btn btn-sm btn-outline" data-action="filter-place-history" data-place-id="${place.id}">Visit history →</button>
+        <span id="selected-place-rate-wrap">${rateBtnHtml}</span>
+      </div>
+      <div id="selected-place-reviews">${reviewsBody}</div>
+    </section>
+  `;
+}
+
+async function loadPlaceReviews(placeId) {
+  if (!placeId || state.placeReviews[placeId]) return;
+  try {
+    const data = await api(`/api/places/${placeId}/reviews`);
+    state.placeReviews[placeId] = data;
+    const idx = state.places.findIndex((p) => p.id === placeId);
+    if (idx >= 0 && data.place) {
+      state.places[idx] = { ...state.places[idx], ...data.place };
+    }
+    if (state.tab === 'places' && state.selectedPlaceId === placeId) {
+      const reviewsEl = document.getElementById('selected-place-reviews');
+      const badgeEl = document.getElementById('selected-place-rating-badge');
+      const rateWrapEl = document.getElementById('selected-place-rate-wrap');
+      if (reviewsEl) {
+        reviewsEl.innerHTML = data.reviews?.length
+          ? `<div class="review-list">${data.reviews.map((r) => renderReviewItem(r, true)).join('')}</div>`
+          : `<div style="font-size:13px;color:var(--muted);">No crew reviews yet for this spot.</div>`;
+      }
+      if (badgeEl && data.place) {
+        const cnt = data.place.rating_count ?? data.reviews?.length ?? 0;
+        badgeEl.innerHTML =
+          data.place.avg_rating != null
+            ? `<span class="badge badge-star tabular">★ ${Number(data.place.avg_rating).toFixed(1)} · ${cnt} ${cnt === 1 ? 'review' : 'reviews'}</span>`
+            : `<span class="badge badge-muted">No reviews yet</span>`;
+      }
+      if (rateWrapEl) {
+        const visits = data.visits || [];
+        const targetVisit = visits.find((v) => v.my_score != null) || visits[0] || null;
+        rateWrapEl.innerHTML = targetVisit
+          ? `<button id="selected-place-rate-btn" class="btn btn-sm btn-outline" data-action="open-review-modal" data-dinner-id="${targetVisit.id}">${targetVisit.my_score != null ? 'Edit review' : '+ Write review'}</button>`
+          : '';
+      }
+    }
+  } catch {
+    if (state.tab === 'places' && state.selectedPlaceId === placeId) {
+      const reviewsEl = document.getElementById('selected-place-reviews');
+      if (reviewsEl) reviewsEl.innerHTML = '<div style="font-size:13px;color:var(--muted);">Could not load reviews.</div>';
+    }
+  }
+}
+
 function renderPlacesView() {
   const all = state.places || [];
   const totalVisits = all.reduce((sum, p) => sum + (p.visit_count || 0), 0);
   const tenPlus = [...all].filter((p) => (p.visit_count || 0) >= 10).sort((a, b) => b.visit_count - a.visit_count);
   const regulars = all.filter((p) => (p.visit_count || 0) >= 5);
   const oneHits = all.filter((p) => (p.visit_count || 0) === 1);
+  const reviewedPlaces = all.filter((p) => (p.rating_count || 0) > 0 || p.avg_rating != null);
   const byVisits = [...all].sort((a, b) => (b.visit_count - a.visit_count) || a.name.localeCompare(b.name));
   const byRecent = [...all].filter((p) => p.last_visited).sort((a, b) => b.last_visited.localeCompare(a.last_visited));
   const comebackPool = [...all]
@@ -712,6 +864,7 @@ function renderPlacesView() {
 
   const filterDefs = [
     { id: 'all', label: `All (${all.length})` },
+    { id: 'reviewed', label: `⭐ Reviewed (${reviewedPlaces.length})` },
     { id: 'ten_plus', label: `🏆 10+ Club (${tenPlus.length})` },
     { id: 'regulars', label: `🔥 Regulars 5+ (${regulars.length})` },
     { id: 'comeback', label: '🕰️ Comeback Due' },
@@ -730,10 +883,13 @@ function renderPlacesView() {
       (p) => `
       <button class="place-card-row ${selected?.id === p.id ? 'selected' : ''}" data-action="select-place" data-place-id="${p.id}">
         <div style="min-width:0;">
-          <div class="place-name">${esc(p.name)}${p.visit_count >= 10 ? ' 🏆' : p.visit_count >= 5 ? ' ★' : ''}</div>
+          <div class="place-name">${esc(p.name)}${p.visit_count >= 10 ? ' 🏆' : p.visit_count >= 5 ? ' 🔥' : ''}</div>
           <div class="place-addr">${esc(p.address || p.city)}${p.last_visited ? ` · Last ${fmtShortDate(p.last_visited)}` : ''}</div>
         </div>
-        <span class="badge badge-muted tabular">${p.visit_count}×</span>
+        <div style="display:flex;align-items:center;gap:6px;flex-shrink:0;">
+          ${p.avg_rating != null ? `<span class="badge badge-star tabular">★ ${Number(p.avg_rating).toFixed(1)}</span>` : ''}
+          <span class="badge badge-muted tabular">${p.visit_count}×</span>
+        </div>
       </button>
     `,
     )
@@ -770,6 +926,7 @@ function renderPlacesView() {
       <input id="places-search" class="input" style="min-width:220px;flex:1;" placeholder="Filter restaurants…" value="${esc(state.placesQuery)}" />
       <select id="places-sort" class="select">
         <option value="visits" ${state.placesSort === 'visits' ? 'selected' : ''}>Most visited</option>
+        <option value="rating" ${state.placesSort === 'rating' ? 'selected' : ''}>Top rated</option>
         <option value="recent" ${state.placesSort === 'recent' ? 'selected' : ''}>Most recent</option>
         <option value="alpha" ${state.placesSort === 'alpha' ? 'selected' : ''}>A – Z</option>
       </select>
@@ -777,7 +934,10 @@ function renderPlacesView() {
     <div class="filter-pills" style="margin-bottom:12px;">${filterHtml}</div>
     <div class="places-layout">
       <div class="places-list-wrap">${listHtml || '<div class="card muted-bg">No matching places.</div>'}</div>
-      <div id="places-map" class="places-map-wrap"></div>
+      <div class="places-right-col">
+        ${renderSelectedPlaceCard(selected)}
+        <div id="places-map" class="places-map-wrap"></div>
+      </div>
     </div>
   `;
 }
@@ -926,7 +1086,7 @@ function initPlacesMap() {
     const popupHtml = `
       <div style="font-family:var(--sys);font-size:13px;max-width:220px;">
         <strong style="display:block;margin-bottom:3px;">${esc(p.name)}</strong>
-        <div style="color:#71717a;font-size:12px;margin-bottom:6px;">${p.visit_count} visits · ${esc(p.address || p.city)}</div>
+        <div style="color:#71717a;font-size:12px;margin-bottom:6px;">${p.avg_rating != null ? `★ ${Number(p.avg_rating).toFixed(1)} · ` : ''}${p.visit_count} visits · ${esc(p.address || p.city)}</div>
         <a href="${esc(gmaps)}" target="_blank" rel="noopener" style="color:#e5484d;font-weight:600;">Directions ↗</a>
       </div>
     `;
@@ -953,6 +1113,7 @@ function render() {
   } else if (state.tab === 'places') {
     main.innerHTML = renderPlacesView();
     requestAnimationFrame(initPlacesMap);
+    if (state.selectedPlaceId) loadPlaceReviews(state.selectedPlaceId);
   } else if (state.tab === 'crew') {
     main.innerHTML = renderCrewView();
   }
@@ -1230,6 +1391,48 @@ function openNewPlaceModal() {
   `);
 }
 
+async function openReviewModal(dinnerId) {
+  openModal(`<div style="padding:12px 0;font-size:14px;color:var(--muted);">Loading dinner reviews…</div>`);
+  try {
+    const data = await api(`/api/dinners/${dinnerId}/reviews`);
+    const d = data.dinner;
+    const reviews = data.reviews || [];
+    const me = state.bootstrap?.user;
+    const myReview = reviews.find((r) => r.user_slug === me?.slug);
+    state.modalRatingScore = myReview ? Number(myReview.score) : 5;
+    const title = d.restaurant_name || d.raw_location?.split(',')[0] || 'Dinner review';
+    const reviewsHtml = reviews.length
+      ? `<div style="margin-bottom:12px;">
+           <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.04em;color:var(--muted);margin-bottom:6px;">Crew reviews (${reviews.length})</div>
+           <div class="review-list">${reviews.map((r) => renderReviewItem(r, false)).join('')}</div>
+         </div>`
+      : `<p class="hero-sub" style="margin-bottom:12px;font-size:13px;">No crew reviews for this night yet — be the first.</p>`;
+
+    openModal(`
+      <h2 class="hero-title" style="font-size:20px;margin-bottom:4px;">${esc(title)}</h2>
+      <p class="hero-sub" style="margin-bottom:12px;">${esc(d.day_of_week || 'Tuesday')}, ${fmtDate(d.dinner_date)} · Hosted by ${esc(d.host_label)}</p>
+      ${reviewsHtml}
+      <div style="border-top:1px solid var(--line);padding-top:12px;">
+        <div style="font-size:12px;font-weight:700;color:var(--muted);margin-bottom:6px;">${myReview ? 'Your review' : 'Add your review'}</div>
+        <div id="modal-review-stars" class="star-row" style="margin-bottom:10px;">
+          ${[1, 2, 3, 4, 5].map((n) => `<button type="button" class="star-btn ${state.modalRatingScore >= n ? 'on' : ''}" data-action="set-modal-star" data-score="${n}">★</button>`).join('')}
+        </div>
+        <div class="stack" style="gap:8px;">
+          <input id="modal-rate-dish" class="input" placeholder="Standout dish (optional)" value="${esc(myReview?.dish || '')}" />
+          <textarea id="modal-rate-comment" class="textarea" style="min-height:72px;" placeholder="Review note — food, vibe, would go back? (optional)">${esc(myReview?.comment || '')}</textarea>
+        </div>
+        <div class="btn-row" style="justify-content:flex-end;margin-top:12px;">
+          <button class="btn btn-secondary btn-sm" data-action="close-modal">Cancel</button>
+          <button class="btn btn-primary btn-sm" data-action="submit-modal-rate" data-dinner-id="${dinnerId}">${myReview ? 'Update review' : 'Save review'}</button>
+        </div>
+      </div>
+    `);
+  } catch (err) {
+    closeModal();
+    toast(err.message || 'Could not load reviews');
+  }
+}
+
 // Event delegation
 document.addEventListener('click', async (e) => {
   const tabBtn = e.target.closest('[data-tab]');
@@ -1314,14 +1517,46 @@ document.addEventListener('click', async (e) => {
       await refreshBootstrap();
     } else if (action === 'set-star') {
       state.ratingScore = Number(actEl.dataset.score);
-      render();
+      document.querySelectorAll('#last-dinner-stars .star-btn').forEach((btn) => {
+        btn.classList.toggle('on', Number(btn.dataset.score) <= state.ratingScore);
+      });
     } else if (action === 'submit-rate') {
       const dish = document.getElementById('rate-dish-input')?.value || '';
+      const comment = document.getElementById('rate-comment-input')?.value || '';
       await api('/api/week/rate', {
         method: 'POST',
-        body: JSON.stringify({ dinnerId: Number(actEl.dataset.dinnerId), score: state.ratingScore, dish }),
+        body: JSON.stringify({ dinnerId: Number(actEl.dataset.dinnerId), score: state.ratingScore, dish, comment }),
       });
-      toast('Rating saved!');
+      state.places = [];
+      state.placeReviews = {};
+      toast('Review saved!');
+      await refreshBootstrap();
+    } else if (action === 'open-review-modal') {
+      await openReviewModal(Number(actEl.dataset.dinnerId));
+    } else if (action === 'set-modal-star') {
+      state.modalRatingScore = Number(actEl.dataset.score);
+      document.querySelectorAll('#modal-review-stars .star-btn').forEach((btn) => {
+        btn.classList.toggle('on', Number(btn.dataset.score) <= state.modalRatingScore);
+      });
+    } else if (action === 'submit-modal-rate') {
+      const dinnerId = Number(actEl.dataset.dinnerId);
+      const dish = document.getElementById('modal-rate-dish')?.value || '';
+      const comment = document.getElementById('modal-rate-comment')?.value || '';
+      await api('/api/week/rate', {
+        method: 'POST',
+        body: JSON.stringify({ dinnerId, score: state.modalRatingScore, dish, comment }),
+      });
+      state.places = [];
+      state.placeReviews = {};
+      closeModal();
+      toast('Review saved!');
+      await refreshBootstrap();
+      if (state.tab === 'places') {
+        await loadPlacesIfNeeded();
+        render();
+      } else if (state.tab === 'history') {
+        await loadHistory(false);
+      }
     } else if (action === 'set-picker-day') {
       state.pickerDay = actEl.dataset.day === 'Wednesday' ? 'Wednesday' : 'Tuesday';
       document.querySelectorAll('#picker-day-group .day-toggle-btn').forEach((btn) => {
@@ -1402,8 +1637,15 @@ document.addEventListener('click', async (e) => {
       state.selectedPlaceId = Number(actEl.dataset.placeId);
       render();
     } else if (action === 'focus-place') {
+      state.placesFilter = 'all';
+      state.placesQuery = '';
       state.selectedPlaceId = Number(actEl.dataset.placeId);
       setTab('places');
+    } else if (action === 'filter-place-history') {
+      state.historyPlaceId = Number(actEl.dataset.placeId);
+      state.historyHost = '';
+      state.historyQuery = '';
+      setTab('history');
     } else if (action === 'clear-place-filter') {
       state.historyPlaceId = null;
       loadHistory(false);

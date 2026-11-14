@@ -13,6 +13,8 @@ import {
   createRestaurant,
   getActiveDinner,
   getBootstrapPayload,
+  getDinnerReviews,
+  getPlaceReviews,
   lockNight,
   lockPlace,
   openNoonDraw,
@@ -226,12 +228,16 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
 
     if (path === '/api/week/rate' && method === 'POST') {
       const body = await readJson<{ dinnerId: number; score: number; dish?: string; comment?: string }>(request);
+      const dinnerId = Number(body.dinnerId);
       const score = Number(body.score);
+      if (!Number.isInteger(dinnerId) || dinnerId <= 0) {
+        return json({ error: 'Valid dinnerId is required' }, 400);
+      }
       if (!Number.isInteger(score) || score < 1 || score > 5) {
         return json({ error: 'Score must be 1 to 5' }, 400);
       }
-      await submitRating(env.DB, Number(body.dinnerId), user.slug, score, body.dish ?? '', body.comment ?? '');
-      return json({ ok: true });
+      const rating = await submitRating(env.DB, dinnerId, user.slug, score, body.dish ?? '', body.comment ?? '');
+      return json({ ok: true, rating });
     }
 
     if (path === '/api/week/rotation' && method === 'POST') {
@@ -262,12 +268,27 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
     if (path === '/api/places' && method === 'GET') {
       const q = (url.searchParams.get('q') || '').trim().toLowerCase();
       const rows = (
-        await env.DB.prepare('SELECT * FROM restaurants ORDER BY visit_count DESC, name ASC').all<RestaurantRow>()
+        await env.DB.prepare(
+          `SELECT r.*,
+                  (SELECT COUNT(*) FROM ratings rt WHERE rt.restaurant_id = r.id) AS rating_count
+           FROM restaurants r
+           ORDER BY r.visit_count DESC, r.name ASC`,
+        ).all<RestaurantRow>()
       ).results ?? [];
       const filtered = q
         ? rows.filter((r) => r.name.toLowerCase().includes(q) || r.address.toLowerCase().includes(q))
         : rows;
       return json({ places: filtered });
+    }
+
+    const placeReviewsMatch = path.match(/^\/api\/places\/(\d+)\/reviews$/);
+    if (placeReviewsMatch && method === 'GET') {
+      return json(await getPlaceReviews(env.DB, Number(placeReviewsMatch[1]), user.slug));
+    }
+
+    const dinnerReviewsMatch = path.match(/^\/api\/dinners\/(\d+)\/reviews$/);
+    if (dinnerReviewsMatch && method === 'GET') {
+      return json(await getDinnerReviews(env.DB, Number(dinnerReviewsMatch[1])));
     }
 
     if (path === '/api/places' && method === 'POST') {
@@ -302,7 +323,10 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
       const sql = `
         SELECT d.id, d.week_key, d.dinner_date, d.day_of_week, d.host_slug, d.host_label,
                d.restaurant_id, d.raw_location, d.raw_summary, d.chosen_via,
-               r.name AS restaurant_name, r.address AS restaurant_address, r.visit_count AS restaurant_visits, r.avg_rating AS restaurant_avg_rating
+               r.name AS restaurant_name, r.address AS restaurant_address, r.visit_count AS restaurant_visits, r.avg_rating AS restaurant_avg_rating,
+               (SELECT COUNT(*) FROM ratings rt WHERE rt.dinner_id = d.id) AS rating_count,
+               (SELECT ROUND(AVG(rt.score), 2) FROM ratings rt WHERE rt.dinner_id = d.id) AS dinner_avg_rating,
+               (SELECT rt.score FROM ratings rt WHERE rt.dinner_id = d.id AND rt.user_slug = ?) AS my_score
         FROM dinners d
         LEFT JOIN restaurants r ON r.id = d.restaurant_id
         WHERE ${where.join(' AND ')}
@@ -316,7 +340,7 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
         WHERE ${where.join(' AND ')}
       `;
 
-      const items = (await env.DB.prepare(sql).bind(...binds, limit, offset).all()).results ?? [];
+      const items = (await env.DB.prepare(sql).bind(user.slug, ...binds, limit, offset).all()).results ?? [];
       const totalRow = await env.DB.prepare(countSql).bind(...binds).first<{ total: number }>();
       return json({ items, total: Number(totalRow?.total ?? 0), limit, offset });
     }

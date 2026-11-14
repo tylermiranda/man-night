@@ -14,6 +14,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const rootDir = resolve(__dirname, '..');
 const schemaSql = readFileSync(resolve(rootDir, 'migrations/0001_schema.sql'), 'utf8');
 const seedSql = readFileSync(resolve(rootDir, 'migrations/0002_seed_history.sql'), 'utf8');
+const migration0003Sql = readFileSync(resolve(rootDir, 'migrations/0003_ratings_indexes.sql'), 'utf8');
 
 function makeEnv(db: D1Database, overrides: Partial<Env> = {}): Env {
   return {
@@ -42,8 +43,9 @@ function makeReq(path: string, method = 'GET', body?: unknown, headers: Record<s
 describe('Man Night PWA Worker & Seed', () => {
   let env: Env;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     const db = createTestD1(schemaSql, seedSql);
+    await db.exec(migration0003Sql);
     env = makeEnv(db);
   });
 
@@ -364,5 +366,145 @@ describe('Man Night PWA Worker & Seed', () => {
     const body = (await postRes.json()) as { ok: boolean; logoutUrl: string };
     expect(body.ok).toBe(true);
     expect(body.logoutUrl).toBe('/cdn-cgi/access/logout');
+  });
+
+  it('surfaces dinner and place reviews across bootstrap, places, history, and backfill', async () => {
+    const bootBefore = (await (await worker.fetch(makeReq('/api/bootstrap'), env)).json()) as {
+      recentDinners: Array<{ id: number; restaurant_id: number; restaurant_name: string }>;
+    };
+    const lastDinner = bootBefore.recentDinners[0];
+    expect(lastDinner.id).toBe(614);
+    expect(lastDinner.restaurant_id).toBe(7);
+    expect(lastDinner.restaurant_name).toBe('El Mexico Cafe');
+
+    // 1. Tyler reviews last week's completed dinner (El Mexico Cafe)
+    const rateRes = await worker.fetch(
+      makeReq('/api/week/rate', 'POST', {
+        dinnerId: lastDinner.id,
+        score: 5,
+        dish: 'Street Tacos',
+        comment: 'Great salsa and quick service.',
+      }),
+      env,
+    );
+    expect(rateRes.status).toBe(200);
+    const rateData = (await rateRes.json()) as {
+      ok: boolean;
+      rating: { dinner_id: number; restaurant_id: number; score: number; dish: string; comment: string };
+    };
+    expect(rateData.ok).toBe(true);
+    expect(rateData.rating.dinner_id).toBe(614);
+    expect(rateData.rating.restaurant_id).toBe(7);
+
+    // Bootstrap surfaces lastDinnerRatings and rating aggregates on recentDinners[0]
+    const bootAfter = (await (await worker.fetch(makeReq('/api/bootstrap'), env)).json()) as {
+      recentDinners: Array<{ id: number; rating_count: number; dinner_avg_rating: number; restaurant_avg_rating: number }>;
+      lastDinnerRatings: Array<{ user_slug: string; user_name: string; score: number; dish: string; comment: string }>;
+    };
+    expect(bootAfter.lastDinnerRatings).toHaveLength(1);
+    expect(bootAfter.lastDinnerRatings[0].user_slug).toBe('tyler');
+    expect(bootAfter.lastDinnerRatings[0].user_name).toBe('Tyler');
+    expect(bootAfter.lastDinnerRatings[0].score).toBe(5);
+    expect(bootAfter.lastDinnerRatings[0].dish).toBe('Street Tacos');
+    expect(bootAfter.lastDinnerRatings[0].comment).toBe('Great salsa and quick service.');
+    expect(bootAfter.recentDinners[0].rating_count).toBe(1);
+    expect(bootAfter.recentDinners[0].dinner_avg_rating).toBe(5);
+    expect(bootAfter.recentDinners[0].restaurant_avg_rating).toBe(5);
+
+    // 2. Multi-member rating + updating an existing rating recalculates avg_rating
+    await worker.fetch(
+      makeReq(
+        '/api/week/rate',
+        'POST',
+        { dinnerId: lastDinner.id, score: 3, dish: 'Enchiladas', comment: 'Good but loud.' },
+        { 'Cf-Access-Authenticated-User-Email': 'storme2@gmail.com' },
+      ),
+      env,
+    );
+    await worker.fetch(
+      makeReq('/api/week/rate', 'POST', {
+        dinnerId: lastDinner.id,
+        score: 4,
+        dish: 'Street Tacos',
+        comment: 'Updated note.',
+      }),
+      env,
+    );
+
+    const placesRes = await worker.fetch(makeReq('/api/places?q=el%20mexico'), env);
+    expect(placesRes.status).toBe(200);
+    const placesData = (await placesRes.json()) as {
+      places: Array<{ id: number; avg_rating: number; rating_count: number }>;
+    };
+    expect(placesData.places[0].id).toBe(7);
+    expect(placesData.places[0].avg_rating).toBe(3.5);
+    expect(placesData.places[0].rating_count).toBe(2);
+
+    const placeRevRes = await worker.fetch(makeReq('/api/places/7/reviews'), env);
+    expect(placeRevRes.status).toBe(200);
+    const placeRev = (await placeRevRes.json()) as {
+      place: { id: number; avg_rating: number; rating_count: number };
+      reviews: Array<{ user_slug: string; score: number; dinner_date: string }>;
+      visits: Array<{ id: number; my_score: number | null; rating_count: number; dinner_avg_rating: number | null }>;
+    };
+    expect(placeRev.place.avg_rating).toBe(3.5);
+    expect(placeRev.place.rating_count).toBe(2);
+    expect(placeRev.reviews).toHaveLength(2);
+    expect(placeRev.reviews[0].dinner_date).toBe('2026-11-10');
+    expect(placeRev.visits[0].id).toBe(614);
+    expect(placeRev.visits[0].my_score).toBe(4);
+    expect(placeRev.visits[0].rating_count).toBe(2);
+    expect(placeRev.visits[0].dinner_avg_rating).toBe(3.5);
+
+    const dinnerRevRes = await worker.fetch(makeReq('/api/dinners/614/reviews'), env);
+    expect(dinnerRevRes.status).toBe(200);
+    const dinnerRev = (await dinnerRevRes.json()) as {
+      dinner: { id: number; restaurant_name: string };
+      reviews: Array<{ user_slug: string; score: number }>;
+    };
+    expect(dinnerRev.dinner.id).toBe(614);
+    expect(dinnerRev.dinner.restaurant_name).toBe('El Mexico Cafe');
+    expect(dinnerRev.reviews).toHaveLength(2);
+
+    const histRes = await worker.fetch(makeReq('/api/history?placeId=7&limit=10'), env);
+    expect(histRes.status).toBe(200);
+    const histData = (await histRes.json()) as {
+      items: Array<{ id: number; rating_count: number; dinner_avg_rating: number; my_score: number }>;
+    };
+    expect(histData.items[0].id).toBe(614);
+    expect(histData.items[0].rating_count).toBe(2);
+    expect(histData.items[0].dinner_avg_rating).toBe(3.5);
+    expect(histData.items[0].my_score).toBe(4);
+
+    // 3. Rating an unplaced dinner attaches to restaurant when backfilled
+    const unplaced = await env.DB.prepare(
+      "SELECT id FROM dinners WHERE status = 'completed' AND restaurant_id IS NULL LIMIT 1",
+    ).first<{ id: number }>();
+    expect(unplaced).toBeTruthy();
+
+    await worker.fetch(
+      makeReq('/api/week/rate', 'POST', {
+        dinnerId: unplaced!.id,
+        score: 5,
+        dish: 'Ribeye',
+        comment: 'Retrospective review.',
+      }),
+      env,
+    );
+    const bfRes = await worker.fetch(
+      makeReq(`/api/dinners/${unplaced!.id}/backfill`, 'POST', { restaurantId: 1 }),
+      env,
+    );
+    expect(bfRes.status).toBe(200);
+
+    const backfilledPlaceRev = (await (await worker.fetch(makeReq('/api/places/1/reviews'), env)).json()) as {
+      place: { avg_rating: number; rating_count: number };
+      reviews: Array<{ dinner_id: number; restaurant_id: number; dish: string }>;
+    };
+    expect(backfilledPlaceRev.place.avg_rating).toBe(5);
+    expect(backfilledPlaceRev.place.rating_count).toBe(1);
+    expect(backfilledPlaceRev.reviews[0].dinner_id).toBe(unplaced!.id);
+    expect(backfilledPlaceRev.reviews[0].restaurant_id).toBe(1);
+    expect(backfilledPlaceRev.reviews[0].dish).toBe('Ribeye');
   });
 });

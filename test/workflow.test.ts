@@ -75,6 +75,15 @@ describe('Man Night PWA Worker & Seed', () => {
     });
     const res = await worker.fetch(spoofReq, env);
     expect(res.status).toBe(403);
+
+    // Service token JWT forwarding common_name (<id>.access) resolves cleanly
+    const payload = btoa(JSON.stringify({ type: 'app', common_name: 'abc123.access' }))
+      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    const stReq = new Request('https://dinner.tylermiranda.com/api/bootstrap', {
+      headers: { 'Cf-Access-Jwt-Assertion': `h.${payload}.s` },
+    });
+    const stRes = await worker.fetch(stReq, env);
+    expect(stRes.status).toBe(200);
   });
 
   it('runs Tuesday-first night vote with Monday noon tie-breaking to Tuesday', async () => {

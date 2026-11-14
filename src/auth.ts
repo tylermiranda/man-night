@@ -1,14 +1,13 @@
 import type { Env, UserRow } from './types';
 
-function decodeJwtEmail(jwt: string | null): string | null {
+function decodeAccessJwtClaims(jwt: string | null): { email?: string; common_name?: string } | null {
   if (!jwt) return null;
   const parts = jwt.split('.');
   if (parts.length !== 3) return null;
   try {
     const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
     const pad = b64 + '='.repeat((4 - (b64.length % 4)) % 4);
-    const json = JSON.parse(atob(pad)) as { email?: string; common_name?: string };
-    return typeof json.email === 'string' ? json.email.toLowerCase() : null;
+    return JSON.parse(atob(pad)) as { email?: string; common_name?: string };
   } catch {
     return null;
   }
@@ -19,8 +18,9 @@ export async function resolveAuthUser(request: Request, env: Env): Promise<{
   via: 'access_email' | 'service_token' | 'local_dev' | 'unauthenticated';
   email: string | null;
 }> {
+  const jwtClaims = decodeAccessJwtClaims(request.headers.get('Cf-Access-Jwt-Assertion'));
   const cfEmail = request.headers.get('Cf-Access-Authenticated-User-Email')?.trim().toLowerCase()
-    ?? decodeJwtEmail(request.headers.get('Cf-Access-Jwt-Assertion'));
+    ?? (typeof jwtClaims?.email === 'string' ? jwtClaims.email.toLowerCase() : null);
 
   if (cfEmail) {
     const user = await env.DB.prepare('SELECT * FROM users WHERE LOWER(email) = ? LIMIT 1')
@@ -29,8 +29,12 @@ export async function resolveAuthUser(request: Request, env: Env): Promise<{
     return { user: user ?? null, via: 'access_email', email: cfEmail };
   }
 
-  // Cloudflare Access clears email header and forwards service token ID for non-interactive automation
-  const serviceId = request.headers.get('Cf-Access-Client-Id')?.trim();
+  // Cloudflare Access validates service tokens at edge and forwards common_name in Cf-Access-Jwt-Assertion
+  const serviceId = request.headers.get('Cf-Access-Client-Id')?.trim()
+    || (typeof jwtClaims?.common_name === 'string' && jwtClaims.common_name.endsWith('.access')
+      ? jwtClaims.common_name
+      : null);
+
   if (serviceId) {
     const fallbackSlug = env.DEV_DEFAULT_USER || 'tyler';
     const user = await env.DB.prepare('SELECT * FROM users WHERE slug = ? LIMIT 1')

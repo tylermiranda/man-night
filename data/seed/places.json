@@ -1,0 +1,1598 @@
+[
+ {
+  "key": "poplar",
+  "name": "Poplar",
+  "visits": 18,
+  "last": "2026-02-24",
+  "addr": "Poplar Restaurant, 127 US-54, Andover, KS 67002, USA"
+ },
+ {
+  "key": "poblanos",
+  "name": "Poblanos",
+  "visits": 17,
+  "last": "2023-03-15",
+  "addr": "Poblano's, 343 Greenwich Rd, Wichita, KS 67207, USA"
+ },
+ {
+  "key": "firehouse subs",
+  "name": "Firehouse Subs",
+  "visits": 13,
+  "last": "2021-10-06",
+  "addr": "Firehouse Subs, 534 S Rock Rd, Wichita, KS  67207, United States"
+ },
+ {
+  "key": "mediterranean",
+  "name": "Mediterranean Grill",
+  "visits": 12,
+  "last": "2024-10-30",
+  "addr": "Mediterranean Grill, 335 S Towne East Mall Dr, Wichita, KS  67207, United States"
+ },
+ {
+  "key": "bjs brewhouse",
+  "name": "BJ's Restaurant & Brewhouse",
+  "visits": 12,
+  "last": "2020-03-11",
+  "addr": "BJ's Restaurant & Brewhouse, 7960 E Kellogg Ave, Wichita, KS 67207, USA"
+ },
+ {
+  "key": "tacos tj",
+  "name": "Tacos tj 664 east",
+  "visits": 12,
+  "last": "2026-10-20",
+  "addr": "Tacos tj 664 east, 3526 N Rock Rd STE 200, Wichita, KS 67226, USA"
+ },
+ {
+  "key": "el mexico",
+  "name": "El Mexico Cafe",
+  "visits": 10,
+  "last": "2026-08-04",
+  "addr": "El Mexico Cafe, 2544 S Seneca St, Wichita, KS 67217, USA"
+ },
+ {
+  "key": "bricktown brewery",
+  "name": "Bricktown Brewery",
+  "visits": 9,
+  "last": "2025-10-21",
+  "addr": "Bricktown Brewery, 2035 N Rock Rd, Wichita, KS 67206, USA"
+ },
+ {
+  "key": "mango tree",
+  "name": "The Mango Tree",
+  "visits": 7,
+  "last": "2025-07-08",
+  "addr": "The Mango Tree, 111 E 47th St S, Wichita, KS 67216, USA"
+ },
+ {
+  "key": "jumbos beef brew",
+  "name": "Jumbo's Beef & Brew",
+  "visits": 7,
+  "last": "2025-09-09",
+  "addr": "Jumbo's Beef & Brew, 3750 N Woodlawn Blvd Ste 102, Wichita, KS 67220, USA"
+ },
+ {
+  "key": "omalleys irish pub",
+  "name": "O'Malley's Irish Pub",
+  "visits": 7,
+  "last": "2024-10-23",
+  "addr": "O'Malley's Irish Pub, 2405 W 31st St S, Wichita, KS 67217, USA"
+ },
+ {
+  "key": "tor brewing",
+  "name": "Tor Brewing",
+  "visits": 7,
+  "last": "2026-01-13",
+  "addr": "Tor Brewing, 222 S Commerce St, Wichita, KS 67202, USA"
+ },
+ {
+  "key": "wichita brewing pizzeria",
+  "name": "Wichita Brewing Co. & Pizzeria",
+  "visits": 7,
+  "last": "2026-09-16",
+  "addr": "Wichita Brewing Co. & Pizzeria, 535 N Woodlawn St # 375, Wichita, KS 67208, USA"
+ },
+ {
+  "key": "bubbas",
+  "name": "Bubba's 33",
+  "visits": 6,
+  "last": "2026-04-21",
+  "addr": "Bubba's 33, 412 S Towne East Mall Dr, Wichita, KS 67207, USA"
+ },
+ {
+  "key": "cheddars scratch kitchen",
+  "name": "Cheddar's Scratch Kitchen",
+  "visits": 6,
+  "last": "2025-06-03",
+  "addr": "Cheddar's Scratch Kitchen, 11711 E 13th St N, Wichita, KS 67206, USA"
+ },
+ {
+  "key": "river city brewing",
+  "name": "River City Brewing Company",
+  "visits": 6,
+  "last": "2026-09-23",
+  "addr": "River City Brewing Company, 150 N Mosley St, Wichita, KS 67202, USA"
+ },
+ {
+  "key": "green mill",
+  "name": "Green Mill",
+  "visits": 6,
+  "last": "2023-07-05",
+  "addr": "Green Mill, 549 South Rock Road, Wichita, KS"
+ },
+ {
+  "key": "poplars",
+  "name": "Poplars",
+  "visits": 6,
+  "last": "2017-01-18",
+  "addr": ""
+ },
+ {
+  "key": "el gordo",
+  "name": "El Gordo",
+  "visits": 6,
+  "last": "2023-07-19",
+  "addr": "El Gordo, 11333 E Central Ave, Wichita, KS 67206, USA"
+ },
+ {
+  "key": "empire tacos",
+  "name": "Empire Tacos",
+  "visits": 6,
+  "last": "2021-09-15",
+  "addr": "Empire Tacos, 219 W Main St, Mulvane, KS 67110, USA"
+ },
+ {
+  "key": "pourhouse",
+  "name": "The PourHouse",
+  "visits": 5,
+  "last": "2022-05-11",
+  "addr": "The PourHouse, 711 E Douglas Ave, Wichita, KS 67202, USA"
+ },
+ {
+  "key": "oak pie",
+  "name": "Oak & Pie",
+  "visits": 5,
+  "last": "2020-09-09",
+  "addr": "Oak & Pie, 2244 N Greenwich Rd #900, Wichita, KS 67226, USA"
+ },
+ {
+  "key": "monarch",
+  "name": "The Monarch",
+  "visits": 5,
+  "last": "2024-08-07",
+  "addr": "The Monarch, 579 W Douglas Ave, Wichita, KS 67213, USA"
+ },
+ {
+  "key": "hog wild",
+  "name": "Hog Wild",
+  "visits": 5,
+  "last": "2014-04-09",
+  "addr": "Hog Wild 1200 S Rock Rd, Wichita, KS"
+ },
+ {
+  "key": "ziggys pizza",
+  "name": "Ziggy's Pizza",
+  "visits": 5,
+  "last": "2024-03-19",
+  "addr": "Ziggy's Pizza, Clifton Square Village, 3700 E Douglas Ave STE 100, Wichita, KS 67208, USA"
+ },
+ {
+  "key": "caseys",
+  "name": "Casey's Bar & Grill",
+  "visits": 4,
+  "last": "2018-08-29",
+  "addr": "Casey's Bar & Grill, 3207 S Oliver St, Wichita, KS 67210, USA"
+ },
+ {
+  "key": "carlos okellys",
+  "name": "Carlos O'Kelly's",
+  "visits": 4,
+  "last": "2014-11-05",
+  "addr": "Carlos O'Kelly's, 3025 North Rock Road, Wichita, KS"
+ },
+ {
+  "key": "los cocos",
+  "name": "Los Cocos",
+  "visits": 4,
+  "last": "2024-06-11",
+  "addr": "Los Cocos, 324 Cloud Ave, Andover, KS 67002, USA"
+ },
+ {
+  "key": "fuzzys taco shop",
+  "name": "Fuzzy's Taco Shop",
+  "visits": 3,
+  "last": "2021-07-21",
+  "addr": "Fuzzy's Taco Shop, 306 N Rock Rd, Unit 80, Wichita, KS  67206, United States"
+ },
+ {
+  "key": "mr",
+  "name": "Mr",
+  "visits": 3,
+  "last": "2015-01-14",
+  "addr": ""
+ },
+ {
+  "key": "kansas star casino",
+  "name": "Kansas Star Casino",
+  "visits": 3,
+  "last": "2016-03-02",
+  "addr": "Kansas Star Casino, 777 Kansas Star Drive, Mulvane, KS 67110, United States"
+ },
+ {
+  "key": "rusty nail",
+  "name": "The Rusty Nail",
+  "visits": 3,
+  "last": "2026-03-31",
+  "addr": "The Rusty Nail, 1155 S Washington Ave, Wichita, KS 67211, USA"
+ },
+ {
+  "key": "nortons brewing",
+  "name": "Nortons Brewing Company",
+  "visits": 3,
+  "last": "2021-02-24",
+  "addr": "Nortons Brewing Company, 125 N. St. Francis St, Wichita, KS 67202, USA"
+ },
+ {
+  "key": "old town burritos",
+  "name": "Old Town Burritos",
+  "visits": 3,
+  "last": "2025-09-02",
+  "addr": "Old Town Burritos, 251 N Washington St, Wichita, KS 67202, USA"
+ },
+ {
+  "key": "el gordos",
+  "name": "El Gordo's",
+  "visits": 3,
+  "last": "2019-02-13",
+  "addr": "El Gordos, 11333 E Central, Wichita, KS 67206"
+ },
+ {
+  "key": "wichita brewing pizzeria east",
+  "name": "Wichita Brewing Co & Pizzeria East",
+  "visits": 3,
+  "last": "2021-08-25",
+  "addr": "Wichita Brewing Co & Pizzeria East, 535 N Woodlawn St, Unit 375, Wichita, KS  67208, United States"
+ },
+ {
+  "key": "walts",
+  "name": "Walt's 7732 E Central Ave Ste 110",
+  "visits": 3,
+  "last": "2019-12-18",
+  "addr": "Walt's 7732 E Central Ave Ste 110, Wichita, KS 67206"
+ },
+ {
+  "key": "deanos",
+  "name": "Deano's",
+  "visits": 2,
+  "last": "2023-09-27",
+  "addr": "Deanos 9747 E 21st St N #101, Wichita, KS 67206"
+ },
+ {
+  "key": "molinos cuisine midtown",
+  "name": "Molino's Cuisine Midtown",
+  "visits": 2,
+  "last": "2025-06-24",
+  "addr": "Molino's Cuisine Midtown, 1064 N Waco Ave, Wichita, KS 67203, USA"
+ },
+ {
+  "key": "taco tj",
+  "name": "Taco TJ 664 3526 N. Rock Road",
+  "visits": 2,
+  "last": "2022-08-17",
+  "addr": "Taco TJ 664 3526 N. Rock Road, Wichita, KS"
+ },
+ {
+  "key": "fetch bistro",
+  "name": "Fetch Bistro",
+  "visits": 2,
+  "last": "2017-11-29",
+  "addr": "Fetch Bistro, 7718 E 37th St N Ste. 500, Wichita, KS 67226"
+ },
+ {
+  "key": "public at brickyard",
+  "name": "Public at the Brickyard",
+  "visits": 2,
+  "last": "2023-05-03",
+  "addr": "Public at the Brickyard, 129 N Rock Is Ave, Wichita, KS 67202, USA"
+ },
+ {
+  "key": "naan stop",
+  "name": "NAAN STOP",
+  "visits": 2,
+  "last": "2026-10-27",
+  "addr": "NAAN STOP, 336 S Greenwich Rd Ste 151, Wichita, KS 67207, USA"
+ },
+ {
+  "key": "bjs",
+  "name": "BJ's",
+  "visits": 2,
+  "last": "2016-05-18",
+  "addr": ""
+ },
+ {
+  "key": "freebirds world burrito",
+  "name": "Freebirds World Burrito",
+  "visits": 2,
+  "last": "2016-07-06",
+  "addr": "Freebirds World Burrito, 2350 North Greenwich Road #100, Wichita, KS 67206, United States"
+ },
+ {
+  "key": "knollas pizza",
+  "name": "Knolla's Pizza  7732 Central Ave # 123",
+  "visits": 2,
+  "last": "2018-12-19",
+  "addr": "Knolla's Pizza  7732 Central Ave # 123, Wichita, KS 67206"
+ },
+ {
+  "key": "jax",
+  "name": "Jax Restaurant and Bar",
+  "visits": 2,
+  "last": "2022-02-16",
+  "addr": "Jax Restaurant and Bar, 9719 E 21st St N, Wichita, KS 67206, USA"
+ },
+ {
+  "key": "prost",
+  "name": "Prost",
+  "visits": 2,
+  "last": "2025-11-11",
+  "addr": "Prost, 2721 E Central Ave #101, Wichita, KS 67214, USA"
+ },
+ {
+  "key": "yen ching",
+  "name": "yen ching",
+  "visits": 2,
+  "last": "2013-07-24",
+  "addr": "Yen Ching, 430 North Rock Road, Wichita, KS 67206-2211 (Near SE Corner of Central and Rock)"
+ },
+ {
+  "key": "bite me bbq",
+  "name": "Bite Me BBQ",
+  "visits": 2,
+  "last": "2018-04-18",
+  "addr": "Bite Me BBQ, 132 St Francis N, Wichita, KS 67202, USA"
+ },
+ {
+  "key": "bjs no homo",
+  "name": "BJ's (no homo) 7960 E Kellogg Ave",
+  "visits": 2,
+  "last": "2014-10-15",
+  "addr": "BJ's (no homo) 7960 E Kellogg Ave, Wichita, KS 67207"
+ },
+ {
+  "key": "chipotle mexican",
+  "name": "Chipotle Mexican Grill",
+  "visits": 2,
+  "last": "2018-09-26",
+  "addr": "Chipotle Mexican Grill, 535 S Rock Rd, Wichita, KS, 67207"
+ },
+ {
+  "key": "golden garden",
+  "name": "Golden Garden Restaurant",
+  "visits": 2,
+  "last": "2019-05-08",
+  "addr": "Golden Garden Restaurant, 544 N Andover Rd, Andover, KS 67002, USA"
+ },
+ {
+  "key": "casa martinez",
+  "name": "Casa Martinez",
+  "visits": 2,
+  "last": "2022-12-07",
+  "addr": "Casa Martinez, 204 W Greenway St, Derby, KS 67037, USA"
+ },
+ {
+  "key": "firehouse subs south rock",
+  "name": "Firehouse Subs South Rock",
+  "visits": 2,
+  "last": "2023-08-30",
+  "addr": "Firehouse Subs South Rock, 8007 E Kellogg Dr #18, Wichita, KS 67207, USA"
+ },
+ {
+  "key": "local flavor",
+  "name": "Local Flavor Restaurant",
+  "visits": 2,
+  "last": "2022-03-23",
+  "addr": "Local Flavor Restaurant, 5400 E Central Ave, Wichita, KS 67208, USA"
+ },
+ {
+  "key": "todd brians brick street tavern",
+  "name": "Todd Brian's Brick Street Cafe & Tavern",
+  "visits": 2,
+  "last": "2022-07-20",
+  "addr": "Todd Brian's Brick Street Cafe & Tavern, 315 N Mead, Wichita, KS 67202, USA"
+ },
+ {
+  "key": "puerto vallarta mexican wichita ks",
+  "name": "Puerto Vallarta Mexican Restaurant Wichita KS",
+  "visits": 2,
+  "last": "2023-09-20",
+  "addr": "Puerto Vallarta Mexican Restaurant Wichita KS, 602 N Tyler Rd, Wichita, KS 67212, USA"
+ },
+ {
+  "key": "a js music room",
+  "name": "A & J's Music Room",
+  "visits": 2,
+  "last": "2025-12-16",
+  "addr": "A & J's Music Room, 1602 S Meridian Ave, Wichita, KS 67213, USA"
+ },
+ {
+  "key": "chucks house",
+  "name": "Chuck's House",
+  "visits": 2,
+  "last": "2014-05-31",
+  "addr": ""
+ },
+ {
+  "key": "poblanos mexican",
+  "name": "Poblano's Mexican Grill",
+  "visits": 2,
+  "last": "2024-08-21",
+  "addr": "Poblano's Mexican Grill, 343 Greenwich Rd, Wichita, KS 67207, USA"
+ },
+ {
+  "key": "taco js",
+  "name": "Taco J's",
+  "visits": 2,
+  "last": "2014-01-22",
+  "addr": ""
+ },
+ {
+  "key": "marchellos",
+  "name": "Marchello's Restaurant",
+  "visits": 2,
+  "last": "2018-12-26",
+  "addr": "Marchello's Restaurant, 3107 S Seneca St, Wichita, KS 67217, USA"
+ },
+ {
+  "key": "las vaquitas mexican food",
+  "name": "Las Vaquitas Mexican Food",
+  "visits": 2,
+  "last": "2025-01-29",
+  "addr": "Las Vaquitas Mexican Food, 128 E Madison Ave, Derby, KS 67037, USA"
+ },
+ {
+  "key": "depot pizza taps",
+  "name": "The Depot Pizza & Taps",
+  "visits": 2,
+  "last": "2026-10-06",
+  "addr": "The Depot Pizza & Taps, 711 E Douglas Ave #105, Wichita, KS 67202, USA"
+ },
+ {
+  "key": "metro",
+  "name": "metro grill",
+  "visits": 2,
+  "last": "2022-09-21",
+  "addr": "Metro Grill, 801 E Douglas Ave Suite 110, Wichita, KS 67202, USA"
+ },
+ {
+  "key": "dempseys burger pub",
+  "name": "Dempsey's Burger Pub",
+  "visits": 2,
+  "last": "2022-03-02",
+  "addr": "Dempsey's Burger Pub, 3700 E Douglas Ave #78, Wichita, KS 67208, USA"
+ },
+ {
+  "key": "obriens irish pub",
+  "name": "O'Briens Irish Pub",
+  "visits": 2,
+  "last": "2025-02-05",
+  "addr": "O'Briens Irish Pub, 5205 E Kellogg Dr Ste 101, Wichita, KS 67218, USA"
+ },
+ {
+  "key": "chapin dog park",
+  "name": "Chapin Dog Park",
+  "visits": 1,
+  "last": "2013-04-28",
+  "addr": "Chapin Dog Park, Wichita, KS 67216"
+ },
+ {
+  "key": "man night tylers dinner cheddars",
+  "name": "Man Night @ Tyler's - DINNER @ Cheddars",
+  "visits": 1,
+  "last": "2015-01-28",
+  "addr": ""
+ },
+ {
+  "key": "bronx pizza pints",
+  "name": "Bronx Pizza & Pints",
+  "visits": 1,
+  "last": "2026-05-12",
+  "addr": "Bronx Pizza & Pints, 2140 W 21st St, Wichita, KS 67203, USA"
+ },
+ {
+  "key": "meet dans house",
+  "name": "Meet @ Dan's House @ 4. Dinner @ Polar's",
+  "visits": 1,
+  "last": "2012-09-22",
+  "addr": ""
+ },
+ {
+  "key": "madrocks sports",
+  "name": "Madrocks Restaurant & Sports Bar",
+  "visits": 1,
+  "last": "2021-02-10",
+  "addr": "Madrocks Restaurant & Sports Bar, 1821 E Madison Ave #100, Derby, KS 67037, USA"
+ },
+ {
+  "key": "chuck willis house",
+  "name": "Chuck Willis' House 11329 E. Osie St",
+  "visits": 1,
+  "last": "2015-10-11",
+  "addr": "Chuck Willis' House 11329 E. Osie St, Wichita, KS"
+ },
+ {
+  "key": "cactus cantina",
+  "name": "Cactus Cantina & Grill",
+  "visits": 1,
+  "last": "2025-11-04",
+  "addr": "Cactus Cantina & Grill, 2802 S Hydraulic Ave, Wichita, KS 67216, USA"
+ },
+ {
+  "key": "jj beards pub pizza",
+  "name": "JJ Beard's Pub & Pizza",
+  "visits": 1,
+  "last": "2025-08-05",
+  "addr": "JJ Beard's Pub & Pizza, 3827 W 13th St N, Wichita, KS 67203, USA"
+ },
+ {
+  "key": "olarneys pub rooftop",
+  "name": "O'Larney's Pub and Rooftop Bar",
+  "visits": 1,
+  "last": "2026-04-07",
+  "addr": "O'Larney's Pub and Rooftop Bar, 126 N Mosley St, Wichita, KS 67202, USA"
+ },
+ {
+  "key": "merles place",
+  "name": "Merle's Place",
+  "visits": 1,
+  "last": "2020-09-16",
+  "addr": "Merle's Place, 440 N Seneca St, Wichita, KS 67203, USA"
+ },
+ {
+  "key": "little busters sport",
+  "name": "Little Busters Sport Bar & Grill",
+  "visits": 1,
+  "last": "2024-04-30",
+  "addr": "Little Busters Sport Bar & Grill, 457 N Baltimore Ave, Derby, KS 67037, USA"
+ },
+ {
+  "key": "fire house subs",
+  "name": "Fire House Subs",
+  "visits": 1,
+  "last": "2014-02-05",
+  "addr": "Fire House Subs, 538 South Rock Road  Wichita, KS 67207"
+ },
+ {
+  "key": "gabbys peruvian catering",
+  "name": "Gabbys | Peruvian Restaurant & Catering",
+  "visits": 1,
+  "last": "2018-06-28",
+  "addr": "Gabbys | Peruvian Restaurant & Catering, 4441, 1002 S Seneca St, Wichita, KS 67213, USA"
+ },
+ {
+  "key": "beijing bistro",
+  "name": "Beijing Bistro",
+  "visits": 1,
+  "last": "2015-10-21",
+  "addr": "Beijing Bistro, 11309 E Kellogg Ave # 200, Wichita, KS 67207, United States"
+ },
+ {
+  "key": "ziggys pizza east",
+  "name": "Ziggy's Pizza East",
+  "visits": 1,
+  "last": "2017-12-13",
+  "addr": "Ziggy's Pizza East, 12115 E 21st St N #105, Wichita, KS 67206, USA"
+ },
+ {
+  "key": "ajs",
+  "name": "AJ's",
+  "visits": 1,
+  "last": "2013-08-21",
+  "addr": ""
+ },
+ {
+  "key": "famous daves bbq",
+  "name": "Famous Dave's BBQ",
+  "visits": 1,
+  "last": "2014-07-30",
+  "addr": "Famous Dave's BBQ, 9719 East 21st St N, Wichita, KS"
+ },
+ {
+  "key": "paradise indian new paradise biryani pointe",
+  "name": "Paradise Indian New Paradise Biryani Pointe",
+  "visits": 1,
+  "last": "2017-08-02",
+  "addr": "Paradise Indian New Paradise Biryani Pointe, 1648 S Rock Rd, Wichita, KS 67207, , https://goo.gl/maps/yxUgQtkhXDK2"
+ },
+ {
+  "key": "excaret mexico",
+  "name": "Excaret Mexico Bar & Grill Restaurant",
+  "visits": 1,
+  "last": "2022-07-06",
+  "addr": "Excaret Mexico Bar & Grill Restaurant, 424 W Grand Ave, Haysville, KS 67060, USA"
+ },
+ {
+  "key": "sandbox at derby",
+  "name": "The Sandbox at Derby",
+  "visits": 1,
+  "last": "2023-04-19",
+  "addr": "The Sandbox at Derby, 2412 N Rock Rd, Derby, KS 67037, USA"
+ },
+ {
+  "key": "albero",
+  "name": "Albero Cafe",
+  "visits": 1,
+  "last": "2019-06-19",
+  "addr": "Albero Cafe, 4811 E Central Ave, Wichita, KS 67208, USA"
+ },
+ {
+  "key": "torchys tacos",
+  "name": "Torchy's Tacos",
+  "visits": 1,
+  "last": "2020-10-28",
+  "addr": "Torchy's Tacos, 2191 N Rock Rd, Wichita, KS  67206, United States"
+ },
+ {
+  "key": "kitchen",
+  "name": "The Kitchen",
+  "visits": 1,
+  "last": "2019-04-24",
+  "addr": "The Kitchen, 725 E Douglas Ave, Wichita, KS 67202, USA"
+ },
+ {
+  "key": "fizz burgers bottles",
+  "name": "Fizz Burgers & Bottles",
+  "visits": 1,
+  "last": "2023-05-31",
+  "addr": "Fizz Burgers & Bottles, 7718 E 37th St N, Wichita, KS 67226, USA"
+ },
+ {
+  "key": "dinner at polars",
+  "name": "Dinner at Polar's 127 U.S. 54",
+  "visits": 1,
+  "last": "2014-07-23",
+  "addr": "Dinner at Polar's 127 U.S. 54, Andover, KS 67002"
+ },
+ {
+  "key": "tanker bbq",
+  "name": "Tanker BBQ Co.",
+  "visits": 1,
+  "last": "2026-08-12",
+  "addr": "Tanker BBQ Co., 620 W Maple St, Wichita, KS 67213, USA"
+ },
+ {
+  "key": "puerto vallarta mexican",
+  "name": "Puerto Vallarta Mexican Restaurant",
+  "visits": 1,
+  "last": "2026-10-13",
+  "addr": ""
+ },
+ {
+  "key": "old chicago east wichita kellogg",
+  "name": "Old Chicago East Wichita Kellogg @ 6pm",
+  "visits": 1,
+  "last": "2013-01-23",
+  "addr": ""
+ },
+ {
+  "key": "poblano mexican",
+  "name": "Poblano Mexican Grill",
+  "visits": 1,
+  "last": "2015-09-16",
+  "addr": "Poblano Mexican Grill, 343 Greenwich Rd, Wichita, KS 67207, United States"
+ },
+ {
+  "key": "social tap",
+  "name": "Social Tap",
+  "visits": 1,
+  "last": "2022-10-26",
+  "addr": ""
+ },
+ {
+  "key": "puerto vallarta",
+  "name": "Puerto Vallarta",
+  "visits": 1,
+  "last": "2024-03-05",
+  "addr": ""
+ },
+ {
+  "key": "twin peaks",
+  "name": "Twin Peaks",
+  "visits": 1,
+  "last": "2025-04-08",
+  "addr": "Twin Peaks, 7325 W Taft St, Wichita, KS 67209, USA"
+ },
+ {
+  "key": "piatto neapolitan pizzeria",
+  "name": "Piatto Neapolitan Pizzeria",
+  "visits": 1,
+  "last": "2019-05-29",
+  "addr": "Piatto Neapolitan Pizzeria, 1706 E Douglas Ave, Wichita, KS 67214, USA"
+ },
+ {
+  "key": "miya izakaya",
+  "name": "MIYA IZAKAYA",
+  "visits": 1,
+  "last": "2023-04-26",
+  "addr": "MIYA IZAKAYA, 3030 N Penstemon St, Wichita, KS 67226, USA"
+ },
+ {
+  "key": "picadilly",
+  "name": "Picadilly Grill",
+  "visits": 1,
+  "last": "2013-07-17",
+  "addr": "Picadilly Grill, 7728 E Central Ave  Wichita, KS 67206"
+ },
+ {
+  "key": "old chicago",
+  "name": "Old Chicago",
+  "visits": 1,
+  "last": "2021-08-18",
+  "addr": "Old Chicago, 7626 E Kellogg Dr, Wichita, KS 67207, USA"
+ },
+ {
+  "key": "forge ict",
+  "name": "Forge ICT",
+  "visits": 1,
+  "last": "2023-07-14",
+  "addr": "Forge ICT, 917 E Douglas Ave, Wichita, KS 67202, USA"
+ },
+ {
+  "key": "chelseas carry out",
+  "name": "Chelsea's Carry Out",
+  "visits": 1,
+  "last": "2014-03-19",
+  "addr": "Chelsea's Carry Out, 601 S Greenwich Rd Suite 113,Wichita, KS, United States"
+ },
+ {
+  "key": "tianluo bistro",
+  "name": "Tianluo Bistro 11309 E. Kellogg",
+  "visits": 1,
+  "last": "2021-11-03",
+  "addr": "Tianluo Bistro 11309 E. Kellogg, Wichita, KS"
+ },
+ {
+  "key": "johnnys tavern wichita",
+  "name": "Johnny's Tavern Wichita",
+  "visits": 1,
+  "last": "2026-03-10",
+  "addr": "Johnny's Tavern Wichita, 1109 E Douglas Ave, Wichita, KS 67211, USA"
+ },
+ {
+  "key": "tommys apizza",
+  "name": "Tommy's Apizza",
+  "visits": 1,
+  "last": "2026-09-02",
+  "addr": "Tommy's Apizza, 2330 E Douglas Ave, Wichita, KS 67214, USA"
+ },
+ {
+  "key": "pumphouse",
+  "name": "Pumphouse",
+  "visits": 1,
+  "last": "2022-09-28",
+  "addr": "Pumphouse, 825 E 2nd St N, Wichita, KS 67202, USA"
+ },
+ {
+  "key": "experience lake view edition",
+  "name": "The Experience (Lake View Edition)",
+  "visits": 1,
+  "last": "2013-05-22",
+  "addr": ""
+ },
+ {
+  "key": "tallianos pizza",
+  "name": "Talliano's Pizza",
+  "visits": 1,
+  "last": "2012-02-01",
+  "addr": "Talliano's Pizza, 8404 West 13th St N # 100, Wichita, KS 67212"
+ },
+ {
+  "key": "taco tjs",
+  "name": "Taco TJ's",
+  "visits": 1,
+  "last": "2021-02-17",
+  "addr": ""
+ },
+ {
+  "key": "dinner polars",
+  "name": "Dinner @ Polar's",
+  "visits": 1,
+  "last": "2014-05-14",
+  "addr": ""
+ },
+ {
+  "key": "n j bakery",
+  "name": "N & J Cafe & Bakery",
+  "visits": 1,
+  "last": "2018-10-17",
+  "addr": "N & J Cafe & Bakery, 5600 E Lincoln St, Wichita, KS 67218, USA"
+ },
+ {
+  "key": "corrigans",
+  "name": "Corrigans 9100 East Corporate Hills Drive  Wichita",
+  "visits": 1,
+  "last": "2012-10-10",
+  "addr": "Corrigans 9100 East Corporate Hills Drive  Wichita, KS 67207"
+ },
+ {
+  "key": "nortons",
+  "name": "Norton's",
+  "visits": 1,
+  "last": "2022-03-30",
+  "addr": ""
+ },
+ {
+  "key": "point nine",
+  "name": "Point Nine",
+  "visits": 1,
+  "last": "2026-09-29",
+  "addr": "Point Nine, 1539 N Andover Rd, Andover, KS 67002, USA"
+ },
+ {
+  "key": "arcade",
+  "name": "The Arcade",
+  "visits": 1,
+  "last": "2023-11-29",
+  "addr": "The Arcade, 906 E 3rd St N, Wichita, KS 67202, USA"
+ },
+ {
+  "key": "bds mongolian",
+  "name": "BD's Mongolian Grill",
+  "visits": 1,
+  "last": "2020-09-23",
+  "addr": "BD's Mongolian Grill, 111 S Rock Rd, Wichita, KS  67207, United States"
+ },
+ {
+  "key": "boones pickins",
+  "name": "Boones Pickins",
+  "visits": 1,
+  "last": "2019-04-17",
+  "addr": "Boones Pickins, 213 W Central Ave, Andover, KS 67002, USA"
+ },
+ {
+  "key": "felipes mexican",
+  "name": "Felipe's Mexican Restaurant 119th St. W and Maple St.",
+  "visits": 1,
+  "last": "2012-03-07",
+  "addr": "Felipe's Mexican Restaurant 119th St. W and Maple St., 445 S.119th St W., Wichita, KS 67235"
+ },
+ {
+  "key": "el gordo mexican",
+  "name": "El Gordo Mexican",
+  "visits": 1,
+  "last": "2019-06-05",
+  "addr": "El Gordo Mexican, 11333 E Central Ave, Wichita, KS  67206, United States"
+ },
+ {
+  "key": "buffalo wings rings",
+  "name": "Buffalo Wings & Rings",
+  "visits": 1,
+  "last": "2019-09-25",
+  "addr": "Buffalo Wings & Rings, 2636 N Greenwich Rd, Wichita, KS 67226, USA"
+ },
+ {
+  "key": "taco pizza",
+  "name": "Taco Pizza: 602 North Tyler Road",
+  "visits": 1,
+  "last": "2012-04-11",
+  "addr": "Taco Pizza: 602 North Tyler Road, Wichita, KS 67212"
+ },
+ {
+  "key": "pizza jacobs byob",
+  "name": "Pizza @ Jacob's BYOB",
+  "visits": 1,
+  "last": "2017-03-01",
+  "addr": ""
+ },
+ {
+  "key": "dinner caseys",
+  "name": "Dinner @ Casey's Bar & Grill",
+  "visits": 1,
+  "last": "2014-08-27",
+  "addr": ""
+ },
+ {
+  "key": "deanos tapworks east",
+  "name": "Deano's Grill and Tapworks EAST",
+  "visits": 1,
+  "last": "2026-12-01",
+  "addr": "Deano's Grill and Tapworks EAST, 9747 E 21st St N Ste 101, Wichita, KS 67206, USA"
+ },
+ {
+  "key": "whiskey dicks",
+  "name": "Whiskey Dicks",
+  "visits": 1,
+  "last": "2017-11-22",
+  "addr": "Whiskey Dicks, 801 S Seneca St, Wichita, KS 67213, USA"
+ },
+ {
+  "key": "pho mc",
+  "name": "Pho MC 1675 S Rock Rd suite 109",
+  "visits": 1,
+  "last": "2018-06-20",
+  "addr": "Pho MC 1675 S Rock Rd suite 109, Wichita, KS 67207"
+ },
+ {
+  "key": "mortdecais tavern eatery",
+  "name": "Mortdecai's Tavern & Eatery",
+  "visits": 1,
+  "last": "2026-07-21",
+  "addr": "Mortdecai's Tavern & Eatery, 330 S Greenwich Rd, Wichita, KS 67207, USA"
+ },
+ {
+  "key": "bricktown brewery east",
+  "name": "Bricktown Brewery East",
+  "visits": 1,
+  "last": "2024-02-20",
+  "addr": ""
+ },
+ {
+  "key": "slim chickens",
+  "name": "Slim Chickens",
+  "visits": 1,
+  "last": "2019-04-03",
+  "addr": "Slim Chickens, 2313 N Greenwich Rd, Wichita, KS 67226, USA"
+ },
+ {
+  "key": "jose peppers mexican",
+  "name": "Jose Pepper's Mexican Restaurant",
+  "visits": 1,
+  "last": "2017-10-04",
+  "addr": "Jose Pepper's Mexican Restaurant, 11423 E 13th St N, Wichita, KS 67206, USA"
+ },
+ {
+  "key": "billy sims bbq andover",
+  "name": "billy Sims BBQ andover",
+  "visits": 1,
+  "last": "2015-02-18",
+  "addr": ""
+ },
+ {
+  "key": "wichita brewing east",
+  "name": "Wichita Brewing Company East",
+  "visits": 1,
+  "last": "2023-03-01",
+  "addr": ""
+ },
+ {
+  "key": "dinner fusa",
+  "name": "Dinner @ FUSA 303 S Greenwich Rd",
+  "visits": 1,
+  "last": "2014-01-30",
+  "addr": "Dinner @ FUSA 303 S Greenwich Rd, Wichita, KS 67207"
+ },
+ {
+  "key": "timbuktu",
+  "name": "timbuktu",
+  "visits": 1,
+  "last": "2013-03-13",
+  "addr": ""
+ },
+ {
+  "key": "dinner hill",
+  "name": "Dinner @ The Hill Bar and Grill 4800 E Douglas",
+  "visits": 1,
+  "last": "2015-09-23",
+  "addr": "Dinner @ The Hill Bar and Grill 4800 E Douglas"
+ },
+ {
+  "key": "crutch biscuit",
+  "name": "Crutch & Biscuit",
+  "visits": 1,
+  "last": "2022-07-27",
+  "addr": "Crutch & Biscuit, 550 N Rock Rd #105, Wichita, KS 67206, USA"
+ },
+ {
+  "key": "maurice",
+  "name": "Cafe Maurice",
+  "visits": 1,
+  "last": "2022-04-27",
+  "addr": "Cafe Maurice, 9747 E 21st St N #121, Wichita, KS 67206, USA"
+ },
+ {
+  "key": "ribcrib",
+  "name": "RibCrib",
+  "visits": 1,
+  "last": "2022-01-05",
+  "addr": "RibCrib, 1440 N Rock Rd, Derby, KS  67037, United States"
+ },
+ {
+  "key": "monarch delano",
+  "name": "The Monarch (Delano)",
+  "visits": 1,
+  "last": "2017-03-15",
+  "addr": ""
+ },
+ {
+  "key": "jacobs",
+  "name": "Jacob's",
+  "visits": 1,
+  "last": "2016-12-21",
+  "addr": ""
+ },
+ {
+  "key": "tuptim thai",
+  "name": "Tuptim Thai",
+  "visits": 1,
+  "last": "2023-08-23",
+  "addr": "Tuptim Thai, 2121 N Rock Rd #300, Wichita, KS 67206, USA"
+ },
+ {
+  "key": "taco bell",
+  "name": "Taco Bell",
+  "visits": 1,
+  "last": "2012-11-28",
+  "addr": "Taco Bell, 11877 E Kellogg, Wichita, KS 67207"
+ },
+ {
+  "key": "side pockets sports",
+  "name": "Side Pockets Restaurant & Sports Bar",
+  "visits": 1,
+  "last": "2023-12-26",
+  "addr": "Side Pockets Restaurant & Sports Bar, 614 S Tyler Rd, Wichita, KS 67209, USA"
+ },
+ {
+  "key": "tylers house experience tylers house",
+  "name": "Tyler's House > The Experience > Tyler's House",
+  "visits": 1,
+  "last": "2016-04-27",
+  "addr": ""
+ },
+ {
+  "key": "monterrey mexican",
+  "name": "Monterrey Mexican Restaurant",
+  "visits": 1,
+  "last": "2012-06-20",
+  "addr": "Monterrey Mexican Restaurant, 5905 West Kellogg Drive, Wichita, KS, 67209"
+ },
+ {
+  "key": "poplar biatches",
+  "name": "poplar, biatches",
+  "visits": 1,
+  "last": "2012-03-14",
+  "addr": ""
+ },
+ {
+  "key": "dinner",
+  "name": "Dinner @ 6 @ Pour Haus Restaurant & Tavern at 1021 W. Maple",
+  "visits": 1,
+  "last": "2012-06-06",
+  "addr": "Dinner @ 6 @ Pour Haus Restaurant & Tavern at 1021 W. Maple"
+ },
+ {
+  "key": "crutch bbq",
+  "name": "Crutch BBQ 550 N ROCK RD #105",
+  "visits": 1,
+  "last": "2021-01-13",
+  "addr": "Crutch BBQ 550 N ROCK RD #105, WICHITA, KS 67206"
+ },
+ {
+  "key": "fox hound",
+  "name": "Fox & Hound",
+  "visits": 1,
+  "last": "2013-06-12",
+  "addr": ""
+ },
+ {
+  "key": "jinya ramen downtown wichita",
+  "name": "JINYA Ramen Bar - Downtown Wichita",
+  "visits": 1,
+  "last": "2023-05-10",
+  "addr": "JINYA Ramen Bar - Downtown Wichita, 124 S Broadway, Wichita, KS 67202, USA"
+ },
+ {
+  "key": "hello dan",
+  "name": "Hello Dan?",
+  "visits": 1,
+  "last": "2021-09-08",
+  "addr": ""
+ },
+ {
+  "key": "headshots",
+  "name": "Headshots Bar & Grill",
+  "visits": 1,
+  "last": "2014-06-18",
+  "addr": "Headshots Bar & Grill, East 21st Street North, Wichita, KS, United States"
+ },
+ {
+  "key": "tight ends sports",
+  "name": "Tight Ends Sports Bar & Grill",
+  "visits": 1,
+  "last": "2020-03-04",
+  "addr": "Tight Ends Sports Bar & Grill, 524 S Seneca St, Wichita, KS 67213, USA"
+ },
+ {
+  "key": "dinner taco js",
+  "name": "Dinner @ Taco J's 6pm",
+  "visits": 1,
+  "last": "2012-07-25",
+  "addr": "Dinner @ Taco J's 6pm, 1050 W 47th Street South, Wichita, KS"
+ },
+ {
+  "key": "noodles",
+  "name": "Noodles & Company",
+  "visits": 1,
+  "last": "2016-05-25",
+  "addr": "Noodles & Company, 3300 N Rock Rd, Wichita, KS 67226, USA"
+ },
+ {
+  "key": "city bites",
+  "name": "City Bites",
+  "visits": 1,
+  "last": "2019-06-12",
+  "addr": "City Bites, 3570 North Woodlawn Boulevard # 500 # 500, Wichita, KS 67220, USA"
+ },
+ {
+  "key": "bob luigis pizza",
+  "name": "Bob & Luigi's Pizza",
+  "visits": 1,
+  "last": "2018-08-22",
+  "addr": "Bob & Luigi's Pizza, Pasta & More, 325 W Central Ave, Andover, KS 67002, USA"
+ },
+ {
+  "key": "gabbys peruvian",
+  "name": "Gabbys Peruvian Restaurant",
+  "visits": 1,
+  "last": "2022-11-02",
+  "addr": "Gabbys Peruvian Restaurant, 1002 S Seneca St, Wichita, KS 67213, USA"
+ },
+ {
+  "key": "fort collins",
+  "name": "Fort Collins",
+  "visits": 1,
+  "last": "2016-04-06",
+  "addr": ""
+ },
+ {
+  "key": "dinner hog wild 6 00pm",
+  "name": "Dinner @ Hog Wild (6:00pm)",
+  "visits": 1,
+  "last": "2012-01-11",
+  "addr": ""
+ },
+ {
+  "key": "blaze pizza",
+  "name": "Blaze Pizza",
+  "visits": 1,
+  "last": "2017-11-08",
+  "addr": "Blaze Pizza, 2692 N Greenwich Rd, Wichita, KS 67226, USA"
+ },
+ {
+  "key": "yokohama ramen izakaya",
+  "name": "Yokohama Ramen Izakaya",
+  "visits": 1,
+  "last": "2020-01-22",
+  "addr": "Yokohama Ramen Izakaya, 6434 E Central Ave, Wichita, KS 67206, USA"
+ },
+ {
+  "key": "clutch house",
+  "name": "Clutch House Bar & Grill",
+  "visits": 1,
+  "last": "2021-12-15",
+  "addr": "Clutch House Bar & Grill, 524 S Seneca St, Wichita, KS 67213, USA"
+ },
+ {
+  "key": "dinner po boys",
+  "name": "Dinner @ Po Boys 5619 E Lincoln St Wichita KS 67218",
+  "visits": 1,
+  "last": "2014-11-12",
+  "addr": "Dinner @ Po Boys 5619 E Lincoln St Wichita KS 67218"
+ },
+ {
+  "key": "bob luigis",
+  "name": "Bob & Luigi's",
+  "visits": 1,
+  "last": "2015-08-05",
+  "addr": "Bob & Luigi's, 325 West Central Avenue, Andover, KS 67002, United States"
+ },
+ {
+  "key": "road runner mexican food",
+  "name": "Road Runner Mexican Food",
+  "visits": 1,
+  "last": "2022-10-19",
+  "addr": "Road Runner Mexican Food, 123 S Baltimore Ave, Derby, KS 67037, USA"
+ },
+ {
+  "key": "ghengis",
+  "name": "Ghengis Grill",
+  "visits": 1,
+  "last": "2015-03-11",
+  "addr": "Ghengis Grill, Towne East Square, 111 S Rock Rd, Wichita, KS 67207"
+ },
+ {
+  "key": "mo joes",
+  "name": "Mo Joe's Grill & Bar",
+  "visits": 1,
+  "last": "2015-09-02",
+  "addr": "Mo Joe's Grill & Bar, 10919 E Harry St # 101, Wichita, KS 67207"
+ },
+ {
+  "key": "pour house",
+  "name": "Pour House",
+  "visits": 1,
+  "last": "2021-09-29",
+  "addr": ""
+ },
+ {
+  "key": "el rincon",
+  "name": "El Rincon 11309 E Kellogg Ave #200 Wichita",
+  "visits": 1,
+  "last": "2020-07-01",
+  "addr": "El Rincon 11309 E Kellogg Ave #200 Wichita, Ks"
+ },
+ {
+  "key": "harrys uptown",
+  "name": "Harry's Uptown Bar & Grill",
+  "visits": 1,
+  "last": "2026-11-03",
+  "addr": "Harry's Uptown Bar & Grill, 3023 E Douglas Ave, Wichita, KS 67203, USA"
+ },
+ {
+  "key": "kims noodle",
+  "name": "Kim's Noodle Bar & Grill",
+  "visits": 1,
+  "last": "2023-12-12",
+  "addr": ""
+ },
+ {
+  "key": "el rancho",
+  "name": "El Rancho",
+  "visits": 1,
+  "last": "2022-12-14",
+  "addr": "El Rancho, 2801 N Broadway St, Wichita, KS 67219, USA"
+ },
+ {
+  "key": "il ponte",
+  "name": "Il Ponte Cafe",
+  "visits": 1,
+  "last": "2011-12-07",
+  "addr": ""
+ },
+ {
+  "key": "la hacienda mexican",
+  "name": "La Hacienda Mexican Restaurant",
+  "visits": 1,
+  "last": "2021-10-27",
+  "addr": "La Hacienda Mexican Restaurant, 1138 N Nelson Dr, Derby, KS 67037, USA"
+ },
+ {
+  "key": "https www google com maps place la chona con huevos",
+  "name": "https://www.google.com/maps/place/La+Chona+con+Huevos",
+  "visits": 1,
+  "last": "2025-06-10",
+  "addr": "https://www.google.com/maps/place/La+Chona+con+Huevos,+3415+E+Harry+St,+Wichita,+KS+67218/data=!4m2!3m1!1s0x87bae505e992425d:0xe6e7cdd889295176?utm_source=mstt_1&entry=gps&coh=192189&g_ep=CAESBzI1LjIzLjQYACDXggMqfiw5NDIyMzI5OSw5NDIxNjQxMyw5NDIxMjQ5Niw5NDI3NDg4Miw5NDIwNzM5NCw5NDIwNzUwNiw5NDIwODUwNiw5NDIxNzUyMyw5NDIxODY1Myw5NDIyOTgzOSw5NDI3NTE2OCw0NzA4NDM5Myw5NDIxMzIwMCw5NDI1ODMyNUICVVM%3D&skid=aa2f75f1-8351-4d6e-bf71-e16a9b09517e"
+ },
+ {
+  "key": "sheets creek",
+  "name": "Sheet's Creek",
+  "visits": 1,
+  "last": "2025-04-15",
+  "addr": "Sheet's Creek, North Webb Road, Wichita, KS, USA"
+ },
+ {
+  "key": "bejing bistro",
+  "name": "Bejing Bistro",
+  "visits": 1,
+  "last": "2012-10-03",
+  "addr": ""
+ },
+ {
+  "key": "angelos",
+  "name": "Angelos",
+  "visits": 1,
+  "last": "2021-09-22",
+  "addr": ""
+ },
+ {
+  "key": "famous daves",
+  "name": "Famous Dave's @ 9719 East 21st Street North  Wichita",
+  "visits": 1,
+  "last": "2013-10-23",
+  "addr": "Famous Dave's @ 9719 East 21st Street North  Wichita, KS 67206"
+ },
+ {
+  "key": "cheddars east",
+  "name": "Cheddars East",
+  "visits": 1,
+  "last": "2023-04-05",
+  "addr": ""
+ },
+ {
+  "key": "w d munson primary school",
+  "name": "W D Munson Primary School",
+  "visits": 1,
+  "last": "2026-04-28",
+  "addr": "W D Munson Primary School, 1007 Westview Dr, Mulvane, KS 67110, USA"
+ },
+ {
+  "key": "cheddars",
+  "name": "Cheddar's",
+  "visits": 1,
+  "last": "2015-01-07",
+  "addr": ""
+ },
+ {
+  "key": "dinner public",
+  "name": "Dinner @ Public 129 N Rock Island Wichita",
+  "visits": 1,
+  "last": "2014-03-05",
+  "addr": "Dinner @ Public 129 N Rock Island Wichita, KS 67202"
+ },
+ {
+  "key": "molinos taqueria",
+  "name": "Molino's Taqueria",
+  "visits": 1,
+  "last": "2019-01-02",
+  "addr": "Molino's Taqueria, 2035 N Rock Rd Suite 114, Wichita, KS 67206, USA"
+ },
+ {
+  "key": "chick n max",
+  "name": "Chick N Max",
+  "visits": 1,
+  "last": "2020-02-05",
+  "addr": "Chick N Max, 2350 N Greenwich Rd, Unit 100, Wichita, KS  67226, United States"
+ },
+ {
+  "key": "promise thai cuisine",
+  "name": "Promise | Thai Cuisine",
+  "visits": 1,
+  "last": "2021-12-08",
+  "addr": "Promise | Thai Cuisine, 313 S Greenwich Rd, Wichita, KS 67207, USA"
+ },
+ {
+  "key": "dave busters",
+  "name": "Dave & Buster's",
+  "visits": 1,
+  "last": "2019-10-30",
+  "addr": "Dave & Buster's, 2644 N Greenwich Rd, Wichita, KS 67226, USA"
+ },
+ {
+  "key": "vickys mexican",
+  "name": "Vickys Mexican Restaurant 300 S Greenwich Rd  Wichita",
+  "visits": 1,
+  "last": "2020-02-26",
+  "addr": "Vickys Mexican Restaurant 300 S Greenwich Rd  Wichita, Kansas 67207"
+ },
+ {
+  "key": "college hill deli catering",
+  "name": "College Hill Deli & Catering",
+  "visits": 1,
+  "last": "2020-01-29",
+  "addr": "College Hill Deli & Catering, 3407 E Douglas Ave, Wichita, KS 67218, USA"
+ },
+ {
+  "key": "todds creole kitchen",
+  "name": "Todds Creole Kitchen",
+  "visits": 1,
+  "last": "2025-07-01",
+  "addr": "Todds Creole Kitchen, 8641 W 13th St N Suite 111, Wichita, KS 67212, USA"
+ },
+ {
+  "key": "pizza",
+  "name": "Pizza / 8020 E Morningside St Wichita",
+  "visits": 1,
+  "last": "2017-12-06",
+  "addr": "Pizza / 8020 E Morningside St Wichita, KS, United States"
+ },
+ {
+  "key": "artichoke sandwich",
+  "name": "The Artichoke Sandwich Bar",
+  "visits": 1,
+  "last": "2018-09-05",
+  "addr": "The Artichoke Sandwich Bar, 811 N Broadway St, Wichita, KS 67214, USA"
+ },
+ {
+  "key": "wichita brewing",
+  "name": "Wichita Brewing Co",
+  "visits": 1,
+  "last": "2019-10-02",
+  "addr": ""
+ },
+ {
+  "key": "applebees neighborhood",
+  "name": "Applebee's Neighborhood Grill\u200e 4760 South Broadway Street Wichita",
+  "visits": 1,
+  "last": "2012-04-25",
+  "addr": "Applebee's Neighborhood Grill\u200e 4760 South Broadway Street Wichita, KS 67216"
+ },
+ {
+  "key": "spauldings food drink",
+  "name": "Spaulding's Food & Drink",
+  "visits": 1,
+  "last": "2019-05-22",
+  "addr": "Spaulding's Food & Drink, 220 W 3rd St, Andover, KS 67002, USA"
+ },
+ {
+  "key": "dempseys biscuit",
+  "name": "Dempsey's Biscuit Co",
+  "visits": 1,
+  "last": "2021-05-12",
+  "addr": "Dempsey's Biscuit Co, 550 N Rock Rd, Unit 500, Wichita, KS  67206, United States"
+ },
+ {
+  "key": "las vegas",
+  "name": "Las Vegas",
+  "visits": 1,
+  "last": "2012-05-12",
+  "addr": ""
+ },
+ {
+  "key": "popeyes",
+  "name": "Popeyes",
+  "visits": 1,
+  "last": "2016-11-30",
+  "addr": "Popeyes, 3131 N Rock Rd, Wichita, KS 67226, USA"
+ },
+ {
+  "key": "po boy",
+  "name": "PO Boy",
+  "visits": 1,
+  "last": "2015-03-18",
+  "addr": "PO Boy, 5619 East Lincoln Street, Wichita, KS 67218, United States"
+ },
+ {
+  "key": "angelos italian",
+  "name": "Angelos Italian Restaurant",
+  "visits": 1,
+  "last": "2016-07-20",
+  "addr": "Angelos Italian Restaurant, 5231 E Central Ave, Wichita, KS  67208, United States"
+ },
+ {
+  "key": "obriens",
+  "name": "Obrien's",
+  "visits": 1,
+  "last": "2024-11-06",
+  "addr": ""
+ },
+ {
+  "key": "todd brians",
+  "name": "Todd Brian's",
+  "visits": 1,
+  "last": "2022-11-30",
+  "addr": ""
+ },
+ {
+  "key": "sharons place hawaiian",
+  "name": "Sharon's Place Hawaiian Restaurant",
+  "visits": 1,
+  "last": "2021-08-04",
+  "addr": "Sharon's Place Hawaiian Restaurant, 141 E Kay St Suite #400, Derby, KS 67037, USA"
+ },
+ {
+  "key": "lil deuce scoop",
+  "name": "Lil' Deuce Scoop",
+  "visits": 1,
+  "last": "2021-06-30",
+  "addr": "Lil' Deuce Scoop, 110 W Main St, Mulvane, KS 67110, USA"
+ },
+ {
+  "key": "chicken n pickle wichita",
+  "name": "Chicken N Pickle - Wichita",
+  "visits": 1,
+  "last": "2021-03-10",
+  "addr": "Chicken N Pickle - Wichita, 1240 N Greenwich Rd, Wichita, KS 67206, USA"
+ },
+ {
+  "key": "casino buffet",
+  "name": "Casino Buffet",
+  "visits": 1,
+  "last": "2013-01-31",
+  "addr": ""
+ },
+ {
+  "key": "qdoba",
+  "name": "Qdoba 430 N Rock Rd Wichita",
+  "visits": 1,
+  "last": "2015-06-03",
+  "addr": "Qdoba 430 N Rock Rd Wichita, KS 67206"
+ },
+ {
+  "key": "old spaghetti factory",
+  "name": "The Old Spaghetti Factory",
+  "visits": 1,
+  "last": "2019-07-31",
+  "addr": "The Old Spaghetti Factory, 1421 Waterfront, Wichita, KS 67206, USA"
+ },
+ {
+  "key": "viva tacos tequila wichita",
+  "name": "Viva Tacos & Tequila - Wichita",
+  "visits": 1,
+  "last": "2025-10-07",
+  "addr": "Viva Tacos & Tequila - Wichita, 9719 E 21st St N, Wichita, KS 67206, USA"
+ },
+ {
+  "key": "homemade pizza byob",
+  "name": "Homemade Pizza / BYOB @ 8020 E Morningside Wichita",
+  "visits": 1,
+  "last": "2019-03-27",
+  "addr": "Homemade Pizza / BYOB @ 8020 E Morningside Wichita"
+ },
+ {
+  "key": "five guys burgers fries",
+  "name": "Five Guys Burgers & Fries 2616 N Maize Rd # 100",
+  "visits": 1,
+  "last": "2011-12-21",
+  "addr": "Five Guys Burgers & Fries 2616 N Maize Rd # 100, Wichita, KS 67205-7313 (316) 722-5489 \u200e"
+ },
+ {
+  "key": "cracker barrel old country store",
+  "name": "Cracker Barrel Old Country Store",
+  "visits": 1,
+  "last": "2024-07-16",
+  "addr": "Cracker Barrel Old Country Store, 619 S Ridge Rd, Wichita, KS 67209, USA"
+ },
+ {
+  "key": "grimaldis pizzeria",
+  "name": "Grimaldi's Pizzeria",
+  "visits": 1,
+  "last": "2023-10-04",
+  "addr": "Grimaldi's Pizzeria, 1441 N Webb Rd, Wichita, KS 67206, USA"
+ },
+ {
+  "key": "astoria indian wichita",
+  "name": "Astoria Indian Grill - Wichita",
+  "visits": 1,
+  "last": "2024-09-25",
+  "addr": "Astoria Indian Grill - Wichita, 3242 N Rock Rd suite #118, Wichita, KS 67226, USA"
+ },
+ {
+  "key": "home cooking",
+  "name": "Home Cooking @ 8020 E. Morningside",
+  "visits": 1,
+  "last": "2013-06-05",
+  "addr": "Home Cooking @ 8020 E. Morningside, Wichita, KS"
+ },
+ {
+  "key": "artichoke sandwichbar east",
+  "name": "Artichoke Sandwichbar East",
+  "visits": 1,
+  "last": "2024-09-18",
+  "addr": "Artichoke Sandwichbar East, 2959 N Rock Rd, Wichita, KS 67226, USA"
+ },
+ {
+  "key": "flips",
+  "name": "Flips 2241 N Woodlawn Blvd",
+  "visits": 1,
+  "last": "2015-05-20",
+  "addr": ""
+ },
+ {
+  "key": "qdoba mexican eats",
+  "name": "QDOBA Mexican Eats",
+  "visits": 1,
+  "last": "2017-06-21",
+  "addr": "QDOBA Mexican Eats, 430 N Rock Rd, Wichita, KS 67206, USA"
+ },
+ {
+  "key": "legends mexican buffet",
+  "name": "Legends (Mexican Buffet)",
+  "visits": 1,
+  "last": "2015-11-10",
+  "addr": ""
+ },
+ {
+  "key": "el azteca mexican",
+  "name": "El Azteca Mexican Restaurant",
+  "visits": 1,
+  "last": "2024-05-21",
+  "addr": "El Azteca Mexican Restaurant, 111 N Main St, Haysville, KS 67060, USA"
+ },
+ {
+  "key": "nelsons kitchen",
+  "name": "The Nelson\u2019s Kitchen",
+  "visits": 1,
+  "last": "2025-03-19",
+  "addr": "The Nelson\u2019s Kitchen, 1712 E Morris St, Wichita, KS 67211, USA"
+ },
+ {
+  "key": "old chicago old town anchorman",
+  "name": "Old Chicago (Old Town) -  (Anchorman 2: The Legend Continues at 7:30PM, the evening of Wed, Dec",
+  "visits": 1,
+  "last": "2013-12-18",
+  "addr": ""
+ },
+ {
+  "key": "homemade pizza jacobs",
+  "name": "Homemade Pizza @ Jacob's",
+  "visits": 1,
+  "last": "2017-07-19",
+  "addr": ""
+ }
+]

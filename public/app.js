@@ -1,0 +1,1107 @@
+const state = {
+  tab: 'week',
+  bootstrap: null,
+  places: [],
+  history: [],
+  historyTotal: 0,
+  historyQuery: '',
+  historyHost: '',
+  historyPlaceId: null,
+  placesQuery: '',
+  placesSort: 'visits',
+  selectedPlaceId: null,
+  walkStep: 0,
+  ratingScore: 5,
+  mapInstances: [],
+};
+
+const POSITRON_STYLE = {
+  version: 8,
+  sources: {
+    osm: {
+      type: 'raster',
+      tiles: [
+        'https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}@2x.png',
+        'https://b.basemaps.cartocdn.com/light_all/{z}/{x}/{y}@2x.png',
+      ],
+      tileSize: 256,
+      attribution: '© OpenStreetMap · © CARTO',
+    },
+  },
+  layers: [{ id: 'osm', type: 'raster', source: 'osm' }],
+};
+
+function esc(s) {
+  return String(s ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function fmtDate(iso) {
+  if (!iso) return '';
+  const [y, m, d] = iso.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
+}
+
+function fmtShortDate(iso) {
+  if (!iso) return '';
+  const [y, m, d] = iso.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+}
+
+function monthLabel(iso) {
+  const [y, m, d] = iso.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return dt.toLocaleDateString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+}
+
+function avatarHtml(slug, name, size = '') {
+  const users = state.bootstrap?.users || [];
+  const u = users.find((x) => x.slug === slug);
+  const cls = u?.avatar_class || 'avn';
+  const init = u?.initials || (name || '?').slice(0, 1).toUpperCase();
+  return `<span class="av ${cls} ${size}">${esc(init)}</span>`;
+}
+
+function toast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.remove('hidden');
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => el.classList.add('hidden'), 3200);
+}
+
+async function api(path, options = {}) {
+  const resp = await fetch(path, {
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+    ...options,
+  });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    throw new Error(data.error || `Request failed (${resp.status})`);
+  }
+  return data;
+}
+
+function clearMaps() {
+  for (const m of state.mapInstances) {
+    try { m.remove(); } catch {}
+  }
+  state.mapInstances = [];
+}
+
+function urlBase64ToUint8Array(base64String) {
+  const pad = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const b64 = (base64String + pad).replace(/-/g, '+').replace(/_/g, '/');
+  const raw = atob(b64);
+  const out = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+  return out;
+}
+
+function isIosSafari() {
+  const ua = navigator.userAgent || '';
+  return /iPhone|iPad|iPod/i.test(ua);
+}
+
+function isStandalonePwa() {
+  return window.matchMedia('(display-mode: standalone)').matches || Boolean(navigator.standalone);
+}
+
+async function enableWebPush() {
+  const vapidKey = state.bootstrap?.vapidPublicKey;
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+    throw new Error('This browser does not support Web Push notifications.');
+  }
+  if (isIosSafari() && !isStandalonePwa()) {
+    throw new Error('On iPhone, add Man Night to your Home Screen first, then open it from the icon.');
+  }
+  if (!vapidKey) {
+    throw new Error('Push VAPID key is not configured yet.');
+  }
+  const perm = await Notification.requestPermission();
+  if (perm !== 'granted') {
+    throw new Error('Notification permission was denied.');
+  }
+  const reg = await navigator.serviceWorker.ready;
+  let sub = await reg.pushManager.getSubscription();
+  if (!sub) {
+    sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(vapidKey),
+    });
+  }
+  const json = sub.toJSON();
+  await api('/api/push/subscribe', {
+    method: 'POST',
+    body: JSON.stringify({ endpoint: json.endpoint, keys: json.keys }),
+  });
+  toast('Push notifications enabled!');
+  await refreshBootstrap();
+}
+
+async function refreshBootstrap() {
+  state.bootstrap = await api('/api/bootstrap');
+  const { user, stats } = state.bootstrap;
+  document.getElementById('hdr-count').textContent = stats?.total_dinners ?? 614;
+  document.getElementById('user-avatar').className = `av ${user.avatar_class}`;
+  document.getElementById('user-avatar').textContent = user.initials;
+  document.getElementById('user-name').textContent = user.name;
+  render();
+}
+
+async function loadPlacesIfNeeded() {
+  if (state.places.length === 0) {
+    const res = await api('/api/places');
+    state.places = res.places || [];
+  }
+}
+
+async function loadHistory(append = false) {
+  const offset = append ? state.history.length : 0;
+  const qs = new URLSearchParams({
+    limit: '60',
+    offset: String(offset),
+  });
+  if (state.historyQuery) qs.set('q', state.historyQuery);
+  if (state.historyHost) qs.set('host', state.historyHost);
+  if (state.historyPlaceId) qs.set('placeId', String(state.historyPlaceId));
+  const res = await api(`/api/history?${qs.toString()}`);
+  state.history = append ? [...state.history, ...(res.items || [])] : (res.items || []);
+  state.historyTotal = res.total || 0;
+  if (state.tab === 'history') render();
+}
+
+function setTab(tab) {
+  state.tab = tab;
+  document.querySelectorAll('[data-tab]').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.tab === tab);
+  });
+  if (tab === 'places') {
+    loadPlacesIfNeeded().then(render);
+  } else if (tab === 'history') {
+    loadHistory(false);
+  } else {
+    render();
+  }
+}
+
+function openModal(html) {
+  const backdrop = document.getElementById('modal-backdrop');
+  const panel = document.getElementById('modal-panel');
+  panel.innerHTML = html;
+  backdrop.classList.remove('hidden');
+}
+
+function closeModal() {
+  document.getElementById('modal-backdrop').classList.add('hidden');
+  document.getElementById('modal-panel').innerHTML = '';
+}
+
+function renderWeekView() {
+  const b = state.bootstrap;
+  const tw = b.thisWeek;
+  if (!tw) {
+    return `<div class="card"><h2>No active week scheduled</h2><p class="hero-sub">Check History or Crew rotation.</p></div>`;
+  }
+
+  const d = tw.dinner;
+  const me = b.user;
+  const isHost = d.host_slug === me.slug;
+  const tueCount = tw.nightVotes.filter((v) => v.choice === 'tuesday').length;
+  const wedCount = tw.nightVotes.filter((v) => v.choice === 'wednesday').length;
+  const totalNight = tueCount + wedCount;
+  const myNight = tw.nightVotes.find((v) => v.user_slug === me.slug)?.choice;
+  const myNoon = tw.noonVotes.find((v) => v.user_slug === me.slug)?.restaurant_id;
+  const myRsvp = tw.rsvps.find((v) => v.user_slug === me.slug)?.status;
+
+  let statusPill = `<span class="badge badge-red">Vote open</span>`;
+  if (d.status === 'awaiting_pick') statusPill = `<span class="badge badge-muted">Waiting on ${esc(d.host_label)}</span>`;
+  if (d.status === 'noon_vote') statusPill = `<span class="badge badge-red">Noon rule · Closes 4:00 PM</span>`;
+  if (d.status === 'place_locked') statusPill = `<span class="badge badge-ok">✓ Confirmed</span>`;
+
+  let bodyHtml = '';
+
+  if (d.status === 'night_poll') {
+    const tuePct = totalNight ? Math.round((tueCount / totalNight) * 100) : 0;
+    const wedPct = totalNight ? Math.round((wedCount / totalNight) * 100) : 0;
+    const tueVoters = tw.nightVotes.filter((v) => v.choice === 'tuesday').map((v) => avatarHtml(v.user_slug, v.user_slug, 'sm')).join('');
+    const wedVoters = tw.nightVotes.filter((v) => v.choice === 'wednesday').map((v) => avatarHtml(v.user_slug, v.user_slug, 'sm')).join('');
+
+    bodyHtml = `
+      <h1 class="hero-title">Tuesday or Wednesday?</h1>
+      <p class="hero-sub">Locks Monday at 12:00 PM · Tuesday wins ties · 6:30 PM</p>
+      <div class="host-strip">
+        ${avatarHtml(d.host_slug, d.host_label, 'lg')}
+        <div class="host-strip-text">
+          <strong>${esc(d.host_label)}’s turn to pick this week</strong>
+          <span class="muted">Or let the Noon Rule draw 4 places on dinner day</span>
+        </div>
+      </div>
+      <div class="vote-list">
+        <button class="vote-option ${myNight === 'tuesday' ? 'selected' : ''}" data-action="vote-night" data-choice="tuesday">
+          <div class="vote-fill" style="width:${tuePct}%"></div>
+          <div class="vote-inner">
+            <div>
+              <div class="vote-main">Tuesday · ${fmtShortDate(d.day_of_week === 'Tuesday' ? d.dinner_date : d.dinner_date)}</div>
+              <div class="vote-meta">Preferred default (76% of weeks since 2025)</div>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;">
+              ${tueVoters}
+              <span class="vote-count">${tueCount}</span>
+            </div>
+          </div>
+        </button>
+        <button class="vote-option ${myNight === 'wednesday' ? 'selected' : ''}" data-action="vote-night" data-choice="wednesday">
+          <div class="vote-fill" style="width:${wedPct}%"></div>
+          <div class="vote-inner">
+            <div>
+              <div class="vote-main">Wednesday</div>
+              <div class="vote-meta">Traditional Man Night backup</div>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;">
+              ${wedVoters}
+              <span class="vote-count">${wedCount}</span>
+            </div>
+          </div>
+        </button>
+      </div>
+      <div class="btn-row">
+        <button class="btn ${isHost ? 'btn-primary' : 'btn-outline'}" data-action="open-picker">${isHost ? 'Pick the place early' : `Pick for ${esc(d.host_label)}`}</button>
+        <button class="btn btn-secondary" data-action="open-pass-swap">Pass / Swap turn</button>
+      </div>
+    `;
+  } else if (d.status === 'awaiting_pick') {
+    bodyHtml = `
+      <h1 class="hero-title">Waiting on ${esc(d.host_label)}</h1>
+      <p class="hero-sub">${esc(d.day_of_week)} · ${fmtDate(d.dinner_date)} · 6:30 PM. If nothing is picked by 12:00 PM on ${esc(d.day_of_week)}, the app draws 4 random places (skipping last 8 weeks).</p>
+      <div class="host-strip">
+        ${avatarHtml(d.host_slug, d.host_label, 'lg')}
+        <div class="host-strip-text">
+          <strong>${esc(d.host_label)} is on the clock</strong>
+          <span>${tw.rsvps.filter((r) => r.status === 'in').length || '0'} crew RSVP’d in so far</span>
+        </div>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-primary" data-action="open-picker">${isHost ? 'Pick the restaurant' : `Choose place for ${esc(d.host_label)}`}</button>
+        <button class="btn btn-secondary" data-action="open-pass-swap">Pass / Swap turn</button>
+      </div>
+    `;
+  } else if (d.status === 'noon_vote') {
+    const totalNoon = tw.noonVotes.length;
+    const optsHtml = tw.noonCandidates
+      .map((p) => {
+        const voters = tw.noonVotes.filter((v) => v.restaurant_id === p.id);
+        const pct = totalNoon ? Math.round((voters.length / totalNoon) * 100) : 0;
+        const sel = myNoon === p.id;
+        return `
+          <button class="vote-option ${sel ? 'selected' : ''}" data-action="vote-noon" data-place-id="${p.id}">
+            <div class="vote-fill" style="width:${pct}%"></div>
+            <div class="vote-inner">
+              <div>
+                <div class="vote-main">${esc(p.name)}</div>
+                <div class="vote-meta">${p.visit_count} past visits · ${p.last_visited ? `Last ${fmtShortDate(p.last_visited)}` : 'In the books'}${p.address ? ` · ${esc(p.address)}` : ''}</div>
+              </div>
+              <div style="display:flex;align-items:center;gap:8px;">
+                ${voters.map((v) => avatarHtml(v.user_slug, v.user_slug, 'sm')).join('')}
+                <span class="vote-count">${voters.length}</span>
+              </div>
+            </div>
+          </button>
+        `;
+      })
+      .join('');
+
+    bodyHtml = `
+      <h1 class="hero-title">${esc(d.host_label)} didn’t pick. Vote for one.</h1>
+      <p class="hero-sub">4 random spots from history (none visited in last 8 weeks). Closes 4:00 PM; ties break at random.</p>
+      <div class="vote-list">${optsHtml}</div>
+    `;
+  } else if (d.status === 'place_locked' && tw.place) {
+    const p = tw.place;
+    bodyHtml = `
+      <h1 class="hero-title">${esc(p.name)}</h1>
+      <p class="hero-sub">${esc(d.day_of_week)} · ${fmtDate(d.dinner_date)} · 6:30 PM · Picked via ${d.chosen_via === 'noon_draw' ? 'Noon draw' : esc(d.host_label)}${p.visit_count ? ` · ${p.visit_count} prior visits` : ''}</p>
+      <div style="font-size:13px;color:var(--muted);">${esc(p.address || p.city)}</div>
+      <div id="tonight-map" class="minimap"></div>
+      <div class="btn-row">
+        <a class="btn btn-primary" href="${esc(tw.directions_url)}" target="_blank" rel="noopener">Directions in Google Maps</a>
+        <button class="btn btn-outline" data-action="open-picker">Change place</button>
+      </div>
+    `;
+  }
+
+  // RSVP block
+  const rsvpChips = tw.rsvps
+    .map((r) => {
+      const cls = r.status === 'in' ? 'ok' : r.status === 'late' ? 'late' : 'out';
+      const label = r.status === 'in' ? 'In' : r.status === 'late' ? `Late ${r.eta_minutes || 15}m` : 'Out';
+      return `<span class="chip ${cls}">${avatarHtml(r.user_slug, r.user_slug, 'sm')} ${esc(r.user_slug)} · ${label}</span>`;
+    })
+    .join('');
+
+  const rsvpCard = `
+    <div class="card">
+      <div class="card-kicker"><span>Attendance</span><span class="tabular">${fmtShortDate(d.dinner_date)}</span></div>
+      <div class="btn-row">
+        <button class="btn btn-sm ${myRsvp === 'in' ? 'btn-primary' : 'btn-outline'}" data-action="rsvp" data-status="in">I’m in</button>
+        <button class="btn btn-sm ${myRsvp === 'late' ? 'btn-primary' : 'btn-outline'}" data-action="rsvp" data-status="late">Running 15m late</button>
+        <button class="btn btn-sm ${myRsvp === 'out' ? 'btn-primary' : 'btn-outline'}" data-action="rsvp" data-status="out">Can’t make it</button>
+      </div>
+      ${rsvpChips ? `<div class="rsvp-grid">${rsvpChips}</div>` : `<p class="hero-sub" style="margin:10px 0 0;font-size:13px;">No RSVPs yet for ${fmtShortDate(d.dinner_date)}.</p>`}
+    </div>
+  `;
+
+  // Last completed dinner rating prompt + Up Next
+  const lastCompleted = b.recentDinners?.[0];
+  const rateCard = lastCompleted
+    ? `
+      <div class="card">
+        <div class="card-kicker"><span>Last dinner</span><span>${fmtShortDate(lastCompleted.dinner_date)}</span></div>
+        <div style="font-weight:700;font-size:16px;margin-bottom:4px;">${esc(lastCompleted.restaurant_name || lastCompleted.raw_summary || 'Man Night')}</div>
+        <div style="font-size:13px;color:var(--muted);margin-bottom:12px;">Hosted by ${esc(lastCompleted.host_label)}${lastCompleted.restaurant_address ? ` · ${esc(lastCompleted.restaurant_address)}` : ''}</div>
+        <div class="star-row" style="margin-bottom:10px;">
+          ${[1, 2, 3, 4, 5].map((n) => `<button class="star-btn ${state.ratingScore >= n ? 'on' : ''}" data-action="set-star" data-score="${n}">★</button>`).join('')}
+        </div>
+        <div style="display:flex;gap:8px;">
+          <input id="rate-dish-input" class="input" style="flex:1;min-height:36px;" placeholder="Standout dish or note (optional)" />
+          <button class="btn btn-sm btn-primary" data-action="submit-rate" data-dinner-id="${lastCompleted.id}">Save rating</button>
+        </div>
+      </div>
+    `
+    : '';
+
+  const upcomingRows = (b.upcoming || [])
+    .slice(0, 4)
+    .map(
+      (u) => `
+      <div class="row-item">
+        <div style="display:flex;align-items:center;gap:10px;">
+          ${avatarHtml(u.host_slug, u.host_label)}
+          <div>
+            <div style="font-weight:650;font-size:14px;">${esc(u.host_label)}</div>
+            <div style="font-size:12px;color:var(--muted);">${esc(u.day_of_week)} · ${fmtShortDate(u.dinner_date)}</div>
+          </div>
+        </div>
+        <div style="font-size:13px;color:${u.restaurant_name ? 'var(--ink)' : 'var(--muted)'};font-weight:${u.restaurant_name ? 600 : 400};text-align:right;">
+          ${esc(u.restaurant_name || 'Unpicked')}
+        </div>
+      </div>
+    `,
+    )
+    .join('');
+
+  return `
+    <div class="week-grid">
+      <div class="stack">
+        <section class="card">
+          <div class="card-kicker">
+            <span>This week · ${esc(d.day_of_week)} ${fmtShortDate(d.dinner_date)}</span>
+            ${statusPill}
+          </div>
+          ${bodyHtml}
+        </section>
+        ${rsvpCard}
+      </div>
+      <aside class="stack">
+        <section class="card">
+          <div class="card-kicker">
+            <span>Up next in rotation</span>
+            <button class="link-btn" data-action="goto-tab" data-target="crew">Rotation →</button>
+          </div>
+          <div class="list-clean">${upcomingRows}</div>
+        </section>
+        ${rateCard}
+      </aside>
+    </div>
+  `;
+}
+
+function renderHistoryView() {
+  const b = state.bootstrap;
+  const hosts = ['', 'chuck', 'jacob', 'eric', 'tyler', 'heath', 'don', 'dan'];
+  const hostPills = hosts
+    .map((h) => {
+      const label = h ? h.charAt(0).toUpperCase() + h.slice(1) : 'All';
+      return `<button class="filter-pill ${state.historyHost === h ? 'active' : ''}" data-action="filter-host" data-host="${h}">${label}</button>`;
+    })
+    .join('');
+
+  const grouped = new Map();
+  for (const item of state.history) {
+    const ml = monthLabel(item.dinner_date);
+    if (!grouped.has(ml)) grouped.set(ml, []);
+    grouped.get(ml).push(item);
+  }
+
+  let listHtml = '';
+  for (const [month, items] of grouped.entries()) {
+    listHtml += `<div class="month-heading">${esc(month)}</div><div class="card" style="padding:0 16px;">`;
+    for (const d of items) {
+      const placeCell = d.restaurant_id
+        ? `<button class="link-btn" style="color:var(--ink);font-size:14px;text-align:left;" data-action="focus-place" data-place-id="${d.restaurant_id}">${esc(d.restaurant_name)}</button>
+           ${d.restaurant_visits ? `<span style="font-size:12px;color:var(--muted);margin-left:6px;">(${d.restaurant_visits}×)</span>` : ''}`
+        : `<button class="link-btn" data-action="open-backfill" data-dinner-id="${d.id}" data-date="${esc(d.dinner_date)}">+ Add the place</button>`;
+      listHtml += `
+        <div class="history-row">
+          <div class="tabular" style="font-size:13px;color:var(--muted);">${fmtDate(d.dinner_date)}</div>
+          <div class="h-day" style="font-size:13px;color:var(--muted);">${esc(d.day_of_week.slice(0, 3))}</div>
+          <div>${placeCell}</div>
+          <div style="display:flex;align-items:center;gap:6px;">
+            ${avatarHtml(d.host_slug, d.host_label, 'sm')}
+            <span style="font-size:13px;font-weight:600;">${esc(d.host_label)}</span>
+          </div>
+        </div>
+      `;
+    }
+    listHtml += `</div>`;
+  }
+
+  if (!listHtml) {
+    listHtml = `<div class="card muted-bg">No dinners matched your filter.</div>`;
+  }
+
+  const remaining = state.historyTotal - state.history.length;
+
+  return `
+    <div style="display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:14px;">
+      <div>
+        <h1 class="hero-title" style="margin-bottom:2px;">History</h1>
+        <p class="hero-sub" style="margin:0;">${state.historyTotal} dinners on the books · click any missing night to add the place</p>
+      </div>
+      ${state.historyPlaceId ? `<button class="btn btn-sm btn-outline" data-action="clear-place-filter">Clear place filter ✕</button>` : ''}
+    </div>
+    <div class="toolbar">
+      <input id="history-search" class="input" style="min-width:240px;flex:1;" placeholder="Search place, host, address…" value="${esc(state.historyQuery)}" />
+      <div class="filter-pills">${hostPills}</div>
+    </div>
+    ${listHtml}
+    ${remaining > 0 ? `<div style="text-align:center;margin-top:18px;"><button class="btn btn-secondary" data-action="load-more-history">Show more (${remaining} left)</button></div>` : ''}
+  `;
+}
+
+function renderPlacesView() {
+  const q = state.placesQuery.trim().toLowerCase();
+  let list = [...state.places];
+  if (q) {
+    list = list.filter((p) => p.name.toLowerCase().includes(q) || p.address.toLowerCase().includes(q));
+  }
+  if (state.placesSort === 'recent') {
+    list.sort((a, b) => (b.last_visited || '').localeCompare(a.last_visited || ''));
+  } else if (state.placesSort === 'alpha') {
+    list.sort((a, b) => a.name.localeCompare(b.name));
+  } else {
+    list.sort((a, b) => (b.visit_count - a.visit_count) || a.name.localeCompare(b.name));
+  }
+
+  const selected = list.find((p) => p.id === state.selectedPlaceId) || list[0] || null;
+  if (selected && !state.selectedPlaceId) state.selectedPlaceId = selected.id;
+
+  const listHtml = list
+    .map(
+      (p) => `
+      <button class="place-card-row ${selected?.id === p.id ? 'selected' : ''}" data-action="select-place" data-place-id="${p.id}">
+        <div style="min-width:0;">
+          <div class="place-name">${esc(p.name)}</div>
+          <div class="place-addr">${esc(p.address || p.city)}${p.last_visited ? ` · Last ${fmtShortDate(p.last_visited)}` : ''}</div>
+        </div>
+        <span class="badge badge-muted tabular">${p.visit_count}×</span>
+      </button>
+    `,
+    )
+    .join('');
+
+  return `
+    <div style="display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:14px;">
+      <div>
+        <h1 class="hero-title" style="margin-bottom:2px;">Places</h1>
+        <p class="hero-sub" style="margin:0;">${state.places.length} spots across Wichita &amp; Derby · dot size reflects visit count</p>
+      </div>
+      <button class="btn btn-sm btn-primary" data-action="open-new-place">+ Add new place</button>
+    </div>
+    <div class="toolbar">
+      <input id="places-search" class="input" style="min-width:220px;flex:1;" placeholder="Filter restaurants…" value="${esc(state.placesQuery)}" />
+      <select id="places-sort" class="select">
+        <option value="visits" ${state.placesSort === 'visits' ? 'selected' : ''}>Most visited</option>
+        <option value="recent" ${state.placesSort === 'recent' ? 'selected' : ''}>Most recent</option>
+        <option value="alpha" ${state.placesSort === 'alpha' ? 'selected' : ''}>A – Z</option>
+      </select>
+    </div>
+    <div class="places-layout">
+      <div class="places-list-wrap">${listHtml || '<div class="card muted-bg">No matching places.</div>'}</div>
+      <div id="places-map" class="places-map-wrap"></div>
+    </div>
+  `;
+}
+
+function renderCrewView() {
+  const b = state.bootstrap;
+  const me = b.user;
+  const maxHost = Math.max(...(b.hostStats || []).map((h) => h.hosted_count), 1);
+
+  const rotHtml = (b.users || [])
+    .filter((u) => u.is_rotation)
+    .map(
+      (u, i) => `
+      <div class="row-item">
+        <div style="display:flex;align-items:center;gap:10px;">
+          <span class="tabular" style="width:18px;font-weight:700;color:var(--muted);">${i + 1}</span>
+          ${avatarHtml(u.slug, u.name)}
+          <span style="font-weight:650;">${esc(u.name)}</span>
+          ${b.thisWeek?.dinner?.host_slug === u.slug ? '<span class="badge badge-red">This week</span>' : ''}
+        </div>
+        <span style="font-size:12px;color:var(--muted);">Active queue</span>
+      </div>
+    `,
+    )
+    .join('');
+
+  const leaderHtml = (b.hostStats || [])
+    .map((h) => {
+      const pct = Math.round((h.hosted_count / maxHost) * 100);
+      return `
+        <div style="display:flex;align-items:center;gap:10px;padding:7px 0;">
+          ${avatarHtml(h.host_slug, h.host_label, 'sm')}
+          <span style="width:68px;font-weight:600;font-size:13px;">${esc(h.host_label)}</span>
+          <div class="stat-bar-track"><div class="stat-bar-fill" style="width:${pct}%"></div></div>
+          <span class="tabular" style="width:36px;text-align:right;font-weight:700;font-size:13px;">${h.hosted_count}</span>
+        </div>
+      `;
+    })
+    .join('');
+
+  const tueRate = b.stats?.recent_weeks
+    ? Math.round((b.stats.recent_tuesdays / b.stats.recent_weeks) * 100)
+    : 76;
+
+  return `
+    <div class="week-grid">
+      <div class="stack">
+        <section class="card">
+          <div class="card-kicker"><span>Rotation order</span><button class="link-btn" data-action="open-pass-swap">Pass / Swap →</button></div>
+          <div class="list-clean">${rotHtml}</div>
+        </section>
+        <section class="card">
+          <div class="card-kicker"><span>Hosted all-time</span><span>Since 2011 records</span></div>
+          ${leaderHtml}
+          <div style="font-size:12px;color:var(--muted);margin-top:10px;">Tuesday nights since 2025: <strong class="tabular">${tueRate}%</strong></div>
+        </section>
+      </div>
+      <div class="stack">
+        <section class="card">
+          <div class="card-kicker"><span>Notifications &amp; Phone App</span><span class="badge ${me.push_enabled ? 'badge-ok' : 'badge-muted'}">${me.push_enabled ? 'Push active' : 'Not enabled'}</span></div>
+          <p class="hero-sub" style="margin-bottom:12px;font-size:13px;">Signed in as <strong>${esc(me.email)}</strong>. Reminders open Google Maps directions when tapped.</p>
+          <div class="btn-row" style="margin-bottom:14px;">
+            <button class="btn btn-primary btn-sm" data-action="enable-push">${me.push_enabled ? 'Re-sync push' : 'Enable push notifications'}</button>
+            <button class="btn btn-outline btn-sm" data-action="test-push">Send test alert</button>
+          </div>
+          <label style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-top:1px solid var(--line);font-size:14px;">
+            <span>Sunday night vote open</span>
+            <input type="checkbox" data-pref="notify_night_vote" ${me.notify_night_vote ? 'checked' : ''} />
+          </label>
+          <label style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-top:1px solid var(--line);font-size:14px;">
+            <span>Place locked / Noon rule alert</span>
+            <input type="checkbox" data-pref="notify_place" ${me.notify_place ? 'checked' : ''} />
+          </label>
+          <label style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-top:1px solid var(--line);font-size:14px;">
+            <span>30-min dinner reminder</span>
+            <input type="checkbox" data-pref="notify_reminder" ${me.notify_reminder ? 'checked' : ''} />
+          </label>
+        </section>
+        <section class="card muted-bg">
+          <div class="card-kicker"><span>Help &amp; Feedback</span></div>
+          <p class="hero-sub" style="margin-bottom:12px;font-size:13px;">Found a broken bug, wrong address, or missing restaurant? Report it here—opens a GitHub issue for OpenBot to fix automatically.</p>
+          <div class="btn-row">
+            <button class="btn btn-outline btn-sm" data-action="open-walkthrough">How it works</button>
+            <button class="btn btn-primary btn-sm" data-action="open-report">Report an issue</button>
+          </div>
+        </section>
+      </div>
+    </div>
+  `;
+}
+
+function initTonightMap() {
+  const el = document.getElementById('tonight-map');
+  const place = state.bootstrap?.thisWeek?.place;
+  if (!el || !place || typeof maplibregl === 'undefined') return;
+
+  const lat = place.lat ?? 37.6872;
+  const lng = place.lng ?? -97.3301;
+  const map = new maplibregl.Map({
+    container: el,
+    style: POSITRON_STYLE,
+    center: [lng, lat],
+    zoom: place.lat ? 14 : 11,
+    attributionControl: false,
+  });
+  if (place.lat && place.lng) {
+    const pin = document.createElement('div');
+    pin.className = 'place-pin';
+    pin.style.width = '18px';
+    pin.style.height = '18px';
+    new maplibregl.Marker({ element: pin }).setLngLat([lng, lat]).addTo(map);
+  }
+  state.mapInstances.push(map);
+}
+
+function initPlacesMap() {
+  const el = document.getElementById('places-map');
+  if (!el || typeof maplibregl === 'undefined') return;
+
+  const geocoded = state.places.filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng));
+  const selected = state.places.find((p) => p.id === state.selectedPlaceId && Number.isFinite(p.lat));
+  const center = selected ? [selected.lng, selected.lat] : [-97.295, 37.687];
+  const map = new maplibregl.Map({
+    container: el,
+    style: POSITRON_STYLE,
+    center,
+    zoom: selected ? 13 : 11,
+  });
+
+  for (const p of geocoded) {
+    const sz = Math.min(24, Math.max(10, 9 + Math.round(Math.sqrt(p.visit_count) * 2.5)));
+    const pin = document.createElement('div');
+    pin.className = 'place-pin';
+    pin.style.width = `${sz}px`;
+    pin.style.height = `${sz}px`;
+    if (p.id === state.selectedPlaceId) {
+      pin.style.transform = 'scale(1.25)';
+      pin.style.zIndex = '5';
+    }
+    const gmaps = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(p.address || p.name)}`;
+    const popupHtml = `
+      <div style="font-family:var(--sys);font-size:13px;max-width:220px;">
+        <strong style="display:block;margin-bottom:3px;">${esc(p.name)}</strong>
+        <div style="color:#71717a;font-size:12px;margin-bottom:6px;">${p.visit_count} visits · ${esc(p.address || p.city)}</div>
+        <a href="${esc(gmaps)}" target="_blank" rel="noopener" style="color:#e5484d;font-weight:600;">Directions ↗</a>
+      </div>
+    `;
+    const marker = new maplibregl.Marker({ element: pin })
+      .setLngLat([p.lng, p.lat])
+      .setPopup(new maplibregl.Popup({ offset: 12 }).setHTML(popupHtml))
+      .addTo(map);
+    if (p.id === state.selectedPlaceId) {
+      marker.togglePopup();
+    }
+  }
+  state.mapInstances.push(map);
+}
+
+function render() {
+  clearMaps();
+  const main = document.getElementById('main-content');
+  if (!state.bootstrap) return;
+  if (state.tab === 'week') {
+    main.innerHTML = renderWeekView();
+    requestAnimationFrame(initTonightMap);
+  } else if (state.tab === 'history') {
+    main.innerHTML = renderHistoryView();
+  } else if (state.tab === 'places') {
+    main.innerHTML = renderPlacesView();
+    requestAnimationFrame(initPlacesMap);
+  } else if (state.tab === 'crew') {
+    main.innerHTML = renderCrewView();
+  }
+}
+
+function showWalkthrough(step = 0) {
+  state.walkStep = step;
+  const b = state.bootstrap;
+  const steps = [
+    {
+      title: 'Welcome to Man Night',
+      body: `<p class="hero-sub">Established 2007. We now have <strong>${b.stats?.total_dinners ?? 614} dinners</strong> and <strong>${b.stats?.total_places ?? 226} Wichita &amp; Derby restaurants</strong> on the books—no more scrolling old calendar threads.</p>`,
+    },
+    {
+      title: 'How a week works',
+      body: `<div style="font-size:14px;line-height:1.6;color:var(--muted);margin-bottom:16px;">
+        <div><strong style="color:var(--ink);">Sun 10:00 AM</strong> · Night vote opens (Tue vs Wed; Tuesday wins ties at Mon noon).</div>
+        <div><strong style="color:var(--ink);">By Noon on dinner day</strong> · This week’s host locks a place.</div>
+        <div><strong style="color:var(--ink);">Noon Rule</strong> · Unpicked at 12:00 PM? The app draws <strong>4 random places</strong> (skipping the last 8 weeks) until 4:00 PM.</div>
+        <div><strong style="color:var(--ink);">30 min before dinner</strong> · Tap your reminder alert to launch Google Maps directions.</div>
+      </div>`,
+    },
+    {
+      title: 'The rotation',
+      body: `<p class="hero-sub">Turns rotate through <strong>Chuck → Jacob → Eric → Tyler → Heath</strong>. Busy this week? Pass or swap your week anytime in <strong>Crew</strong> without messing up the order.</p>`,
+    },
+    {
+      title: 'Turn on phone alerts',
+      body: `
+        <p class="hero-sub" style="margin-bottom:10px;">Get pinged when voting opens, when a spot locks in, and 30 minutes before dinner.</p>
+        ${
+          isIosSafari() && !isStandalonePwa()
+            ? `<div class="ios-a2hs-box">
+                <strong>On iPhone Safari:</strong><br/>
+                1. Tap the <strong>Share</strong> button (box with up arrow) at the bottom of Safari.<br/>
+                2. Tap <strong>Add to Home Screen</strong>.<br/>
+                3. Open <strong>Man Night</strong> from your Home Screen icon, then tap Enable Push.
+               </div>`
+            : `<button class="btn btn-primary" style="width:100%;margin-bottom:10px;" data-action="walk-enable-push">Enable notifications</button>`
+        }
+      `,
+    },
+  ];
+  const cur = steps[step];
+  const dots = steps.map((_, i) => `<span class="walk-dot ${i === step ? 'on' : ''}"></span>`).join('');
+  openModal(`
+    <div class="walk-dots">${dots}</div>
+    <h2 class="hero-title" style="font-size:22px;">${esc(cur.title)}</h2>
+    ${cur.body}
+    <div class="btn-row" style="justify-content:space-between;margin-top:16px;">
+      <button class="btn btn-secondary btn-sm" data-action="walk-close">Skip</button>
+      <div class="btn-row">
+        ${step > 0 ? `<button class="btn btn-outline btn-sm" data-action="walk-prev">Back</button>` : ''}
+        ${step < steps.length - 1
+          ? `<button class="btn btn-primary btn-sm" data-action="walk-next">Next</button>`
+          : `<button class="btn btn-primary btn-sm" data-action="walk-close">Done</button>`}
+      </div>
+    </div>
+  `);
+}
+
+async function openPlacePickerModal(mode, dinnerId = null, dinnerDate = null) {
+  await loadPlacesIfNeeded();
+  const title = mode === 'backfill' ? `Add place for ${fmtDate(dinnerDate)}` : 'Pick this week’s restaurant';
+  openModal(`
+    <h2 class="hero-title" style="font-size:20px;margin-bottom:12px;">${esc(title)}</h2>
+    <input id="picker-q" class="input" style="width:100%;margin-bottom:10px;" placeholder="Search ${state.places.length} spots…" />
+    <div id="picker-results" style="max-height:300px;overflow-y:auto;display:flex;flex-direction:column;gap:6px;margin-bottom:14px;"></div>
+    <div style="border-top:1px solid var(--line);padding-top:12px;">
+      <div style="font-size:12px;font-weight:700;color:var(--muted);margin-bottom:6px;">Not in the list yet?</div>
+      <div style="display:flex;gap:8px;">
+        <input id="picker-new-name" class="input" style="flex:1;min-height:36px;" placeholder="New restaurant name" />
+        <button class="btn btn-sm btn-primary" data-action="picker-create-and-use" data-mode="${mode}" data-dinner-id="${dinnerId || ''}">Add &amp; pick</button>
+      </div>
+    </div>
+    <div style="margin-top:12px;text-align:right;">
+      <button class="btn btn-secondary btn-sm" data-action="close-modal">Cancel</button>
+    </div>
+  `);
+  renderPickerOptions(mode, dinnerId, '');
+}
+
+function renderPickerOptions(mode, dinnerId, q) {
+  const container = document.getElementById('picker-results');
+  if (!container) return;
+  const term = q.trim().toLowerCase();
+  const filtered = (term
+    ? state.places.filter((p) => p.name.toLowerCase().includes(term) || p.address.toLowerCase().includes(term))
+    : state.places
+  ).slice(0, 40);
+
+  container.innerHTML = filtered
+    .map(
+      (p) => `
+      <button class="place-card-row" data-action="confirm-place-choice" data-mode="${mode}" data-dinner-id="${dinnerId || ''}" data-place-id="${p.id}">
+        <div>
+          <div class="place-name">${esc(p.name)}</div>
+          <div class="place-addr">${esc(p.address || p.city)}</div>
+        </div>
+        <span class="badge badge-muted tabular">${p.visit_count}×</span>
+      </button>
+    `,
+    )
+    .join('');
+}
+
+function openReportIssueModal() {
+  const ctx = `Tab: ${state.tab}; Week: ${state.bootstrap?.thisWeek?.dinner?.week_key || 'none'} (${state.bootstrap?.thisWeek?.dinner?.status || 'none'})`;
+  openModal(`
+    <h2 class="hero-title" style="font-size:20px;margin-bottom:6px;">Report an issue</h2>
+    <p class="hero-sub" style="margin-bottom:14px;">Opens a GitHub issue on <code>tylermiranda/man-night</code> and queues OpenBot to fix &amp; redeploy automatically.</p>
+    <div class="stack" style="gap:10px;">
+      <input id="issue-title" class="input" placeholder="Short summary (e.g. Wrong address for Poplar)" />
+      <select id="issue-category" class="select">
+        <option value="bug">App bug or layout glitch</option>
+        <option value="data">Wrong venue / history data</option>
+        <option value="feature">Feature suggestion</option>
+        <option value="access">Notifications / Calendar issue</option>
+      </select>
+      <textarea id="issue-desc" class="textarea" placeholder="What happened or what should change?"></textarea>
+      <div style="font-size:12px;color:var(--muted);">Context attached: <code>${esc(ctx)}</code></div>
+      <div id="issue-feedback"></div>
+      <div class="btn-row" style="justify-content:flex-end;">
+        <button class="btn btn-secondary btn-sm" data-action="close-modal">Close</button>
+        <button id="issue-submit-btn" class="btn btn-primary btn-sm" data-action="submit-issue" data-ctx="${esc(ctx)}">Submit issue</button>
+      </div>
+    </div>
+  `);
+}
+
+function openPassSwapModal() {
+  const d = state.bootstrap?.thisWeek?.dinner;
+  const crew = (state.bootstrap?.users || []).filter((u) => u.is_rotation && u.slug !== d?.host_slug);
+  openModal(`
+    <h2 class="hero-title" style="font-size:20px;margin-bottom:6px;">Pass or swap turn</h2>
+    <p class="hero-sub" style="margin-bottom:14px;">Current host for ${fmtShortDate(d?.dinner_date)} is <strong>${esc(d?.host_label)}</strong>.</p>
+    <div class="stack" style="gap:10px;">
+      <button class="btn btn-outline" data-action="exec-rotation" data-rot="pass">Pass to next person in order</button>
+      <div style="font-size:12px;font-weight:700;color:var(--muted);margin-top:6px;">Or swap turns with:</div>
+      <div class="btn-row">
+        ${crew.map((u) => `<button class="btn btn-sm btn-secondary" data-action="exec-rotation" data-rot="swap" data-target="${esc(u.slug)}">Swap w/ ${esc(u.name)}</button>`).join('')}
+      </div>
+      <div style="text-align:right;margin-top:8px;">
+        <button class="btn btn-secondary btn-sm" data-action="close-modal">Cancel</button>
+      </div>
+    </div>
+  `);
+}
+
+function openNewPlaceModal() {
+  openModal(`
+    <h2 class="hero-title" style="font-size:20px;margin-bottom:10px;">Add new restaurant</h2>
+    <div class="stack" style="gap:10px;">
+      <input id="np-name" class="input" placeholder="Restaurant name" />
+      <input id="np-addr" class="input" placeholder="Street address, Wichita, KS" />
+      <input id="np-city" class="input" placeholder="City (default Wichita)" value="Wichita" />
+      <div class="btn-row" style="justify-content:flex-end;">
+        <button class="btn btn-secondary btn-sm" data-action="close-modal">Cancel</button>
+        <button class="btn btn-primary btn-sm" data-action="create-place">Save place</button>
+      </div>
+    </div>
+  `);
+}
+
+// Event delegation
+document.addEventListener('click', async (e) => {
+  const tabBtn = e.target.closest('[data-tab]');
+  if (tabBtn) {
+    setTab(tabBtn.dataset.tab);
+    return;
+  }
+
+  if (e.target.id === 'modal-backdrop') {
+    closeModal();
+    return;
+  }
+
+  if (e.target.id === 'btn-help') {
+    showWalkthrough(0);
+    return;
+  }
+  if (e.target.id === 'btn-report-top') {
+    openReportIssueModal();
+    return;
+  }
+
+  const actEl = e.target.closest('[data-action]');
+  if (!actEl) return;
+  const action = actEl.dataset.action;
+
+  try {
+    if (action === 'close-modal') {
+      closeModal();
+    } else if (action === 'goto-tab') {
+      setTab(actEl.dataset.target);
+    } else if (action === 'vote-night') {
+      await api('/api/week/vote-night', {
+        method: 'POST',
+        body: JSON.stringify({ dinnerId: state.bootstrap.thisWeek.dinner.id, choice: actEl.dataset.choice }),
+      });
+      toast(`Voted for ${actEl.dataset.choice}`);
+      await refreshBootstrap();
+    } else if (action === 'vote-noon') {
+      await api('/api/week/vote-noon', {
+        method: 'POST',
+        body: JSON.stringify({
+          dinnerId: state.bootstrap.thisWeek.dinner.id,
+          restaurantId: Number(actEl.dataset.placeId),
+        }),
+      });
+      toast('Noon vote saved');
+      await refreshBootstrap();
+    } else if (action === 'rsvp') {
+      await api('/api/week/rsvp', {
+        method: 'POST',
+        body: JSON.stringify({
+          dinnerId: state.bootstrap.thisWeek.dinner.id,
+          status: actEl.dataset.status,
+          etaMinutes: actEl.dataset.status === 'late' ? 15 : null,
+        }),
+      });
+      toast('RSVP updated');
+      await refreshBootstrap();
+    } else if (action === 'set-star') {
+      state.ratingScore = Number(actEl.dataset.score);
+      render();
+    } else if (action === 'submit-rate') {
+      const dish = document.getElementById('rate-dish-input')?.value || '';
+      await api('/api/week/rate', {
+        method: 'POST',
+        body: JSON.stringify({ dinnerId: Number(actEl.dataset.dinnerId), score: state.ratingScore, dish }),
+      });
+      toast('Rating saved!');
+    } else if (action === 'open-picker') {
+      await openPlacePickerModal('pick', state.bootstrap.thisWeek.dinner.id);
+    } else if (action === 'open-backfill') {
+      await openPlacePickerModal('backfill', Number(actEl.dataset.dinnerId), actEl.dataset.date);
+    } else if (action === 'confirm-place-choice') {
+      const mode = actEl.dataset.mode;
+      const dinnerId = Number(actEl.dataset.dinnerId);
+      const placeId = Number(actEl.dataset.placeId);
+      if (mode === 'backfill') {
+        await api(`/api/dinners/${dinnerId}/backfill`, { method: 'POST', body: JSON.stringify({ restaurantId: placeId }) });
+        closeModal();
+        toast('History place updated!');
+        await loadHistory(false);
+      } else {
+        await api('/api/week/pick-place', { method: 'POST', body: JSON.stringify({ dinnerId, restaurantId: placeId }) });
+        closeModal();
+        toast('Place locked in!');
+        await refreshBootstrap();
+      }
+    } else if (action === 'picker-create-and-use') {
+      const name = document.getElementById('picker-new-name')?.value?.trim();
+      if (!name) return toast('Enter a restaurant name');
+      const created = await api('/api/places', { method: 'POST', body: JSON.stringify({ name }) });
+      state.places = [created.place, ...state.places];
+      const mode = actEl.dataset.mode;
+      const dinnerId = Number(actEl.dataset.dinnerId);
+      if (mode === 'backfill') {
+        await api(`/api/dinners/${dinnerId}/backfill`, { method: 'POST', body: JSON.stringify({ restaurantId: created.place.id }) });
+        closeModal();
+        await loadHistory(false);
+      } else {
+        await api('/api/week/pick-place', { method: 'POST', body: JSON.stringify({ dinnerId, restaurantId: created.place.id }) });
+        closeModal();
+        await refreshBootstrap();
+      }
+      toast(`Added & picked ${created.place.name}`);
+    } else if (action === 'open-pass-swap') {
+      openPassSwapModal();
+    } else if (action === 'exec-rotation') {
+      await api('/api/week/rotation', {
+        method: 'POST',
+        body: JSON.stringify({
+          dinnerId: state.bootstrap.thisWeek.dinner.id,
+          action: actEl.dataset.rot,
+          targetSlug: actEl.dataset.target || undefined,
+        }),
+      });
+      closeModal();
+      toast('Rotation updated');
+      await refreshBootstrap();
+    } else if (action === 'filter-host') {
+      state.historyHost = actEl.dataset.host;
+      loadHistory(false);
+    } else if (action === 'focus-place') {
+      state.selectedPlaceId = Number(actEl.dataset.placeId);
+      setTab('places');
+    } else if (action === 'clear-place-filter') {
+      state.historyPlaceId = null;
+      loadHistory(false);
+    } else if (action === 'load-more-history') {
+      loadHistory(true);
+    } else if (action === 'select-place') {
+      state.selectedPlaceId = Number(actEl.dataset.placeId);
+      render();
+    } else if (action === 'open-new-place') {
+      openNewPlaceModal();
+    } else if (action === 'create-place') {
+      const name = document.getElementById('np-name')?.value?.trim();
+      const address = document.getElementById('np-addr')?.value?.trim();
+      const city = document.getElementById('np-city')?.value?.trim();
+      if (!name) return toast('Name is required');
+      const res = await api('/api/places', { method: 'POST', body: JSON.stringify({ name, address, city }) });
+      state.places = [res.place, ...state.places];
+      state.selectedPlaceId = res.place.id;
+      closeModal();
+      toast(`Saved ${res.place.name}`);
+      render();
+    } else if (action === 'enable-push' || action === 'walk-enable-push') {
+      await enableWebPush();
+    } else if (action === 'test-push') {
+      const res = await api('/api/push/test', { method: 'POST', body: '{}' });
+      toast(res.sent > 0 ? 'Test alert sent!' : 'No active device subscription found yet.');
+    } else if (action === 'open-walkthrough') {
+      showWalkthrough(0);
+    } else if (action === 'walk-prev') {
+      showWalkthrough(Math.max(0, state.walkStep - 1));
+    } else if (action === 'walk-next') {
+      showWalkthrough(state.walkStep + 1);
+    } else if (action === 'walk-close') {
+      closeModal();
+      if (!state.bootstrap.user.walkthrough_seen) {
+        await api('/api/user/walkthrough', { method: 'POST', body: '{}' });
+        state.bootstrap.user.walkthrough_seen = true;
+      }
+    } else if (action === 'open-report') {
+      openReportIssueModal();
+    } else if (action === 'submit-issue') {
+      const title = document.getElementById('issue-title')?.value?.trim();
+      const category = document.getElementById('issue-category')?.value || 'bug';
+      const description = document.getElementById('issue-desc')?.value?.trim();
+      if (!title || !description) return toast('Enter a title and description');
+      actEl.disabled = true;
+      const res = await api('/api/issues', {
+        method: 'POST',
+        body: JSON.stringify({ title, category, description, pageContext: actEl.dataset.ctx }),
+      });
+      const fb = document.getElementById('issue-feedback');
+      if (res.issue?.github_issue_url) {
+        fb.innerHTML = `<div class="badge badge-ok" style="padding:8px 12px;border-radius:10px;width:100%;">Created GitHub Issue #${res.issue.github_issue_number} · <a href="${esc(res.issue.github_issue_url)}" target="_blank" rel="noopener">View issue ↗</a></div>`;
+        toast('Issue reported & queued for OpenBot!');
+      } else {
+        fb.innerHTML = `<div class="badge badge-muted" style="padding:8px 12px;border-radius:10px;">Saved report #${res.issue?.id} (${esc(res.issue?.webhook_status)})</div>`;
+      }
+      actEl.disabled = false;
+    }
+  } catch (err) {
+    toast(err.message || 'Action failed');
+  }
+});
+
+let searchTimer = null;
+document.addEventListener('input', (e) => {
+  if (e.target.id === 'picker-q') {
+    const btn = document.querySelector('[data-action="picker-create-and-use"]');
+    renderPickerOptions(btn?.dataset.mode || 'pick', btn?.dataset.dinnerId || '', e.target.value);
+  } else if (e.target.id === 'history-search') {
+    state.historyQuery = e.target.value;
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => loadHistory(false), 220);
+  } else if (e.target.id === 'places-search') {
+    state.placesQuery = e.target.value;
+    render();
+  }
+});
+
+document.addEventListener('change', async (e) => {
+  if (e.target.id === 'places-sort') {
+    state.placesSort = e.target.value;
+    render();
+  } else if (e.target.dataset.pref) {
+    const key = e.target.dataset.pref;
+    await api('/api/user/prefs', { method: 'PATCH', body: JSON.stringify({ [key]: e.target.checked }) });
+    state.bootstrap.user[key] = e.target.checked;
+    toast('Preferences saved');
+  }
+});
+
+async function boot() {
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  }
+  try {
+    await refreshBootstrap();
+    if (state.bootstrap?.user && !state.bootstrap.user.walkthrough_seen) {
+      showWalkthrough(0);
+    }
+  } catch (err) {
+    document.getElementById('main-content').innerHTML = `
+      <div class="card">
+        <h2>Could not load Man Night</h2>
+        <p class="hero-sub">${esc(err.message)}</p>
+      </div>
+    `;
+  }
+}
+
+boot();

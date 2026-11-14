@@ -1,0 +1,22 @@
+{
+  "name": "man-night",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "build:seed": "node scripts/build-seed.mjs",
+    "db:migrate:local": "wrangler d1 migrations apply man-night-db --local",
+    "db:migrate:remote": "wrangler d1 migrations apply man-night-db --remote",
+    "typecheck": "tsc --noEmit && node --check public/app.js && node --check public/sw.js",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261113.1",
+    "@types/node": "^26.6.6",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4",
+    "wrangler": "^4.162.0"
+  }
+}

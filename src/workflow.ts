@@ -42,20 +42,21 @@ export function slugify(text: string): string {
 }
 
 export async function getActiveDinner(db: D1Database): Promise<DinnerRow | null> {
-  const active = await db
+  const next = await db
     .prepare(
       `SELECT * FROM dinners
-       WHERE is_historical = 0 AND status IN ('night_poll', 'awaiting_pick', 'noon_vote', 'place_locked')
-       ORDER BY dinner_date ASC LIMIT 1`,
+       WHERE is_historical = 0 AND status != 'completed'
+       ORDER BY dinner_date ASC
+       LIMIT 1`,
     )
     .first<DinnerRow>();
-  if (active) return active;
+  if (next) return next;
 
   return db
     .prepare(
       `SELECT * FROM dinners
        WHERE is_historical = 0
-       ORDER BY CASE WHEN status = 'completed' THEN 1 ELSE 0 END ASC, dinner_date ASC
+       ORDER BY dinner_date DESC
        LIMIT 1`,
     )
     .first<DinnerRow>();
@@ -187,23 +188,47 @@ export async function lockPlace(
   restaurantId: number,
   chosenVia: 'picker' | 'noon_draw',
   voteSummary = '',
+  dayChoice?: 'Tuesday' | 'Wednesday',
 ): Promise<{ dinner: DinnerRow; restaurant: RestaurantRow; calendar: { synced: boolean; reason?: string } }> {
+  const existing = await env.DB.prepare('SELECT * FROM dinners WHERE id = ?').bind(dinnerId).first<DinnerRow>();
+  if (!existing) throw new Error('Dinner not found');
+
   const restaurant = await env.DB.prepare('SELECT * FROM restaurants WHERE id = ?')
     .bind(restaurantId)
     .first<RestaurantRow>();
   if (!restaurant) throw new Error('Restaurant not found');
 
+  const targetDay: 'Tuesday' | 'Wednesday' =
+    dayChoice === 'Tuesday' || dayChoice === 'Wednesday'
+      ? dayChoice
+      : existing.day_of_week === 'Wednesday'
+        ? 'Wednesday'
+        : 'Tuesday';
+
+  let newDate = existing.dinner_date;
+  if (existing.day_of_week === 'Tuesday' && targetDay === 'Wednesday') {
+    newDate = addDaysToIsoDate(existing.dinner_date, 1);
+  } else if (existing.day_of_week === 'Wednesday' && targetDay === 'Tuesday') {
+    newDate = addDaysToIsoDate(existing.dinner_date, -1);
+  }
+  const newWeekKey = isoWeekKey(newDate);
+  const wasEarlyAdvanceLock = existing.status === 'scheduled' || existing.status === 'night_poll';
+
   await env.DB.prepare(
     `UPDATE dinners
      SET restaurant_id = ?,
          raw_location = ?,
+         day_of_week = ?,
+         dinner_date = ?,
+         week_key = ?,
          status = 'place_locked',
          chosen_via = ?,
+         night_locked_at = COALESCE(night_locked_at, datetime('now')),
          place_locked_at = datetime('now'),
          updated_at = datetime('now')
      WHERE id = ?`,
   )
-    .bind(restaurant.id, restaurant.address || restaurant.name, chosenVia, dinnerId)
+    .bind(restaurant.id, restaurant.address || restaurant.name, targetDay, newDate, newWeekKey, chosenVia, dinnerId)
     .run();
 
   const updated = (await env.DB.prepare('SELECT * FROM dinners WHERE id = ?').bind(dinnerId).first<DinnerRow>())!;
@@ -211,7 +236,7 @@ export async function lockPlace(
     voteSummary ||
     (chosenVia === 'noon_draw'
       ? `Locked by 4:00 PM noon-rule vote (${updated.day_of_week} ${updated.dinner_date}).`
-      : `Picked by ${updated.host_label} for ${updated.day_of_week} ${updated.dinner_date}.`);
+      : `Picked in advance by ${updated.host_label} for ${updated.day_of_week} ${updated.dinner_date} (no vote).`);
 
   const cal = await syncLockedPlaceToCalendar(env, updated, restaurant, note);
   if (cal.eventId) {
@@ -223,7 +248,9 @@ export async function lockPlace(
     env,
     {
       title: `Place locked: ${restaurant.name}`,
-      body: `${updated.day_of_week} 6:30 PM · ${chosenVia === 'noon_draw' ? 'Noon draw result' : `Picked by ${updated.host_label}`}`,
+      body: wasEarlyAdvanceLock
+        ? `${updated.host_label} picked ${restaurant.name} for ${updated.day_of_week} (${updated.dinner_date}) — no vote needed`
+        : `${updated.day_of_week} 6:30 PM · ${chosenVia === 'noon_draw' ? 'Noon draw result' : `Picked by ${updated.host_label}`}`,
       tag: `place-lock-${dinnerId}`,
       url: mapsUrl,
       actions: [

@@ -47,6 +47,26 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
     return json({ ok: true, service: 'man-night', dinners: Number(dbCheck?.dinners ?? 0) });
   }
 
+  if (path === '/api/logout' && (method === 'GET' || method === 'POST')) {
+    const headers = new Headers({
+      'Cache-Control': 'no-store',
+    });
+    headers.append(
+      'Set-Cookie',
+      'CF_Authorization=; Path=/; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; Secure; SameSite=Lax',
+    );
+    headers.append(
+      'Set-Cookie',
+      'CF_AppSession=; Path=/; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; Secure; SameSite=Lax',
+    );
+    if (method === 'GET') {
+      headers.set('Location', `${url.origin}/cdn-cgi/access/logout`);
+      return new Response(null, { status: 302, headers });
+    }
+    headers.set('Content-Type', 'application/json; charset=utf-8');
+    return new Response(JSON.stringify({ ok: true, logoutUrl: '/cdn-cgi/access/logout' }), { status: 200, headers });
+  }
+
   const auth = await resolveAuthUser(request, env);
   if (!auth.user) {
     return json(
@@ -158,12 +178,21 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
     }
 
     if (path === '/api/week/pick-place' && method === 'POST') {
-      const body = await readJson<{ dinnerId?: number; restaurantId: number }>(request);
+      const body = await readJson<{ dinnerId?: number; restaurantId: number; dayOfWeek?: string }>(request);
       const dinner = body.dinnerId
         ? await env.DB.prepare('SELECT id FROM dinners WHERE id = ?').bind(body.dinnerId).first<{ id: number }>()
         : await getActiveDinner(env.DB);
       if (!dinner) return json({ error: 'No active dinner found' }, 404);
-      const res = await lockPlace(env, dinner.id, Number(body.restaurantId), 'picker');
+      const dayChoice =
+        body.dayOfWeek === 'Tuesday' || body.dayOfWeek === 'Wednesday' ? body.dayOfWeek : undefined;
+      const res = await lockPlace(
+        env,
+        dinner.id,
+        Number(body.restaurantId),
+        'picker',
+        'Host picked directly (no vote)',
+        dayChoice,
+      );
       return json({ ok: true, ...res });
     }
 

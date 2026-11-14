@@ -300,4 +300,69 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(listBody.issues[0].github_issue_number).toBe(42);
     expect(listBody.issues[0].webhook_status).toBe('github_and_openbot_notified');
   });
+
+  it('lets host pick place and night in advance so voting and noon draw are skipped', async () => {
+    const bootRes = await worker.fetch(makeReq('/api/bootstrap'), env);
+    const boot = (await bootRes.json()) as {
+      thisWeek: { dinner: { id: number; dinner_date: string } };
+      upcoming: Array<{ id: number; dinner_date: string; day_of_week: string; host_slug: string }>;
+    };
+    const nextWeek = boot.upcoming[0];
+    expect(nextWeek.host_slug).toBe('tyler');
+    expect(nextWeek.dinner_date).toBe('2026-11-24');
+
+    const poplar = await env.DB.prepare("SELECT id FROM restaurants WHERE name LIKE '%Poplar%' LIMIT 1").first<{ id: number }>();
+    expect(poplar).toBeTruthy();
+
+    // Pick Poplar in advance for Tyler's upcoming week on Wednesday (no vote)
+    const pickRes = await worker.fetch(
+      makeReq('/api/week/pick-place', 'POST', {
+        dinnerId: nextWeek.id,
+        restaurantId: poplar!.id,
+        dayOfWeek: 'Wednesday',
+      }),
+      env,
+    );
+    expect(pickRes.status).toBe(200);
+    const picked = (await pickRes.json()) as {
+      ok: boolean;
+      dinner: { status: string; day_of_week: string; dinner_date: string; night_locked_at: string | null; chosen_via: string };
+    };
+    expect(picked.dinner.status).toBe('place_locked');
+    expect(picked.dinner.day_of_week).toBe('Wednesday');
+    expect(picked.dinner.dinner_date).toBe('2026-11-25');
+    expect(picked.dinner.night_locked_at).toBeTruthy();
+    expect(picked.dinner.chosen_via).toBe('picker');
+
+    // Earlier active week (Nov 17) must remain thisWeek on bootstrap
+    const bootAfter = (await (await worker.fetch(makeReq('/api/bootstrap'), env)).json()) as {
+      thisWeek: { dinner: { id: number } };
+    };
+    expect(bootAfter.thisWeek.dinner.id).toBe(boot.thisWeek.dinner.id);
+
+    // Running cron ticks on Sun 10:05 CT, Mon 12:05 CT, and Wed 12:05 CT of next week keeps status place_locked (no poll/noon draw)
+    await runWeeklyCronTick(env, new Date('2026-11-22T16:05:00Z')); // Sun 10:05 CST
+    await runWeeklyCronTick(env, new Date('2026-11-23T18:05:00Z')); // Mon 12:05 CST
+    await runWeeklyCronTick(env, new Date('2026-11-25T18:05:00Z')); // Wed 12:05 CST
+    const rowAfterCron = await env.DB.prepare('SELECT status, noon_draw_ids, night_poll_opened_at FROM dinners WHERE id = ?')
+      .bind(nextWeek.id)
+      .first<{ status: string; noon_draw_ids: string | null; night_poll_opened_at: string | null }>();
+    expect(rowAfterCron?.status).toBe('place_locked');
+    expect(rowAfterCron?.noon_draw_ids).toBeNull();
+    expect(rowAfterCron?.night_poll_opened_at).toBeNull();
+  });
+
+  it('clears Cloudflare Access session cookies and redirects on /api/logout', async () => {
+    const getRes = await worker.fetch(new Request('https://dinner.tylermiranda.com/api/logout', { method: 'GET' }), env);
+    expect(getRes.status).toBe(302);
+    expect(getRes.headers.get('Location')).toBe('https://dinner.tylermiranda.com/cdn-cgi/access/logout');
+    const cookie = getRes.headers.get('Set-Cookie') || '';
+    expect(cookie).toContain('CF_Authorization=;');
+
+    const postRes = await worker.fetch(new Request('https://dinner.tylermiranda.com/api/logout', { method: 'POST' }), env);
+    expect(postRes.status).toBe(200);
+    const body = (await postRes.json()) as { ok: boolean; logoutUrl: string };
+    expect(body.ok).toBe(true);
+    expect(body.logoutUrl).toBe('/cdn-cgi/access/logout');
+  });
 });

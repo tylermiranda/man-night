@@ -9,26 +9,41 @@ const state = {
   historyPlaceId: null,
   placesQuery: '',
   placesSort: 'visits',
+  placesFilter: 'all',
   selectedPlaceId: null,
   walkStep: 0,
   ratingScore: 5,
+  pickerDay: 'Tuesday',
+  deferredInstallPrompt: null,
+  installBannerDismissed: localStorage.getItem('mn_install_dismissed') === '1',
   mapInstances: [],
 };
 
-const POSITRON_STYLE = {
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  state.deferredInstallPrompt = e;
+  render();
+});
+
+window.addEventListener('appinstalled', () => {
+  state.deferredInstallPrompt = null;
+  toast('Man Night app installed!');
+  render();
+});
+
+const OSM_STYLE = {
   version: 8,
   sources: {
     osm: {
       type: 'raster',
-      tiles: [
-        'https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}@2x.png',
-        'https://b.basemaps.cartocdn.com/light_all/{z}/{x}/{y}@2x.png',
-      ],
+      tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
       tileSize: 256,
-      attribution: '© OpenStreetMap · © CARTO',
+      attribution:
+        '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors',
+      maxzoom: 19,
     },
   },
-  layers: [{ id: 'osm', type: 'raster', source: 'osm' }],
+  layers: [{ id: 'osm-tiles', type: 'raster', source: 'osm', minzoom: 0, maxzoom: 19 }],
 };
 
 function esc(s) {
@@ -221,13 +236,30 @@ function renderWeekView() {
   const myRsvp = tw.rsvps.find((v) => v.user_slug === me.slug)?.status;
 
   let statusPill = `<span class="badge badge-red">Vote open</span>`;
+  if (d.status === 'scheduled') statusPill = `<span class="badge badge-muted">Scheduled · Poll opens Sun 10 AM</span>`;
   if (d.status === 'awaiting_pick') statusPill = `<span class="badge badge-muted">Waiting on ${esc(d.host_label)}</span>`;
   if (d.status === 'noon_vote') statusPill = `<span class="badge badge-red">Noon rule · Closes 4:00 PM</span>`;
   if (d.status === 'place_locked') statusPill = `<span class="badge badge-ok">✓ Confirmed</span>`;
 
   let bodyHtml = '';
 
-  if (d.status === 'night_poll') {
+  if (d.status === 'scheduled') {
+    bodyHtml = `
+      <h1 class="hero-title">${esc(d.host_label)} is up next</h1>
+      <p class="hero-sub">Tentatively ${esc(d.day_of_week)} · ${fmtDate(d.dinner_date)} · 6:30 PM. Night poll opens Sunday 10:00 AM unless ${esc(d.host_label)} picks in advance.</p>
+      <div class="host-strip">
+        ${avatarHtml(d.host_slug, d.host_label, 'lg')}
+        <div class="host-strip-text">
+          <strong>${esc(d.host_label)} can lock it in now</strong>
+          <span>Choosing a restaurant in advance locks the night &amp; skips all voting.</span>
+        </div>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-primary" data-action="open-picker" data-dinner-id="${d.id}" data-day="${esc(d.day_of_week)}" data-host="${esc(d.host_label)}" data-date="${esc(d.dinner_date)}">Pick place in advance (no vote)</button>
+        <button class="btn btn-secondary" data-action="open-pass-swap">Pass / Swap turn</button>
+      </div>
+    `;
+  } else if (d.status === 'night_poll') {
     const tuePct = totalNight ? Math.round((tueCount / totalNight) * 100) : 0;
     const wedPct = totalNight ? Math.round((wedCount / totalNight) * 100) : 0;
     const tueVoters = tw.nightVotes.filter((v) => v.choice === 'tuesday').map((v) => avatarHtml(v.user_slug, v.user_slug, 'sm')).join('');
@@ -242,6 +274,9 @@ function renderWeekView() {
           <strong>${esc(d.host_label)}’s turn to pick this week</strong>
           <span class="muted">Or let the Noon Rule draw 4 places on dinner day</span>
         </div>
+      </div>
+      <div class="host-shortcut-box">
+        <strong>Host Option — Skip the vote:</strong> ${esc(d.host_label)} can pick a place right now to lock the week immediately with no night vote or noon vote.
       </div>
       <div class="vote-list">
         <button class="vote-option ${myNight === 'tuesday' ? 'selected' : ''}" data-action="vote-night" data-choice="tuesday">
@@ -272,7 +307,7 @@ function renderWeekView() {
         </button>
       </div>
       <div class="btn-row">
-        <button class="btn ${isHost ? 'btn-primary' : 'btn-outline'}" data-action="open-picker">${isHost ? 'Pick the place early' : `Pick for ${esc(d.host_label)}`}</button>
+        <button class="btn ${isHost ? 'btn-primary' : 'btn-outline'}" data-action="open-picker" data-dinner-id="${d.id}" data-day="${esc(d.day_of_week)}" data-host="${esc(d.host_label)}" data-date="${esc(d.dinner_date)}">${isHost ? 'Pick place in advance (no vote)' : `Pick for ${esc(d.host_label)} (no vote)`}</button>
         <button class="btn btn-secondary" data-action="open-pass-swap">Pass / Swap turn</button>
       </div>
     `;
@@ -288,7 +323,7 @@ function renderWeekView() {
         </div>
       </div>
       <div class="btn-row">
-        <button class="btn btn-primary" data-action="open-picker">${isHost ? 'Pick the restaurant' : `Choose place for ${esc(d.host_label)}`}</button>
+        <button class="btn btn-primary" data-action="open-picker" data-dinner-id="${d.id}" data-day="${esc(d.day_of_week)}" data-host="${esc(d.host_label)}" data-date="${esc(d.dinner_date)}">${isHost ? 'Pick the restaurant' : `Choose place for ${esc(d.host_label)}`}</button>
         <button class="btn btn-secondary" data-action="open-pass-swap">Pass / Swap turn</button>
       </div>
     `;
@@ -321,6 +356,9 @@ function renderWeekView() {
       <h1 class="hero-title">${esc(d.host_label)} didn’t pick. Vote for one.</h1>
       <p class="hero-sub">4 random spots from history (none visited in last 8 weeks). Closes 4:00 PM; ties break at random.</p>
       <div class="vote-list">${optsHtml}</div>
+      <div class="btn-row" style="margin-top:12px;">
+        <button class="btn btn-outline btn-sm" data-action="open-picker" data-dinner-id="${d.id}" data-day="${esc(d.day_of_week)}" data-host="${esc(d.host_label)}" data-date="${esc(d.dinner_date)}">Host override: Pick place directly</button>
+      </div>
     `;
   } else if (d.status === 'place_locked' && tw.place) {
     const p = tw.place;
@@ -331,7 +369,7 @@ function renderWeekView() {
       <div id="tonight-map" class="minimap"></div>
       <div class="btn-row">
         <a class="btn btn-primary" href="${esc(tw.directions_url)}" target="_blank" rel="noopener">Directions in Google Maps</a>
-        <button class="btn btn-outline" data-action="open-picker">Change place</button>
+        <button class="btn btn-outline" data-action="open-picker" data-dinner-id="${d.id}" data-day="${esc(d.day_of_week)}" data-host="${esc(d.host_label)}" data-date="${esc(d.dinner_date)}">Change place</button>
       </div>
     `;
   }
@@ -418,7 +456,7 @@ function renderWeekView() {
     .slice(0, 4)
     .map(
       (u) => `
-      <div class="row-item">
+      <div class="row-item" style="gap:10px;">
         <div style="display:flex;align-items:center;gap:10px;">
           ${avatarHtml(u.host_slug, u.host_label)}
           <div>
@@ -426,15 +464,36 @@ function renderWeekView() {
             <div style="font-size:12px;color:var(--muted);">${esc(u.day_of_week)} · ${fmtShortDate(u.dinner_date)}</div>
           </div>
         </div>
-        <div style="font-size:13px;color:${u.restaurant_name ? 'var(--ink)' : 'var(--muted)'};font-weight:${u.restaurant_name ? 600 : 400};text-align:right;">
-          ${esc(u.restaurant_name || 'Unpicked')}
+        <div style="display:flex;align-items:center;gap:8px;justify-content:flex-end;flex-wrap:wrap;">
+          ${
+            u.restaurant_name
+              ? `<span class="badge badge-ok" title="Locked in advance — no vote needed">✓ ${esc(u.restaurant_name)}</span>
+                 <button class="link-btn" style="font-size:12px;" data-action="open-picker" data-dinner-id="${u.id}" data-day="${esc(u.day_of_week)}" data-host="${esc(u.host_label)}" data-date="${esc(u.dinner_date)}">Change</button>`
+              : `<button class="btn btn-outline btn-sm" style="min-height:28px;padding:3px 10px;font-size:12px;" data-action="open-picker" data-dinner-id="${u.id}" data-day="${esc(u.day_of_week)}" data-host="${esc(u.host_label)}" data-date="${esc(u.dinner_date)}">Pick in advance</button>`
+          }
         </div>
       </div>
     `,
     )
     .join('');
 
+  const installBannerHtml =
+    !isStandalonePwa() && !state.installBannerDismissed
+      ? `<div class="install-banner">
+           <div style="font-size:13px;line-height:1.4;">
+             <strong>Get push alerts &amp; 1-tap access on your phone</strong>
+             <div style="color:var(--muted);font-size:12px;">Install Man Night to your Home Screen (iPhone Safari &amp; Android Chrome)</div>
+           </div>
+           <div style="display:flex;align-items:center;gap:8px;">
+             ${state.deferredInstallPrompt ? `<button class="btn btn-primary btn-sm" data-action="trigger-native-install">Install App</button>` : ''}
+             <button class="btn ${state.deferredInstallPrompt ? 'btn-outline' : 'btn-primary'} btn-sm" data-action="open-install-guide">${state.deferredInstallPrompt ? 'Steps' : 'iPhone / Android guide'}</button>
+             <button class="icon-pill" style="height:28px;padding:0 9px;" data-action="dismiss-install-banner" title="Dismiss" aria-label="Dismiss">✕</button>
+           </div>
+         </div>`
+      : '';
+
   return `
+    ${installBannerHtml}
     <div class="week-grid">
       <div class="stack">
         <section class="card">
@@ -523,11 +582,23 @@ function renderHistoryView() {
   `;
 }
 
-function renderPlacesView() {
+function getFilteredPlaces() {
   const q = state.placesQuery.trim().toLowerCase();
+  const cutoffTwoYearsAgo = new Date(Date.now() - 365 * 2 * 86400000).toISOString().slice(0, 10);
   let list = [...state.places];
+
+  if (state.placesFilter === 'ten_plus') {
+    list = list.filter((p) => (p.visit_count || 0) >= 10);
+  } else if (state.placesFilter === 'regulars') {
+    list = list.filter((p) => (p.visit_count || 0) >= 5);
+  } else if (state.placesFilter === 'comeback') {
+    list = list.filter((p) => (p.visit_count || 0) >= 3 && p.last_visited && p.last_visited <= cutoffTwoYearsAgo);
+  } else if (state.placesFilter === 'one_hit') {
+    list = list.filter((p) => (p.visit_count || 0) === 1);
+  }
+
   if (q) {
-    list = list.filter((p) => p.name.toLowerCase().includes(q) || p.address.toLowerCase().includes(q));
+    list = list.filter((p) => p.name.toLowerCase().includes(q) || (p.address || '').toLowerCase().includes(q));
   }
   if (state.placesSort === 'recent') {
     list.sort((a, b) => (b.last_visited || '').localeCompare(a.last_visited || ''));
@@ -536,16 +607,130 @@ function renderPlacesView() {
   } else {
     list.sort((a, b) => (b.visit_count - a.visit_count) || a.name.localeCompare(b.name));
   }
+  return list;
+}
 
+function renderPlacesView() {
+  const all = state.places || [];
+  const totalVisits = all.reduce((sum, p) => sum + (p.visit_count || 0), 0);
+  const tenPlus = [...all].filter((p) => (p.visit_count || 0) >= 10).sort((a, b) => b.visit_count - a.visit_count);
+  const regulars = all.filter((p) => (p.visit_count || 0) >= 5);
+  const oneHits = all.filter((p) => (p.visit_count || 0) === 1);
+  const byVisits = [...all].sort((a, b) => (b.visit_count - a.visit_count) || a.name.localeCompare(b.name));
+  const byRecent = [...all].filter((p) => p.last_visited).sort((a, b) => b.last_visited.localeCompare(a.last_visited));
+  const comebackPool = [...all]
+    .filter((p) => (p.visit_count || 0) >= 5 && p.last_visited)
+    .sort((a, b) => a.last_visited.localeCompare(b.last_visited));
+  const topDerby = [...all]
+    .filter((p) => (p.city || '').toLowerCase().includes('derby') || (p.address || '').toLowerCase().includes('derby'))
+    .sort((a, b) => b.visit_count - a.visit_count)[0];
+
+  const trophies = [
+    byVisits[0] && {
+      icon: '🏆',
+      title: 'All-Time Crown',
+      place: byVisits[0],
+      meta: `${byVisits[0].visit_count} visits · #1 spot`,
+    },
+    byVisits[1] && {
+      icon: '🥈',
+      title: 'Silver Regular',
+      place: byVisits[1],
+      meta: `${byVisits[1].visit_count} visits · #2 spot`,
+    },
+    byVisits[2] && {
+      icon: '🥉',
+      title: 'Bronze Classic',
+      place: byVisits[2],
+      meta: `${byVisits[2].visit_count} visits · #3 spot`,
+    },
+    comebackPool[0] && {
+      icon: '🕰️',
+      title: 'Dusty Boot (Comeback Due)',
+      place: comebackPool[0],
+      meta: `${comebackPool[0].visit_count}× regular · Last ${fmtShortDate(comebackPool[0].last_visited)}`,
+    },
+    byRecent[0] && {
+      icon: '🔥',
+      title: 'Most Recent Stop',
+      place: byRecent[0],
+      meta: `${fmtDate(byRecent[0].last_visited)} · ${byRecent[0].visit_count}× total`,
+    },
+    topDerby && {
+      icon: '⭐',
+      title: 'Derby Champion',
+      place: topDerby,
+      meta: `${topDerby.visit_count} visits in Derby`,
+    },
+  ].filter(Boolean);
+
+  const trophyHtml = trophies.length
+    ? `
+      <section class="trophy-section">
+        <div class="card-kicker" style="margin-bottom:10px;">
+          <span>Club Trophies &amp; Hall of Fame</span>
+          <span>Click any trophy to focus on map</span>
+        </div>
+        <div class="trophy-grid">
+          ${trophies
+            .map(
+              (t) => `
+            <button class="trophy-card" data-action="focus-trophy" data-place-id="${t.place.id}">
+              <span class="trophy-icon">${t.icon}</span>
+              <span style="min-width:0;">
+                <span class="trophy-kicker">${esc(t.title)}</span>
+                <span class="trophy-winner" style="display:block;">${esc(t.place.name)}</span>
+                <span class="trophy-meta" style="display:block;">${esc(t.meta)}</span>
+              </span>
+            </button>
+          `,
+            )
+            .join('')}
+        </div>
+        ${
+          tenPlus.length
+            ? `<div class="hof-chips">
+                 <span style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.04em;color:var(--muted);">10+ Visits Club (${tenPlus.length}):</span>
+                 ${tenPlus
+                   .map(
+                     (p) =>
+                       `<button class="filter-pill" data-action="focus-trophy" data-place-id="${p.id}">${esc(p.name)} <strong>${p.visit_count}×</strong></button>`,
+                   )
+                   .join('')}
+               </div>`
+            : ''
+        }
+      </section>
+    `
+    : '';
+
+  const list = getFilteredPlaces();
   const selected = list.find((p) => p.id === state.selectedPlaceId) || list[0] || null;
-  if (selected && !state.selectedPlaceId) state.selectedPlaceId = selected.id;
+  if (selected && !list.some((p) => p.id === state.selectedPlaceId)) {
+    state.selectedPlaceId = selected.id;
+  }
+
+  const filterDefs = [
+    { id: 'all', label: `All (${all.length})` },
+    { id: 'ten_plus', label: `🏆 10+ Club (${tenPlus.length})` },
+    { id: 'regulars', label: `🔥 Regulars 5+ (${regulars.length})` },
+    { id: 'comeback', label: '🕰️ Comeback Due' },
+    { id: 'one_hit', label: `⚡ One-Hit (${oneHits.length})` },
+  ];
+
+  const filterHtml = filterDefs
+    .map(
+      (f) =>
+        `<button class="filter-pill ${state.placesFilter === f.id ? 'active' : ''}" data-action="filter-places" data-filter="${f.id}">${f.label}</button>`,
+    )
+    .join('');
 
   const listHtml = list
     .map(
       (p) => `
       <button class="place-card-row ${selected?.id === p.id ? 'selected' : ''}" data-action="select-place" data-place-id="${p.id}">
         <div style="min-width:0;">
-          <div class="place-name">${esc(p.name)}</div>
+          <div class="place-name">${esc(p.name)}${p.visit_count >= 10 ? ' 🏆' : p.visit_count >= 5 ? ' ★' : ''}</div>
           <div class="place-addr">${esc(p.address || p.city)}${p.last_visited ? ` · Last ${fmtShortDate(p.last_visited)}` : ''}</div>
         </div>
         <span class="badge badge-muted tabular">${p.visit_count}×</span>
@@ -558,10 +743,29 @@ function renderPlacesView() {
     <div style="display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:14px;">
       <div>
         <h1 class="hero-title" style="margin-bottom:2px;">Places</h1>
-        <p class="hero-sub" style="margin:0;">${state.places.length} spots across Wichita &amp; Derby · dot size reflects visit count</p>
+        <p class="hero-sub" style="margin:0;">${all.length} spots across Wichita &amp; Derby · OpenStreetMap · dot size reflects visit count</p>
       </div>
       <button class="btn btn-sm btn-primary" data-action="open-new-place">+ Add new place</button>
     </div>
+    <div class="places-stats-bar">
+      <div class="places-stat-tile">
+        <div class="places-stat-val">${all.length}</div>
+        <div class="places-stat-lbl">Distinct restaurants</div>
+      </div>
+      <div class="places-stat-tile">
+        <div class="places-stat-val">${totalVisits}</div>
+        <div class="places-stat-lbl">Logged venue visits</div>
+      </div>
+      <div class="places-stat-tile">
+        <div class="places-stat-val">${tenPlus.length}</div>
+        <div class="places-stat-lbl">10+ Visits Hall of Fame</div>
+      </div>
+      <div class="places-stat-tile">
+        <div class="places-stat-val">${oneHits.length}</div>
+        <div class="places-stat-lbl">One-hit wonders (1×)</div>
+      </div>
+    </div>
+    ${trophyHtml}
     <div class="toolbar">
       <input id="places-search" class="input" style="min-width:220px;flex:1;" placeholder="Filter restaurants…" value="${esc(state.placesQuery)}" />
       <select id="places-sort" class="select">
@@ -570,6 +774,7 @@ function renderPlacesView() {
         <option value="alpha" ${state.placesSort === 'alpha' ? 'selected' : ''}>A – Z</option>
       </select>
     </div>
+    <div class="filter-pills" style="margin-bottom:12px;">${filterHtml}</div>
     <div class="places-layout">
       <div class="places-list-wrap">${listHtml || '<div class="card muted-bg">No matching places.</div>'}</div>
       <div id="places-map" class="places-map-wrap"></div>
@@ -637,6 +842,8 @@ function renderCrewView() {
           <div class="btn-row" style="margin-bottom:14px;">
             <button class="btn btn-primary btn-sm" data-action="enable-push">${me.push_enabled ? 'Re-sync push' : 'Enable push notifications'}</button>
             <button class="btn btn-outline btn-sm" data-action="test-push">Send test alert</button>
+            <button class="btn btn-outline btn-sm" data-action="open-install-guide">Install app (iOS / Android)</button>
+            <a class="btn btn-secondary btn-sm" href="/api/logout">Log out</a>
           </div>
           <label style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-top:1px solid var(--line);font-size:14px;">
             <span>Sunday night vote open</span>
@@ -673,7 +880,7 @@ function initTonightMap() {
   const lng = place.lng ?? -97.3301;
   const map = new maplibregl.Map({
     container: el,
-    style: POSITRON_STYLE,
+    style: OSM_STYLE,
     center: [lng, lat],
     zoom: place.lat ? 14 : 11,
     attributionControl: false,
@@ -692,12 +899,15 @@ function initPlacesMap() {
   const el = document.getElementById('places-map');
   if (!el || typeof maplibregl === 'undefined') return;
 
-  const geocoded = state.places.filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng));
-  const selected = state.places.find((p) => p.id === state.selectedPlaceId && Number.isFinite(p.lat));
+  const filtered = getFilteredPlaces();
+  const geocoded = filtered.filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng));
+  const selected =
+    filtered.find((p) => p.id === state.selectedPlaceId && Number.isFinite(p.lat)) ||
+    state.places.find((p) => p.id === state.selectedPlaceId && Number.isFinite(p.lat));
   const center = selected ? [selected.lng, selected.lat] : [-97.295, 37.687];
   const map = new maplibregl.Map({
     container: el,
-    style: POSITRON_STYLE,
+    style: OSM_STYLE,
     center,
     zoom: selected ? 13 : 11,
   });
@@ -759,9 +969,9 @@ function showWalkthrough(step = 0) {
     {
       title: 'How a week works',
       body: `<div style="font-size:14px;line-height:1.6;color:var(--muted);margin-bottom:16px;">
+        <div><strong style="color:var(--ink);">Host Advance Pick (Anytime)</strong> · Hosts can pick their spot early to lock the week immediately with <strong>no vote</strong>.</div>
         <div><strong style="color:var(--ink);">Sun 10:00 AM</strong> · Night vote opens (Tue vs Wed; Tuesday wins ties at Mon noon).</div>
-        <div><strong style="color:var(--ink);">By Noon on dinner day</strong> · This week’s host locks a place.</div>
-        <div><strong style="color:var(--ink);">Noon Rule</strong> · Unpicked at 12:00 PM? The app draws <strong>4 random places</strong> (skipping the last 8 weeks) until 4:00 PM.</div>
+        <div><strong style="color:var(--ink);">Noon Rule</strong> · Unpicked by 12:00 PM on dinner day? App draws <strong>4 random places</strong> (skipping last 8 weeks) until 4:00 PM.</div>
         <div><strong style="color:var(--ink);">30 min before dinner</strong> · Tap your reminder alert to launch Google Maps directions.</div>
       </div>`,
     },
@@ -770,19 +980,32 @@ function showWalkthrough(step = 0) {
       body: `<p class="hero-sub">Turns rotate through <strong>Chuck → Jacob → Eric → Tyler → Heath</strong>. Busy this week? Pass or swap your week anytime in <strong>Crew</strong> without messing up the order.</p>`,
     },
     {
-      title: 'Turn on phone alerts',
+      title: 'Install app & turn on alerts',
       body: `
-        <p class="hero-sub" style="margin-bottom:10px;">Get pinged when voting opens, when a spot locks in, and 30 minutes before dinner.</p>
-        ${
-          isIosSafari() && !isStandalonePwa()
-            ? `<div class="ios-a2hs-box">
-                <strong>On iPhone Safari:</strong><br/>
-                1. Tap the <strong>Share</strong> button (box with up arrow) at the bottom of Safari.<br/>
-                2. Tap <strong>Add to Home Screen</strong>.<br/>
-                3. Open <strong>Man Night</strong> from your Home Screen icon, then tap Enable Push.
-               </div>`
-            : `<button class="btn btn-primary" style="width:100%;margin-bottom:10px;" data-action="walk-enable-push">Enable notifications</button>`
-        }
+        <p class="hero-sub" style="margin-bottom:10px;">Add Man Night to your phone Home Screen so it launches full-screen and delivers push alerts.</p>
+        <div class="install-guide-grid">
+          <div class="install-platform-card">
+            <div class="install-platform-title"> iPhone / iPad (Safari)</div>
+            <ol class="install-step-list">
+              <li>Open in <strong>Safari</strong> (push alerts require Safari on iOS).</li>
+              <li>Tap <strong>Share</strong> (square with ↑) at the bottom bar.</li>
+              <li>Tap <strong>Add to Home Screen</strong> → <strong>Add</strong>.</li>
+              <li>Launch <strong>Man Night</strong> from Home Screen, then tap Enable Push.</li>
+            </ol>
+          </div>
+          <div class="install-platform-card">
+            <div class="install-platform-title">🤖 Android (Chrome)</div>
+            <ol class="install-step-list">
+              <li>Open in <strong>Chrome</strong>.</li>
+              <li>Tap <strong>⋮ Menu</strong> (top right) → <strong>Install app</strong> or <strong>Add to Home screen</strong>.</li>
+              <li>Confirm <strong>Install</strong>, open from Home screen, and allow alerts.</li>
+            </ol>
+          </div>
+        </div>
+        <div class="btn-row" style="margin-top:10px;">
+          ${state.deferredInstallPrompt ? `<button class="btn btn-primary btn-sm" data-action="trigger-native-install">Install App Now</button>` : ''}
+          ${!(isIosSafari() && !isStandalonePwa()) ? `<button class="btn btn-primary btn-sm" data-action="walk-enable-push">Enable notifications</button>` : ''}
+        </div>
       `,
     },
   ];
@@ -804,13 +1027,76 @@ function showWalkthrough(step = 0) {
   `);
 }
 
-async function openPlacePickerModal(mode, dinnerId = null, dinnerDate = null) {
-  await loadPlacesIfNeeded();
-  const title = mode === 'backfill' ? `Add place for ${fmtDate(dinnerDate)}` : 'Pick this week’s restaurant';
+function openInstallGuideModal() {
+  const standalone = isStandalonePwa();
   openModal(`
-    <h2 class="hero-title" style="font-size:20px;margin-bottom:12px;">${esc(title)}</h2>
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px;">
+      <h2 class="hero-title" style="font-size:20px;margin:0;">Install Man Night App</h2>
+      <span class="badge ${standalone ? 'badge-ok' : 'badge-muted'}">${standalone ? '✓ Installed' : 'Browser mode'}</span>
+    </div>
+    <p class="hero-sub" style="margin-bottom:12px;">Install Man Night to your Home Screen like a native app and get push notifications for votes, picks, and dinner reminders.</p>
+    ${
+      state.deferredInstallPrompt
+        ? `<div class="host-shortcut-box" style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">
+             <span><strong>Android / Chrome ready:</strong> 1-tap install is available right now.</span>
+             <button class="btn btn-primary btn-sm" data-action="trigger-native-install">Install App Now</button>
+           </div>`
+        : ''
+    }
+    <div class="install-guide-grid">
+      <div class="install-platform-card">
+        <div class="install-platform-title"> iPhone &amp; iPad (Safari)</div>
+        <ol class="install-step-list">
+          <li>Open <code>dinner.tylermiranda.com</code> in <strong>Safari</strong> (iOS requires Safari—not Chrome or in-app browsers—to install web apps &amp; push alerts).</li>
+          <li>Tap the <strong>Share</strong> icon (box with an upward arrow ↑) in Safari’s bottom toolbar.</li>
+          <li>Scroll down and tap <strong>Add to Home Screen</strong>.</li>
+          <li>Tap <strong>Add</strong> in the top-right corner.</li>
+          <li>Open the new <strong>Man Night</strong> icon from your Home Screen, sign in once if prompted, then go to <strong>Crew → Enable push notifications</strong>.</li>
+        </ol>
+      </div>
+      <div class="install-platform-card">
+        <div class="install-platform-title">🤖 Android (Chrome)</div>
+        <ol class="install-step-list">
+          <li>Open <code>dinner.tylermiranda.com</code> in <strong>Google Chrome</strong>.</li>
+          <li>If prompted at the top/bottom, tap <strong>Install</strong> (or tap the <strong>Install App Now</strong> button above).</li>
+          <li>Otherwise tap Chrome’s <strong>⋮ menu</strong> (top-right corner).</li>
+          <li>Tap <strong>Install app</strong> (or <strong>Add to Home screen</strong>) → confirm <strong>Install</strong>.</li>
+          <li>Launch <strong>Man Night</strong> from your Home screen and allow notifications when prompted.</li>
+        </ol>
+      </div>
+    </div>
+    <div class="btn-row" style="justify-content:flex-end;margin-top:12px;">
+      <button class="btn btn-secondary btn-sm" data-action="close-modal">Close</button>
+    </div>
+  `);
+}
+
+async function openPlacePickerModal(mode, dinnerId = null, dinnerDate = null, opts = {}) {
+  await loadPlacesIfNeeded();
+  const hostLabel = opts.hostLabel ? `${opts.hostLabel}’s dinner` : 'this week’s dinner';
+  const title =
+    mode === 'backfill'
+      ? `Add place for ${fmtDate(dinnerDate)}`
+      : `Pick place for ${hostLabel}${dinnerDate ? ` (${fmtShortDate(dinnerDate)})` : ''}`;
+
+  state.pickerDay = opts.dayOfWeek === 'Wednesday' ? 'Wednesday' : 'Tuesday';
+  const daySelectorHtml =
+    mode === 'pick'
+      ? `<div class="host-shortcut-box">
+           <strong>Locks immediately — no vote held.</strong> Both the night and restaurant are confirmed right away.
+         </div>
+         <div style="font-size:12px;font-weight:700;color:var(--muted);margin-bottom:6px;">Which night?</div>
+         <div class="day-toggle-group" id="picker-day-group">
+           <button type="button" class="day-toggle-btn ${state.pickerDay === 'Tuesday' ? 'active' : ''}" data-action="set-picker-day" data-day="Tuesday">Tuesday (Default)</button>
+           <button type="button" class="day-toggle-btn ${state.pickerDay === 'Wednesday' ? 'active' : ''}" data-action="set-picker-day" data-day="Wednesday">Wednesday</button>
+         </div>`
+      : '';
+
+  openModal(`
+    <h2 class="hero-title" style="font-size:20px;margin-bottom:10px;">${esc(title)}</h2>
+    ${daySelectorHtml}
     <input id="picker-q" class="input" style="width:100%;margin-bottom:10px;" placeholder="Search ${state.places.length} spots…" />
-    <div id="picker-results" style="max-height:300px;overflow-y:auto;display:flex;flex-direction:column;gap:6px;margin-bottom:14px;"></div>
+    <div id="picker-results" style="max-height:280px;overflow-y:auto;display:flex;flex-direction:column;gap:6px;margin-bottom:14px;"></div>
     <div style="border-top:1px solid var(--line);padding-top:12px;">
       <div style="font-size:12px;font-weight:700;color:var(--muted);margin-bottom:6px;">Not in the list yet?</div>
       <div style="display:flex;gap:8px;">
@@ -957,6 +1243,10 @@ document.addEventListener('click', async (e) => {
     return;
   }
 
+  if (e.target.id === 'btn-install-top') {
+    openInstallGuideModal();
+    return;
+  }
   if (e.target.id === 'btn-help') {
     showWalkthrough(0);
     return;
@@ -973,6 +1263,25 @@ document.addEventListener('click', async (e) => {
   try {
     if (action === 'close-modal') {
       closeModal();
+    } else if (action === 'open-install-guide') {
+      openInstallGuideModal();
+    } else if (action === 'dismiss-install-banner') {
+      state.installBannerDismissed = true;
+      localStorage.setItem('mn_install_dismissed', '1');
+      render();
+    } else if (action === 'trigger-native-install') {
+      if (!state.deferredInstallPrompt) {
+        openInstallGuideModal();
+        return;
+      }
+      state.deferredInstallPrompt.prompt();
+      const choice = await state.deferredInstallPrompt.userChoice;
+      state.deferredInstallPrompt = null;
+      if (choice?.outcome === 'accepted') {
+        toast('Man Night added to Home Screen!');
+        closeModal();
+      }
+      render();
     } else if (action === 'goto-tab') {
       setTab(actEl.dataset.target);
     } else if (action === 'vote-night') {
@@ -1013,8 +1322,18 @@ document.addEventListener('click', async (e) => {
         body: JSON.stringify({ dinnerId: Number(actEl.dataset.dinnerId), score: state.ratingScore, dish }),
       });
       toast('Rating saved!');
+    } else if (action === 'set-picker-day') {
+      state.pickerDay = actEl.dataset.day === 'Wednesday' ? 'Wednesday' : 'Tuesday';
+      document.querySelectorAll('#picker-day-group .day-toggle-btn').forEach((btn) => {
+        btn.classList.toggle('active', btn.dataset.day === state.pickerDay);
+      });
     } else if (action === 'open-picker') {
-      await openPlacePickerModal('pick', state.bootstrap.thisWeek.dinner.id);
+      const d = state.bootstrap.thisWeek.dinner;
+      const dinnerId = Number(actEl.dataset.dinnerId || d.id);
+      const dinnerDate = actEl.dataset.date || d.dinner_date;
+      const dayOfWeek = actEl.dataset.day || d.day_of_week;
+      const hostLabel = actEl.dataset.host || d.host_label;
+      await openPlacePickerModal('pick', dinnerId, dinnerDate, { dayOfWeek, hostLabel });
     } else if (action === 'open-backfill') {
       await openPlacePickerModal('backfill', Number(actEl.dataset.dinnerId), actEl.dataset.date);
     } else if (action === 'confirm-place-choice') {
@@ -1028,9 +1347,12 @@ document.addEventListener('click', async (e) => {
         await refreshBootstrap();
         if (state.tab === 'history') await loadHistory(false);
       } else {
-        await api('/api/week/pick-place', { method: 'POST', body: JSON.stringify({ dinnerId, restaurantId: placeId }) });
+        await api('/api/week/pick-place', {
+          method: 'POST',
+          body: JSON.stringify({ dinnerId, restaurantId: placeId, dayOfWeek: state.pickerDay }),
+        });
         closeModal();
-        toast('Place locked in!');
+        toast(`Locked in (${state.pickerDay}, no vote)!`);
         await refreshBootstrap();
       }
     } else if (action === 'picker-create-and-use') {
@@ -1046,11 +1368,14 @@ document.addEventListener('click', async (e) => {
         await refreshBootstrap();
         if (state.tab === 'history') await loadHistory(false);
       } else {
-        await api('/api/week/pick-place', { method: 'POST', body: JSON.stringify({ dinnerId, restaurantId: created.place.id }) });
+        await api('/api/week/pick-place', {
+          method: 'POST',
+          body: JSON.stringify({ dinnerId, restaurantId: created.place.id, dayOfWeek: state.pickerDay }),
+        });
         closeModal();
         await refreshBootstrap();
       }
-      toast(`Added & picked ${created.place.name}`);
+      toast(`Added & locked ${created.place.name}`);
     } else if (action === 'open-pass-swap') {
       openPassSwapModal();
     } else if (action === 'exec-rotation') {
@@ -1068,6 +1393,14 @@ document.addEventListener('click', async (e) => {
     } else if (action === 'filter-host') {
       state.historyHost = actEl.dataset.host;
       loadHistory(false);
+    } else if (action === 'filter-places') {
+      state.placesFilter = actEl.dataset.filter || 'all';
+      render();
+    } else if (action === 'focus-trophy') {
+      state.placesFilter = 'all';
+      state.placesQuery = '';
+      state.selectedPlaceId = Number(actEl.dataset.placeId);
+      render();
     } else if (action === 'focus-place') {
       state.selectedPlaceId = Number(actEl.dataset.placeId);
       setTab('places');

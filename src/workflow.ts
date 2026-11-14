@@ -639,7 +639,8 @@ export async function createIssueReport(
   }
 
   if (env.OPENBOT_WEBHOOK_URL && githubIssueNumber) {
-    const payload = JSON.stringify({
+    const nowIso = new Date().toISOString();
+    const eventData = {
       event: 'man_night.issue_reported',
       repo: env.GITHUB_REPO,
       issue_number: githubIssueNumber,
@@ -648,6 +649,13 @@ export async function createIssueReport(
       category,
       reporter: reporter.slug,
       page_context: pageContext,
+    };
+    const payload = JSON.stringify({
+      type: 'man_night.issue_reported',
+      occurredAt: nowIso,
+      timestamp: nowIso,
+      data: eventData,
+      ...eventData,
     });
     const msgId = `msg_${crypto.randomUUID()}`;
     const ts = Math.floor(Date.now() / 1000).toString();
@@ -661,7 +669,7 @@ export async function createIssueReport(
       const whResp = await fetch(env.OPENBOT_WEBHOOK_URL, { method: 'POST', headers, body: payload });
       if (whResp.ok) webhookStatus = 'github_and_openbot_notified';
     } catch {
-      // OpenBot scheduled poller will still pick up the labeled GitHub issue
+      // OpenBot webhook retry or manual issue check will still pick up the labeled GitHub issue
     }
   }
 

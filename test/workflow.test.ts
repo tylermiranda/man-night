@@ -244,14 +244,20 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(authHeader).toContain(', k=');
   });
 
-  it('creates GitHub issues via /api/issues with proper labels and reporter metadata', async () => {
+  it('creates GitHub issues via /api/issues with proper labels, reporter metadata, and signed OpenBot webhook', async () => {
     env.GITHUB_TOKEN = 'ghp_test_token';
-    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(
+    env.OPENBOT_WEBHOOK_URL = 'https://signal.openbot.run/v1/webhooks/d91a1bad-eadf-44b9-9ee2-cefd7f37ac4f';
+    env.OPENBOT_WEBHOOK_SECRET = 'whsec_dGVzdGtleTEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU=';
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : input instanceof Request ? input.url : String(input);
+      if (url.startsWith('https://signal.openbot.run/')) {
+        return new Response(null, { status: 202 });
+      }
+      return new Response(
         JSON.stringify({ number: 42, html_url: 'https://github.com/tylermiranda/man-night/issues/42' }),
         { status: 201, headers: { 'Content-Type': 'application/json' } },
-      ),
-    );
+      );
+    });
 
     const res = await worker.fetch(
       makeReq('/api/issues', 'POST', {
@@ -265,11 +271,24 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(res.status).toBe(201);
     const body = (await res.json()) as { issue: { github_issue_number: number; webhook_status: string } };
     expect(body.issue.github_issue_number).toBe(42);
-    expect(body.issue.webhook_status).toBe('github_created');
-    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(body.issue.webhook_status).toBe('github_and_openbot_notified');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
     const callBody = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
     expect(callBody.labels).toContain('auto-fix');
     expect(callBody.labels).toContain('user-reported');
+
+    const [whUrl, whInit] = fetchMock.mock.calls[1];
+    expect(whUrl).toBe('https://signal.openbot.run/v1/webhooks/d91a1bad-eadf-44b9-9ee2-cefd7f37ac4f');
+    const whHeaders = whInit?.headers as Record<string, string>;
+    expect(whHeaders['webhook-id']).toMatch(/^msg_/);
+    expect(whHeaders['webhook-timestamp']).toMatch(/^\d+$/);
+    expect(whHeaders['webhook-signature']).toMatch(/^v1,/);
+    const whPayload = JSON.parse(String(whInit?.body));
+    expect(whPayload.type).toBe('man_night.issue_reported');
+    expect(whPayload.occurredAt).toBeTruthy();
+    expect(whPayload.data.issue_number).toBe(42);
+    expect(whPayload.data.repo).toBe('tylermiranda/man-night');
 
     const listRes = await worker.fetch(makeReq('/api/issues'), env);
     expect(listRes.status).toBe(200);
@@ -279,6 +298,6 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(listBody.issues.length).toBeGreaterThanOrEqual(1);
     expect(listBody.issues[0].title).toBe('Poplar missing suite');
     expect(listBody.issues[0].github_issue_number).toBe(42);
-    expect(listBody.issues[0].webhook_status).toBe('github_created');
+    expect(listBody.issues[0].webhook_status).toBe('github_and_openbot_notified');
   });
 });

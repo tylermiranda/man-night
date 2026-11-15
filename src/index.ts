@@ -56,19 +56,591 @@ async function readJson<T>(request: Request): Promise<T> {
 }
 
 function logAdminLogin(env: Env, userSlug: string, email: string, ip?: string, ua?: string): void {
-  env.DB.prepare(
-    `INSERT INTO admin_logins (user_slug, email, ip_address, user_agent) VALUES (?, ?, ?, ?)`
-  )
-    .bind(userSlug, email, ip ?? null, ua ?? null)
-    .run();
+  try {
+    env.DB.prepare(
+      `INSERT INTO admin_logins (user_slug, email, ip_address, user_agent) VALUES (?, ?, ?, ?)`
+    )
+      .bind(userSlug, email, ip ?? null, ua ?? null)
+      .run()
+      .catch(() => {});
+  } catch {
+    // Silent catch
+  }
+}
+
+function getFriendlyFeatureName(path: string, method: string): string {
+  if (path === '/api/bootstrap') return 'Open App (Bootstrap)';
+  if (path === '/api/week/vote') return 'Vote Night (Tue/Wed)';
+  if (path === '/api/week/place-vote') return 'Vote Place';
+  if (path === '/api/week/pick') return 'Advance Pick (Host)';
+  if (path === '/api/week/poll') return 'Place Poll';
+  if (path === '/api/week/rsvp') return 'RSVP';
+  if (path === '/api/dinners' && method === 'GET') return 'View Dinners';
+  if (path === '/api/places' && method === 'GET') return 'View Places';
+  if (path === '/api/beers') return 'Beers';
+  if (path.startsWith('/api/photos')) return 'Meal Photos';
+  if (path === '/api/whats-new') return 'View What’s New';
+  if (path === '/api/user/push-subscription') return 'Push Subscription Update';
+  if (path === '/api/issues') return 'Bug Report / Feedback';
+  return path.replace(/^\/api\//, '');
 }
 
 function logFeatureUsage(env: Env, userSlug: string, featureName: string, endpointPath?: string, requestMethod?: string): void {
-  env.DB.prepare(
-    `INSERT INTO feature_usage (user_slug, feature_name, endpoint_path, request_method) VALUES (?, ?, ?, ?)`
-  )
-    .bind(userSlug, featureName, endpointPath ?? null, requestMethod ?? null)
-    .run();
+  try {
+    env.DB.prepare(
+      `INSERT INTO feature_usage (user_slug, feature_name, endpoint_path, request_method) VALUES (?, ?, ?, ?)`
+    )
+      .bind(userSlug, featureName, endpointPath ?? null, requestMethod ?? null)
+      .run()
+      .catch(() => {});
+  } catch {
+    // Silent catch
+  }
+}
+
+function escapeHtml(str: unknown): string {
+  if (str === null || str === undefined) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function parseDevice(ua: string | null | undefined): { device: string; browser: string } {
+  if (!ua) return { device: 'Unknown', browser: 'Unknown' };
+  let device = 'Desktop / Other';
+  if (/iPhone/i.test(ua)) device = 'iPhone';
+  else if (/iPad/i.test(ua)) device = 'iPad';
+  else if (/Android/i.test(ua)) device = 'Android';
+  else if (/Macintosh/i.test(ua)) device = 'Mac';
+  else if (/Windows/i.test(ua)) device = 'Windows PC';
+  else if (/Linux/i.test(ua)) device = 'Linux';
+
+  let browser = 'Browser';
+  if (/Edg/i.test(ua)) browser = 'Edge';
+  else if (/CriOS|Chrome/i.test(ua)) browser = 'Chrome';
+  else if (/FxiOS|Firefox/i.test(ua)) browser = 'Firefox';
+  else if (/Safari/i.test(ua)) browser = 'Safari';
+
+  return { device, browser };
+}
+
+function renderAdminDashboardHtml(data: {
+  userEmail: string;
+  devices: Array<{ id: number; user_slug: string; name: string | null; user_agent: string; created_at: string; last_used_at: string | null }>;
+  featureStats: Array<{ feature_name: string; calls: number; unique_users: number; last_used: string }>;
+  userActivity: Array<{ user_slug: string; name: string | null; calls: number; last_seen: string }>;
+  recentActivity: Array<{ id: number; user_slug: string; name: string | null; feature_name: string; endpoint_path: string | null; request_method: string | null; called_at: string }>;
+  notificationLogs: Array<{ id: number; user_slug: string; name: string | null; notification_type: string; status: string; sent_at: string; delivery_endpoint: string | null }>;
+  adminLogins: Array<{ id: number; user_slug: string; email: string; login_at: string; ip_address: string | null; user_agent: string | null }>;
+}): string {
+  const totalCalls = data.featureStats.reduce((acc, curr) => acc + curr.calls, 0);
+  const totalNotifications = data.notificationLogs.length;
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Admin Dashboard · Man Night</title>
+  <style>
+    :root {
+      --bg: #09090b;
+      --card: #18181b;
+      --card-sub: #27272a;
+      --border: #2e2e33;
+      --ink: #f4f4f5;
+      --muted: #a1a1aa;
+      --accent: #e5484d;
+      --accent-soft: rgba(229, 72, 77, 0.15);
+      --ok: #22c55e;
+      --ok-soft: rgba(34, 197, 94, 0.15);
+      --warn: #eab308;
+      --warn-soft: rgba(234, 179, 8, 0.15);
+      --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--ink);
+      font-family: var(--font);
+      padding: 24px 16px 60px;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+    }
+    .container {
+      max-width: 1100px;
+      margin: 0 auto;
+    }
+    header {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding-bottom: 24px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 28px;
+    }
+    .brand-title {
+      font-size: 1.5rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .badge {
+      font-size: 0.75rem;
+      padding: 3px 8px;
+      border-radius: 9999px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .badge-admin { background: var(--accent-soft); color: var(--accent); }
+    .badge-ok { background: var(--ok-soft); color: var(--ok); }
+    .badge-warn { background: var(--warn-soft); color: var(--warn); }
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    button, .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      color: var(--ink);
+      padding: 8px 14px;
+      border-radius: 8px;
+      font-size: 0.85rem;
+      font-weight: 500;
+      cursor: pointer;
+      text-decoration: none;
+      transition: background 0.15s ease;
+    }
+    button:hover, .btn:hover {
+      background: var(--card-sub);
+    }
+    .btn-danger {
+      border-color: rgba(229, 72, 77, 0.4);
+      color: #ff6b6b;
+    }
+    .btn-danger:hover {
+      background: var(--accent-soft);
+    }
+    .btn-primary {
+      background: var(--accent);
+      color: white;
+      border-color: var(--accent);
+    }
+    .btn-primary:hover {
+      background: #d1383d;
+    }
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 16px;
+      margin-bottom: 32px;
+    }
+    .stat-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 18px 20px;
+    }
+    .stat-label {
+      font-size: 0.8rem;
+      color: var(--muted);
+      font-weight: 500;
+      margin-bottom: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .stat-value {
+      font-size: 2rem;
+      font-weight: 700;
+      line-height: 1.1;
+      letter-spacing: -0.03em;
+    }
+    .section-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      margin-bottom: 28px;
+      overflow: hidden;
+    }
+    .section-header {
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: rgba(255,255,255,0.01);
+    }
+    .section-title {
+      font-size: 1.05rem;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+    }
+    .table-wrap {
+      overflow-x: auto;
+      max-height: 380px;
+      overflow-y: auto;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      text-align: left;
+      font-size: 0.875rem;
+    }
+    th {
+      background: var(--card);
+      position: sticky;
+      top: 0;
+      color: var(--muted);
+      font-weight: 600;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      padding: 12px 18px;
+      border-bottom: 1px solid var(--border);
+      z-index: 1;
+    }
+    td {
+      padding: 12px 18px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+      color: #e4e4e7;
+    }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: rgba(255,255,255,0.02); }
+    .mono {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.8rem;
+    }
+    .ua-text {
+      color: var(--muted);
+      font-size: 0.75rem;
+      max-width: 280px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .time-cell {
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+      color: var(--muted);
+      font-size: 0.8rem;
+    }
+    .empty-msg {
+      padding: 32px;
+      text-align: center;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+    .grid-2col {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(480px, 1fr));
+      gap: 20px;
+    }
+    @media (max-width: 600px) {
+      .grid-2col { grid-template-columns: 1fr; }
+      body { padding: 16px 12px 40px; }
+      .brand-title { font-size: 1.25rem; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div>
+        <div class="brand-title">
+          <span>Man Night Control</span>
+          <span class="badge badge-admin">Admin Dashboard</span>
+        </div>
+        <div style="font-size: 0.85rem; color: var(--muted); margin-top: 4px;">
+          Gated to <strong>${escapeHtml(data.userEmail)}</strong> · Invisible usage &amp; device tracking
+        </div>
+      </div>
+      <div class="header-actions">
+        <a href="/" class="btn">← Return to App</a>
+        <button onclick="location.reload()" class="btn">↻ Refresh</button>
+        <button onclick="clearLogs()" class="btn btn-danger">🗑 Clear Logs</button>
+      </div>
+    </header>
+
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-label">Registered Push Devices</div>
+        <div class="stat-value" style="color: #60a5fa;">${data.devices.length}</div>
+        <div style="font-size: 0.75rem; color: var(--muted); margin-top: 4px;">Active in push_subscriptions</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Crew Users Active</div>
+        <div class="stat-value" style="color: var(--ok);">${data.userActivity.length}</div>
+        <div style="font-size: 0.75rem; color: var(--muted); margin-top: 4px;">Tracked via feature usage</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Feature Invocations</div>
+        <div class="stat-value" style="color: #c084fc;">${totalCalls}</div>
+        <div style="font-size: 0.75rem; color: var(--muted); margin-top: 4px;">Total API calls logged</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Notifications Logged</div>
+        <div class="stat-value" style="color: #fb923c;">${totalNotifications}</div>
+        <div style="font-size: 0.75rem; color: var(--muted); margin-top: 4px;">Dispatches recorded</div>
+      </div>
+    </div>
+
+    <!-- REGISTERED DEVICES -->
+    <div class="section-card">
+      <div class="section-header">
+        <div class="section-title">Crew Registered Devices &amp; Push Subscriptions</div>
+        <span class="badge badge-ok">${data.devices.length} Devices</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Crew Member</th>
+              <th>Device &amp; OS</th>
+              <th>Browser</th>
+              <th>Registered At</th>
+              <th>Last Active / Pushed</th>
+              <th>User Agent</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${
+              data.devices.length === 0
+                ? `<tr><td colspan="6" class="empty-msg">No push subscription devices registered yet.</td></tr>`
+                : data.devices
+                    .map((d) => {
+                      const dev = parseDevice(d.user_agent);
+                      return `<tr>
+                        <td><strong>${escapeHtml(d.name || d.user_slug)}</strong> <span class="mono" style="color:var(--muted);">(${escapeHtml(d.user_slug)})</span></td>
+                        <td><span class="badge badge-ok">${escapeHtml(dev.device)}</span></td>
+                        <td>${escapeHtml(dev.browser)}</td>
+                        <td class="time-cell">${escapeHtml(d.created_at)}</td>
+                        <td class="time-cell">${escapeHtml(d.last_used_at || 'Never')}</td>
+                        <td class="ua-text mono" title="${escapeHtml(d.user_agent)}">${escapeHtml(d.user_agent)}</td>
+                      </tr>`;
+                    })
+                    .join('')
+            }
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="grid-2col">
+      <!-- TOP FEATURES -->
+      <div class="section-card">
+        <div class="section-header">
+          <div class="section-title">Feature Usage Breakdown</div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Feature</th>
+                <th>Total Calls</th>
+                <th>Unique Users</th>
+                <th>Last Called</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${
+                data.featureStats.length === 0
+                  ? `<tr><td colspan="4" class="empty-msg">No feature usage recorded yet. Calls will appear as crew uses the app.</td></tr>`
+                  : data.featureStats
+                      .map(
+                        (f) => `<tr>
+                        <td><strong>${escapeHtml(f.feature_name)}</strong></td>
+                        <td class="mono" style="font-weight: 600;">${f.calls}</td>
+                        <td>${f.unique_users} member${f.unique_users === 1 ? '' : 's'}</td>
+                        <td class="time-cell">${escapeHtml(f.last_used)}</td>
+                      </tr>`
+                      )
+                      .join('')
+              }
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- MEMBER ACTIVITY -->
+      <div class="section-card">
+        <div class="section-header">
+          <div class="section-title">Crew Activity Level</div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Crew Member</th>
+                <th>Total Actions</th>
+                <th>Last Active</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${
+                data.userActivity.length === 0
+                  ? `<tr><td colspan="3" class="empty-msg">No member activity recorded yet.</td></tr>`
+                  : data.userActivity
+                      .map(
+                        (u) => `<tr>
+                        <td><strong>${escapeHtml(u.name || u.user_slug)}</strong> <span class="mono" style="color:var(--muted);">(${escapeHtml(u.user_slug)})</span></td>
+                        <td class="mono" style="font-weight: 600; color: #60a5fa;">${u.calls}</td>
+                        <td class="time-cell">${escapeHtml(u.last_seen)}</td>
+                      </tr>`
+                      )
+                      .join('')
+              }
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- NOTIFICATION LOGS -->
+    <div class="section-card">
+      <div class="section-header">
+        <div class="section-title">Push Notification History</div>
+        <span class="badge ${data.notificationLogs.length > 0 ? 'badge-ok' : 'badge-warn'}">${data.notificationLogs.length} Records</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Sent Time</th>
+              <th>Recipient</th>
+              <th>Type</th>
+              <th>Status</th>
+              <th>Endpoint</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${
+              data.notificationLogs.length === 0
+                ? `<tr><td colspan="5" class="empty-msg">No notifications recorded yet. Dispatches will log automatically.</td></tr>`
+                : data.notificationLogs
+                    .map((n) => {
+                      const isSent = n.status === 'sent';
+                      const badgeClass = isSent ? 'badge-ok' : 'badge-warn';
+                      const endpointShort = n.delivery_endpoint ? n.delivery_endpoint.split('/').slice(-1)[0] : '—';
+                      return `<tr>
+                        <td class="time-cell">${escapeHtml(n.sent_at)}</td>
+                        <td><strong>${escapeHtml(n.name || n.user_slug)}</strong></td>
+                        <td><span class="mono">${escapeHtml(n.notification_type)}</span></td>
+                        <td><span class="badge ${badgeClass}">${escapeHtml(n.status)}</span></td>
+                        <td class="ua-text mono" title="${escapeHtml(n.delivery_endpoint || '')}">${escapeHtml(endpointShort)}</td>
+                      </tr>`;
+                    })
+                    .join('')
+            }
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- LIVE CREW ACTIVITY LOG -->
+    <div class="section-card">
+      <div class="section-header">
+        <div class="section-title">Recent Crew Activity (Last 50 API Calls)</div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Crew Member</th>
+              <th>Feature</th>
+              <th>Endpoint</th>
+              <th>Method</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${
+              data.recentActivity.length === 0
+                ? `<tr><td colspan="5" class="empty-msg">No recent activity logged yet.</td></tr>`
+                : data.recentActivity
+                    .map(
+                      (a) => `<tr>
+                      <td class="time-cell">${escapeHtml(a.called_at)}</td>
+                      <td><strong>${escapeHtml(a.name || a.user_slug)}</strong></td>
+                      <td><span class="badge badge-ok">${escapeHtml(a.feature_name)}</span></td>
+                      <td class="mono" style="color:var(--muted); font-size: 0.8rem;">${escapeHtml(a.endpoint_path || '—')}</td>
+                      <td class="mono" style="font-weight: 600; font-size: 0.75rem;">${escapeHtml(a.request_method || 'GET')}</td>
+                    </tr>`
+                    )
+                    .join('')
+            }
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ADMIN LOGINS -->
+    <div class="section-card">
+      <div class="section-header">
+        <div class="section-title">Admin Dashboard Access History</div>
+        <span class="badge badge-admin">${data.adminLogins.length} Logins</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Login Time</th>
+              <th>User</th>
+              <th>IP Address</th>
+              <th>Device &amp; Browser</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${
+              data.adminLogins.length === 0
+                ? `<tr><td colspan="4" class="empty-msg">No admin logins logged.</td></tr>`
+                : data.adminLogins
+                    .map((l) => {
+                      const dev = parseDevice(l.user_agent);
+                      return `<tr>
+                        <td class="time-cell">${escapeHtml(l.login_at)}</td>
+                        <td><strong>${escapeHtml(l.email)}</strong> <span class="mono" style="color:var(--muted);">(${escapeHtml(l.user_slug)})</span></td>
+                        <td class="mono">${escapeHtml(l.ip_address || '—')}</td>
+                        <td>${escapeHtml(dev.device)} · ${escapeHtml(dev.browser)}</td>
+                      </tr>`;
+                    })
+                    .join('')
+            }
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    async function clearLogs() {
+      if (!confirm('Clear all admin logins, feature usage, and notification logs? Registered push devices will NOT be removed.')) return;
+      try {
+        const res = await fetch('/admin/clear', { method: 'POST' });
+        const json = await res.json();
+        if (json.ok) {
+          location.reload();
+        } else {
+          alert('Failed to clear logs: ' + (json.error || 'Unknown error'));
+        }
+      } catch (e) {
+        alert('Network error clearing logs: ' + e);
+      }
+    }
+  </script>
+</body>
+</html>`;
 }
 
 /* -------------------------------------------------
@@ -84,51 +656,143 @@ async function handleAdminRequest(request: Request, env: Env, user: { email: str
   const path = url.pathname;
   const method = request.method.toUpperCase();
 
-  // GET /admin -> dashboard overview
-  if (path === '/admin' && method === 'GET') {
-    // Login stats (last 30 days)
-    const logins = (
-      await env.DB.prepare(
-        `SELECT COUNT(*) AS total, DATE(login_at) AS day FROM admin_logins WHERE login_at >= datetime('now', '-30 days') GROUP BY day ORDER BY day DESC LIMIT 30`
-      ).all<{ total: number; day: string }>()
-    ).results ?? [];
-
-    // Feature usage counts (all time)
-    const usage = (
-      await env.DB.prepare(
-        `SELECT feature_name, COUNT(*) AS calls FROM feature_usage GROUP BY feature_name ORDER BY calls DESC LIMIT 20`
-      ).all<{ feature_name: string; calls: number }>()`
-    ).results ?? [];
-
-    // Notification send stats
-    const notifications = (
-      await env.DB.prepare(
-        `SELECT notification_type, status, COUNT(*) AS count FROM notification_logs GROUP BY notification_type, status ORDER BY count DESC LIMIT 20`
-      ).all<{ notification_type: string; status: string; count: number }>()`
-    ).results ?? [];
-
-    return json({
-      ok: true,
-      user: user.email,
-      stats: {
-        logins: logins.length,
-        top_features: usage,
-        notifications: notifications.length,
-      },
-      raw_data: {
-        logins,
-        feature_usage: usage,
-        notification_logs: notifications,
-      },
-    });
-  }
-
   // POST /admin/clear -> clear all logs (admin only)
   if (path === '/admin/clear' && method === 'POST') {
-    await env.DB.prepare('DELETE FROM admin_logins').run();
-    await env.DB.prepare('DELETE FROM notification_logs').run();
-    await env.DB.prepare('DELETE FROM feature_usage').run();
-    return json({ ok: true, cleared: true });
+    try {
+      await env.DB.prepare('DELETE FROM admin_logins').run();
+      await env.DB.prepare('DELETE FROM notification_logs').run();
+      await env.DB.prepare('DELETE FROM feature_usage').run();
+      return json({ ok: true, cleared: true });
+    } catch (err) {
+      return json({ ok: false, error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  }
+
+  // GET /admin -> dashboard overview
+  if (path === '/admin' && method === 'GET') {
+    let devices: Array<{ id: number; user_slug: string; name: string | null; user_agent: string; created_at: string; last_used_at: string | null }> = [];
+    try {
+      const res = await env.DB.prepare(`
+        SELECT ps.id, ps.user_slug, u.name, ps.user_agent, ps.created_at, ps.last_used_at
+        FROM push_subscriptions ps
+        LEFT JOIN users u ON u.slug = ps.user_slug
+        ORDER BY ps.last_used_at DESC, ps.created_at DESC
+      `).all();
+      devices = (res.results ?? []) as typeof devices;
+    } catch (e) {
+      console.error('Failed to load devices', e);
+    }
+
+    let featureStats: Array<{ feature_name: string; calls: number; unique_users: number; last_used: string }> = [];
+    try {
+      const res = await env.DB.prepare(`
+        SELECT feature_name, COUNT(*) AS calls, COUNT(DISTINCT user_slug) AS unique_users, MAX(called_at) AS last_used
+        FROM feature_usage
+        GROUP BY feature_name
+        ORDER BY calls DESC
+        LIMIT 25
+      `).all();
+      featureStats = (res.results ?? []) as typeof featureStats;
+    } catch (e) {
+      console.error('Failed to load feature stats', e);
+    }
+
+    let userActivity: Array<{ user_slug: string; name: string | null; calls: number; last_seen: string }> = [];
+    try {
+      const res = await env.DB.prepare(`
+        SELECT fu.user_slug, u.name, COUNT(*) AS calls, MAX(fu.called_at) AS last_seen
+        FROM feature_usage fu
+        LEFT JOIN users u ON u.slug = fu.user_slug
+        GROUP BY fu.user_slug
+        ORDER BY calls DESC
+      `).all();
+      userActivity = (res.results ?? []) as typeof userActivity;
+    } catch (e) {
+      console.error('Failed to load user activity', e);
+    }
+
+    let recentActivity: Array<{ id: number; user_slug: string; name: string | null; feature_name: string; endpoint_path: string | null; request_method: string | null; called_at: string }> = [];
+    try {
+      const res = await env.DB.prepare(`
+        SELECT fu.id, fu.user_slug, u.name, fu.feature_name, fu.endpoint_path, fu.request_method, fu.called_at
+        FROM feature_usage fu
+        LEFT JOIN users u ON u.slug = fu.user_slug
+        ORDER BY fu.called_at DESC
+        LIMIT 50
+      `).all();
+      recentActivity = (res.results ?? []) as typeof recentActivity;
+    } catch (e) {
+      console.error('Failed to load recent activity', e);
+    }
+
+    let notificationLogs: Array<{ id: number; user_slug: string; name: string | null; notification_type: string; status: string; sent_at: string; delivery_endpoint: string | null }> = [];
+    try {
+      const res = await env.DB.prepare(`
+        SELECT nl.id, nl.user_slug, u.name, nl.notification_type, nl.status, nl.sent_at, nl.delivery_endpoint
+        FROM notification_logs nl
+        LEFT JOIN users u ON u.slug = nl.user_slug
+        ORDER BY nl.sent_at DESC
+        LIMIT 50
+      `).all();
+      notificationLogs = (res.results ?? []) as typeof notificationLogs;
+    } catch (e) {
+      console.error('Failed to load notification logs', e);
+    }
+
+    let adminLogins: Array<{ id: number; user_slug: string; email: string; login_at: string; ip_address: string | null; user_agent: string | null }> = [];
+    try {
+      const res = await env.DB.prepare(`
+        SELECT id, user_slug, email, login_at, ip_address, user_agent
+        FROM admin_logins
+        ORDER BY login_at DESC
+        LIMIT 30
+      `).all();
+      adminLogins = (res.results ?? []) as typeof adminLogins;
+    } catch (e) {
+      console.error('Failed to load admin logins', e);
+    }
+
+    const acceptsJson = url.searchParams.get('format') === 'json' ||
+      (Boolean(request.headers.get('accept')?.includes('application/json')) && !request.headers.get('accept')?.includes('text/html'));
+
+    if (acceptsJson) {
+      return json({
+        ok: true,
+        user: user.email,
+        stats: {
+          devices: devices.length,
+          active_users: userActivity.length,
+          feature_calls: featureStats.reduce((acc, curr) => acc + curr.calls, 0),
+          notifications: notificationLogs.length,
+        },
+        data: {
+          devices,
+          feature_stats: featureStats,
+          user_activity: userActivity,
+          recent_activity: recentActivity,
+          notification_logs: notificationLogs,
+          admin_logins: adminLogins,
+        },
+      });
+    }
+
+    const html = renderAdminDashboardHtml({
+      userEmail: user.email,
+      devices,
+      featureStats,
+      userActivity,
+      recentActivity,
+      notificationLogs,
+      adminLogins,
+    });
+
+    return new Response(html, {
+      status: 200,
+      headers: {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Cache-Control': 'no-store',
+      },
+    });
   }
 
   return json({ error: 'Not found' }, 404);
@@ -139,17 +803,13 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
   const path = url.pathname;
   const method = request.method.toUpperCase();
 
-  // Auto-log feature usage for authenticated users
+  // Resolve auth user
   const auth = await resolveAuthUser(request, env);
-  const user = auth.user;
-  const userSlug = user?.slug ?? null;
 
-  if (userSlug) {
-    // We'll log common features; more granular logging can be added per-endpoint
-    if (path.startsWith('/api/') && path !== '/api/health') {
-      // Only log non-admin endpoints
-      logFeatureUsage(env, userSlug, 'api_call', path, method);
-    }
+  // Auto-log feature usage for authenticated crew members
+  if (auth.user?.slug && path.startsWith('/api/') && path !== '/api/health') {
+    const featureName = getFriendlyFeatureName(path, method);
+    logFeatureUsage(env, auth.user.slug, featureName, path, method);
   }
 
   if (path === '/api/health' && method === 'GET') {
@@ -177,7 +837,6 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
     return new Response(JSON.stringify({ ok: true, logoutUrl: '/cdn-cgi/access/logout' }), { status: 200, headers });
   }
 
-  const auth = await resolveAuthUser(request, env);
   if (!auth.user) {
     return json(
       {
@@ -1050,7 +1709,13 @@ export default {
       if (!auth.user) return json({ error: 'Unauthenticated' }, 401);
       if (auth.user.email !== 'tyler.miranda@gmail.com') return json({ error: 'Forbidden' }, 403);
       // Log admin dashboard access
-      logAdminLogin(env, auth.user.slug ?? 'unknown', auth.user.email, request.headers.get('cf-connecting-ip'), request.headers.get('user-agent') ?? '');
+      logAdminLogin(
+        env,
+        auth.user.slug ?? 'unknown',
+        auth.user.email,
+        request.headers.get('cf-connecting-ip') ?? undefined,
+        request.headers.get('user-agent') ?? ''
+      );
       return handleAdminRequest(request, env, auth.user);
     }
 

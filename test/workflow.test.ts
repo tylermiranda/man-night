@@ -27,6 +27,7 @@ const migration0010Sql = readFileSync(resolve(rootDir, 'migrations/0010_meal_pri
 const migration0011Sql = readFileSync(resolve(rootDir, 'migrations/0011_issue_screenshots.sql'), 'utf8');
 const migration0012Sql = readFileSync(resolve(rootDir, 'migrations/0012_beers.sql'), 'utf8');
 const migration0013Sql = readFileSync(resolve(rootDir, 'migrations/0013_appetizers.sql'), 'utf8');
+const migration0014Sql = readFileSync(resolve(rootDir, 'migrations/0014_admin_dashboard.sql'), 'utf8');
 
 function makeEnv(db: D1Database, overrides: Partial<Env> = {}): Env {
   return {
@@ -68,6 +69,7 @@ describe('Man Night PWA Worker & Seed', () => {
     await db.exec(migration0011Sql);
     await db.exec(migration0012Sql);
     await db.exec(migration0013Sql);
+    await db.exec(migration0014Sql);
     env = makeEnv(db);
   });
 
@@ -2667,5 +2669,63 @@ describe('Man Night PWA Worker & Seed', () => {
 
     const swJs = readFileSync(resolve(rootDir, 'public/sw.js'), 'utf8');
     expect(swJs).toContain("const CACHE_NAME = 'man-night-shell-v16'");
+  });
+
+  it('gates /admin route to Tyler, serves HTML/JSON dashboard, and logs usage silently', async () => {
+    // 1. Unauthenticated request returns 401
+    const unauthReq = new Request('https://dinner.tylermiranda.com/admin', { method: 'GET' });
+    const unauthRes = await worker.fetch(unauthReq, env);
+    expect(unauthRes.status).toBe(401);
+
+    // 2. Non-Tyler authenticated user returns 403
+    const heathReq = new Request('https://dinner.tylermiranda.com/admin', {
+      method: 'GET',
+      headers: {
+        'Cf-Access-Authenticated-User-Email': 'heath.thome@gmail.com',
+      },
+    });
+    const heathRes = await worker.fetch(heathReq, env);
+    expect(heathRes.status).toBe(403);
+
+    // 3. Tyler authenticated request returns 200 HTML dashboard
+    const tylerReq = new Request('https://dinner.tylermiranda.com/admin', {
+      method: 'GET',
+      headers: {
+        'Cf-Access-Authenticated-User-Email': 'tyler.miranda@gmail.com',
+        Accept: 'text/html',
+      },
+    });
+    const tylerRes = await worker.fetch(tylerReq, env);
+    expect(tylerRes.status).toBe(200);
+    const html = await tylerRes.text();
+    expect(html).toContain('Man Night Control');
+    expect(html).toContain('Admin Dashboard');
+    expect(html).toContain('Registered Push Devices');
+
+    // 4. Tyler JSON format returns structured data
+    const tylerJsonReq = new Request('https://dinner.tylermiranda.com/admin?format=json', {
+      method: 'GET',
+      headers: {
+        'Cf-Access-Authenticated-User-Email': 'tyler.miranda@gmail.com',
+      },
+    });
+    const tylerJsonRes = await worker.fetch(tylerJsonReq, env);
+    expect(tylerJsonRes.status).toBe(200);
+    const json = (await tylerJsonRes.json()) as { ok: boolean; stats: { devices: number } };
+    expect(json.ok).toBe(true);
+    expect(typeof json.stats.devices).toBe('number');
+
+    // 5. POST /admin/clear clears tables
+    const clearReq = new Request('https://dinner.tylermiranda.com/admin/clear', {
+      method: 'POST',
+      headers: {
+        'Cf-Access-Authenticated-User-Email': 'tyler.miranda@gmail.com',
+      },
+    });
+    const clearRes = await worker.fetch(clearReq, env);
+    expect(clearRes.status).toBe(200);
+    const clearJson = (await clearRes.json()) as { ok: boolean; cleared: boolean };
+    expect(clearJson.ok).toBe(true);
+    expect(clearJson.cleared).toBe(true);
   });
 });

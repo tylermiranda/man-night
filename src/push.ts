@@ -146,6 +146,8 @@ export async function sendWebPushToSubscribers(
   let failed = 0;
   let removed = 0;
 
+  const notifType = payload.tag || (prefColumn === 'all' ? 'general' : prefColumn.replace(/^notify_/, ''));
+
   await Promise.all(
     rows.map(async (sub) => {
       try {
@@ -172,14 +174,38 @@ export async function sendWebPushToSubscribers(
           await env.DB.prepare("UPDATE push_subscriptions SET last_used_at = datetime('now') WHERE id = ?")
             .bind(sub.id)
             .run();
+          await env.DB.prepare(
+            "INSERT OR IGNORE INTO notification_logs (user_slug, notification_type, delivery_endpoint, status) VALUES (?, ?, ?, 'sent')"
+          )
+            .bind(sub.user_slug, notifType, sub.endpoint)
+            .run()
+            .catch(() => {});
         } else if (resp.status === 404 || resp.status === 410) {
           removed++;
           await env.DB.prepare('DELETE FROM push_subscriptions WHERE id = ?').bind(sub.id).run();
+          await env.DB.prepare(
+            "INSERT OR IGNORE INTO notification_logs (user_slug, notification_type, delivery_endpoint, status) VALUES (?, ?, ?, 'removed')"
+          )
+            .bind(sub.user_slug, notifType, sub.endpoint)
+            .run()
+            .catch(() => {});
         } else {
           failed++;
+          await env.DB.prepare(
+            "INSERT OR IGNORE INTO notification_logs (user_slug, notification_type, delivery_endpoint, status) VALUES (?, ?, ?, 'failed')"
+          )
+            .bind(sub.user_slug, notifType, sub.endpoint)
+            .run()
+            .catch(() => {});
         }
       } catch {
         failed++;
+        await env.DB.prepare(
+          "INSERT OR IGNORE INTO notification_logs (user_slug, notification_type, delivery_endpoint, status) VALUES (?, ?, ?, 'failed')"
+        )
+          .bind(sub.user_slug, notifType, sub.endpoint)
+          .run()
+          .catch(() => {});
       }
     }),
   );

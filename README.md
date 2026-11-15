@@ -3,7 +3,7 @@
 Weekly Wichita dinner club PWA at **https://dinner.tylermiranda.com** powered by Cloudflare Workers, Static Assets, D1, Cron Triggers, Web Push, and Google Calendar sync.
 
 ## Architecture
-- **Frontend (`public/`)**: Vanilla ES2023 PWA ("Tonight" light & dark theme), 4 tabs (`This week`, `History`, `Places`, `Crew`), **Meal Pictures** upload + lightbox photo galleries (with client-side JPEG resizing), 4-step First-Run Walkthrough (with iOS Safari Add-to-Home-Screen guidance), automatic **What’s New** changelog modal with crew idea/bug-report credits (`src/changelog.ts`), MapLibre GL maps, and in-app **Report Issue** modal.
+- **Frontend (`public/`)**: Vanilla ES2023 PWA ("Tonight" light & dark theme), 4 tabs (`This week`, `History`, `Places`, `Crew`), **Meal Pictures** upload + lightbox photo galleries (with client-side JPEG resizing), **Meal Price & Inflation Tracking** (log meal prices on reviews and dinners to track price progression and increases across visits), 4-step First-Run Walkthrough (with iOS Safari Add-to-Home-Screen guidance), automatic **What’s New** changelog modal with crew idea/bug-report credits (`src/changelog.ts`), MapLibre GL maps, and in-app **Report Issue** modal.
 - **API & Cron (`src/`)**:
   - Auth via Cloudflare Access (`Cf-Access-Authenticated-User-Email`) + Service Token fallback (`Cf-Access-Client-Id`).
   - Weekly state machine (`America/Chicago` 15-min Cron):

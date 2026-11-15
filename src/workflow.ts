@@ -9,6 +9,8 @@ import type {
   LuckyPool,
   MealPhotoViewRow,
   NightVoteViewRow,
+  PlacePriceStats,
+  PlaceVisitPrice,
   RatingViewRow,
   RestaurantRow,
   SelloutLogRow,
@@ -1044,6 +1046,15 @@ export async function castRsvp(
   return computeDinnerHeadcount(db, dinnerId);
 }
 
+export function parseMealPrice(input: unknown): number | null {
+  if (input === undefined || input === null || input === '') return null;
+  const rawNum = typeof input === 'string'
+    ? parseFloat(input.replace(/[^0-9.]/g, ''))
+    : Number(input);
+  if (isNaN(rawNum) || !isFinite(rawNum) || rawNum < 0 || rawNum > 10000) return null;
+  return Math.round(rawNum * 100) / 100;
+}
+
 export async function submitRating(
   db: D1Database,
   dinnerId: number,
@@ -1051,6 +1062,7 @@ export async function submitRating(
   score: number,
   dish: string,
   comment: string,
+  priceInput?: unknown,
 ) {
   const dinner = await db
     .prepare('SELECT id, restaurant_id FROM dinners WHERE id = ?')
@@ -1060,15 +1072,16 @@ export async function submitRating(
 
   const cleanDish = dish.trim().slice(0, 140);
   const cleanComment = comment.trim().slice(0, 500);
+  const price = parseMealPrice(priceInput);
 
   await db
     .prepare(
-      `INSERT INTO ratings (dinner_id, restaurant_id, user_slug, score, dish, comment, rated_at)
-       VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+      `INSERT INTO ratings (dinner_id, restaurant_id, user_slug, score, dish, comment, price, rated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
        ON CONFLICT(dinner_id, user_slug)
-       DO UPDATE SET restaurant_id = excluded.restaurant_id, score = excluded.score, dish = excluded.dish, comment = excluded.comment, rated_at = datetime('now')`,
+       DO UPDATE SET restaurant_id = excluded.restaurant_id, score = excluded.score, dish = excluded.dish, comment = excluded.comment, price = excluded.price, rated_at = datetime('now')`,
     )
-    .bind(dinnerId, dinner.restaurant_id ?? null, userSlug, score, cleanDish, cleanComment)
+    .bind(dinnerId, dinner.restaurant_id ?? null, userSlug, score, cleanDish, cleanComment, price)
     .run();
 
   await recalcRestaurantAvgRating(db, dinner.restaurant_id);
@@ -1079,7 +1092,21 @@ export async function submitRating(
     score,
     dish: cleanDish,
     comment: cleanComment,
+    price,
   };
+}
+
+export async function setDinnerMealPrice(
+  db: D1Database,
+  dinnerId: number,
+  priceInput: unknown,
+) {
+  const price = parseMealPrice(priceInput);
+  await db
+    .prepare("UPDATE dinners SET meal_price = ?, updated_at = datetime('now') WHERE id = ?")
+    .bind(price, dinnerId)
+    .run();
+  return { dinner_id: dinnerId, meal_price: price };
 }
 
 export async function applyRotationOverride(
@@ -1638,7 +1665,7 @@ export async function getPlaceReviews(
     await db
       .prepare(
         `SELECT rt.id, rt.dinner_id, rt.restaurant_id, rt.user_slug, u.name AS user_name,
-                rt.score, rt.dish, rt.comment, rt.rated_at,
+                rt.score, rt.dish, rt.comment, rt.price, rt.rated_at,
                 d.dinner_date, d.day_of_week, d.host_label
          FROM ratings rt
          LEFT JOIN users u ON u.slug = rt.user_slug
@@ -1653,30 +1680,88 @@ export async function getPlaceReviews(
   const visits = (
     await db
       .prepare(
-        `SELECT d.id, d.week_key, d.dinner_date, d.day_of_week, d.host_slug, d.host_label,
+        `SELECT d.id, d.week_key, d.dinner_date, d.day_of_week, d.host_slug, d.host_label, d.meal_price,
                 (SELECT rt.score FROM ratings rt WHERE rt.dinner_id = d.id AND rt.user_slug = ?) AS my_score,
+                (SELECT rt.price FROM ratings rt WHERE rt.dinner_id = d.id AND rt.user_slug = ?) AS my_price,
                 (SELECT COUNT(*) FROM ratings rt WHERE rt.dinner_id = d.id) AS rating_count,
                 (SELECT ROUND(AVG(rt.score), 2) FROM ratings rt WHERE rt.dinner_id = d.id) AS dinner_avg_rating,
+                COALESCE(d.meal_price, (SELECT ROUND(AVG(rt.price), 2) FROM ratings rt WHERE rt.dinner_id = d.id AND rt.price IS NOT NULL)) AS dinner_avg_price,
+                (SELECT COUNT(rt.price) FROM ratings rt WHERE rt.dinner_id = d.id AND rt.price IS NOT NULL) AS price_entry_count,
                 (SELECT COUNT(*) FROM meal_photos mp WHERE mp.dinner_id = d.id) AS photo_count
          FROM dinners d
          WHERE d.restaurant_id = ? AND d.status = 'completed' AND d.dinner_date <= ?
          ORDER BY d.dinner_date DESC
          LIMIT 12`,
       )
-      .bind(currentUserSlug, placeId, todayStr)
+      .bind(currentUserSlug, currentUserSlug, placeId, todayStr)
       .all()
   ).results ?? [];
 
+  const priceRows = (
+    await db
+      .prepare(
+        `SELECT d.id AS dinner_id, d.dinner_date, d.day_of_week, d.host_label,
+                COALESCE(d.meal_price, (SELECT ROUND(AVG(rt.price), 2) FROM ratings rt WHERE rt.dinner_id = d.id AND rt.price IS NOT NULL)) AS avg_price,
+                (SELECT rt.price FROM ratings rt WHERE rt.dinner_id = d.id AND rt.user_slug = ?) AS my_price,
+                (SELECT COUNT(rt.price) FROM ratings rt WHERE rt.dinner_id = d.id AND rt.price IS NOT NULL) AS entry_count
+         FROM dinners d
+         WHERE d.restaurant_id = ? AND d.status = 'completed' AND d.dinner_date <= ?
+           AND (d.meal_price IS NOT NULL OR EXISTS (SELECT 1 FROM ratings rt WHERE rt.dinner_id = d.id AND rt.price IS NOT NULL))
+         ORDER BY d.dinner_date ASC`,
+      )
+      .bind(currentUserSlug, placeId, todayStr)
+      .all<PlaceVisitPrice>()
+  ).results ?? [];
+
+  let priceStats: PlacePriceStats | null = null;
+  if (priceRows.length > 0) {
+    const validPrices = priceRows
+      .map((r) => Number(r.avg_price))
+      .filter((p) => !isNaN(p) && p > 0);
+    if (validPrices.length > 0) {
+      const avg_price = Math.round((validPrices.reduce((a, b) => a + b, 0) / validPrices.length) * 100) / 100;
+      const min_price = Math.min(...validPrices);
+      const max_price = Math.max(...validPrices);
+      const totalEntries = priceRows.reduce((sum, r) => sum + (Number(r.entry_count) || (r.avg_price ? 1 : 0)), 0);
+      const first = priceRows[0];
+      const latest = priceRows[priceRows.length - 1];
+      let price_change: number | null = null;
+      let price_change_pct: number | null = null;
+      if (priceRows.length >= 2 && first.avg_price > 0 && latest.avg_price > 0) {
+        price_change = Math.round((latest.avg_price - first.avg_price) * 100) / 100;
+        price_change_pct = Math.round(((latest.avg_price - first.avg_price) / first.avg_price) * 1000) / 10;
+      }
+      priceStats = {
+        avg_price,
+        min_price,
+        max_price,
+        entry_count: totalEntries,
+        visit_count: priceRows.length,
+        history: priceRows,
+        first_price: first.avg_price,
+        first_date: first.dinner_date,
+        latest_price: latest.avg_price,
+        latest_date: latest.dinner_date,
+        price_change,
+        price_change_pct,
+      };
+      place.avg_meal_price = avg_price;
+      place.price_stats = priceStats;
+    }
+  }
+
   const photos = await getPlacePhotos(db, placeId, 40);
 
-  return { place, reviews, visits, photos };
+  return { place, reviews, visits, photos, priceStats };
 }
 
 export async function getDinnerReviews(db: D1Database, dinnerId: number) {
   const dinner = await db
     .prepare(
       `SELECT d.id, d.week_key, d.dinner_date, d.day_of_week, d.host_slug, d.host_label,
-              d.restaurant_id, d.raw_location,
+              d.restaurant_id, d.raw_location, d.meal_price,
+              COALESCE(d.meal_price, (SELECT ROUND(AVG(rt.price), 2) FROM ratings rt WHERE rt.dinner_id = d.id AND rt.price IS NOT NULL)) AS dinner_avg_price,
+              (SELECT COUNT(rt.price) FROM ratings rt WHERE rt.dinner_id = d.id AND rt.price IS NOT NULL) AS price_entry_count,
               r.name AS restaurant_name, r.address AS restaurant_address, r.avg_rating AS restaurant_avg_rating
        FROM dinners d
        LEFT JOIN restaurants r ON r.id = d.restaurant_id
@@ -1690,7 +1775,7 @@ export async function getDinnerReviews(db: D1Database, dinnerId: number) {
     await db
       .prepare(
         `SELECT rt.id, rt.dinner_id, rt.restaurant_id, rt.user_slug, u.name AS user_name,
-                rt.score, rt.dish, rt.comment, rt.rated_at
+                rt.score, rt.dish, rt.comment, rt.price, rt.rated_at
          FROM ratings rt
          LEFT JOIN users u ON u.slug = rt.user_slug
          WHERE rt.dinner_id = ?
@@ -1853,7 +1938,7 @@ export async function getBootstrapPayload(env: Env, currentUser: UserRow) {
     updated_at: string;
   }> = [];
   let headcount: Awaited<ReturnType<typeof computeDinnerHeadcount>> | null = null;
-  let ratings: Array<{ user_slug: string; score: number; dish: string; comment: string }> = [];
+  let ratings: Array<{ user_slug: string; score: number; dish: string; comment: string; price?: number | null }> = [];
   let activePhotos: MealPhotoViewRow[] = [];
 
   if (active) {
@@ -1882,7 +1967,7 @@ export async function getBootstrapPayload(env: Env, currentUser: UserRow) {
         .all()
     ).results as typeof rsvps;
     headcount = await computeDinnerHeadcount(env.DB, active.id);
-    ratings = (await env.DB.prepare('SELECT user_slug, score, dish, comment FROM ratings WHERE dinner_id = ?').bind(active.id).all()).results as typeof ratings;
+    ratings = (await env.DB.prepare('SELECT user_slug, score, dish, comment, price FROM ratings WHERE dinner_id = ?').bind(active.id).all()).results as typeof ratings;
     activePhotos = await getDinnerPhotos(env.DB, active.id);
 
     const ids = parseIdListJson(active.noon_draw_ids);
@@ -1924,6 +2009,7 @@ export async function getBootstrapPayload(env: Env, currentUser: UserRow) {
               r.avg_rating AS restaurant_avg_rating,
               (SELECT COUNT(*) FROM ratings rt WHERE rt.dinner_id = d.id) AS rating_count,
               (SELECT ROUND(AVG(rt.score), 2) FROM ratings rt WHERE rt.dinner_id = d.id) AS dinner_avg_rating,
+              COALESCE(d.meal_price, (SELECT ROUND(AVG(rt.price), 2) FROM ratings rt WHERE rt.dinner_id = d.id AND rt.price IS NOT NULL)) AS dinner_avg_price,
               (SELECT COUNT(*) FROM meal_photos mp WHERE mp.dinner_id = d.id) AS photo_count
        FROM dinners d
        LEFT JOIN restaurants r ON r.id = d.restaurant_id
@@ -1937,7 +2023,7 @@ export async function getBootstrapPayload(env: Env, currentUser: UserRow) {
     ? (
         await env.DB.prepare(
           `SELECT rt.id, rt.dinner_id, rt.restaurant_id, rt.user_slug, u.name AS user_name,
-                  rt.score, rt.dish, rt.comment, rt.rated_at
+                  rt.score, rt.dish, rt.comment, rt.price, rt.rated_at
            FROM ratings rt
            LEFT JOIN users u ON u.slug = rt.user_slug
            WHERE rt.dinner_id = ?
@@ -1954,8 +2040,10 @@ export async function getBootstrapPayload(env: Env, currentUser: UserRow) {
        (SELECT COUNT(*) FROM dinners WHERE status = 'completed') AS total_dinners,
        (SELECT COUNT(*) FROM restaurants) AS total_places,
        (SELECT COUNT(*) FROM dinners WHERE status = 'completed' AND dinner_date >= '2025-01-01') AS recent_weeks,
-       (SELECT COUNT(*) FROM dinners WHERE status = 'completed' AND dinner_date >= '2025-01-01' AND day_of_week = 'Tuesday') AS recent_tuesdays`,
-  ).first<{ total_dinners: number; total_places: number; recent_weeks: number; recent_tuesdays: number }>();
+       (SELECT COUNT(*) FROM dinners WHERE status = 'completed' AND dinner_date >= '2025-01-01' AND day_of_week = 'Tuesday') AS recent_tuesdays,
+       (SELECT ROUND(AVG(price), 2) FROM ratings WHERE price IS NOT NULL AND price > 0) AS avg_meal_price,
+       (SELECT COUNT(*) FROM ratings WHERE price IS NOT NULL AND price > 0) AS total_price_entries`,
+  ).first<{ total_dinners: number; total_places: number; recent_weeks: number; recent_tuesdays: number; avg_meal_price: number | null; total_price_entries: number }>();
 
   const hostStats = (
     await env.DB.prepare(

@@ -26,6 +26,7 @@ import {
   lockPlace,
   openNoonDraw,
   safeRestaurantSelectSql,
+  setDinnerMealPrice,
   submitRating,
   uploadMealPhoto,
 } from './workflow';
@@ -464,7 +465,7 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
     }
 
     if (path === '/api/week/rate' && method === 'POST') {
-      const body = await readJson<{ dinnerId: number; score: number; dish?: string; comment?: string }>(request);
+      const body = await readJson<{ dinnerId: number; score: number; dish?: string; comment?: string; price?: number | string | null }>(request);
       const dinnerId = Number(body.dinnerId);
       const score = Number(body.score);
       if (!Number.isInteger(dinnerId) || dinnerId <= 0) {
@@ -473,7 +474,7 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
       if (!Number.isInteger(score) || score < 1 || score > 5) {
         return json({ error: 'Score must be 1 to 5' }, 400);
       }
-      const rating = await submitRating(env.DB, dinnerId, user.slug, score, body.dish ?? '', body.comment ?? '');
+      const rating = await submitRating(env.DB, dinnerId, user.slug, score, body.dish ?? '', body.comment ?? '', body.price ?? null);
       return json({ ok: true, rating });
     }
 
@@ -509,7 +510,8 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
         await env.DB.prepare(
           `SELECT ${safeRestaurantSelectSql('r')},
                   (SELECT COUNT(*) FROM ratings rt WHERE rt.restaurant_id = r.id) AS rating_count,
-                  (SELECT COUNT(*) FROM meal_photos mp WHERE mp.restaurant_id = r.id) AS photo_count
+                  (SELECT COUNT(*) FROM meal_photos mp WHERE mp.restaurant_id = r.id) AS photo_count,
+                  (SELECT ROUND(AVG(rt.price), 2) FROM ratings rt WHERE rt.restaurant_id = r.id AND rt.price IS NOT NULL) AS avg_meal_price
            FROM restaurants r
            ORDER BY visit_count DESC, r.name ASC`,
         )
@@ -566,6 +568,14 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
     const dinnerReviewsMatch = path.match(/^\/api\/dinners\/(\d+)\/reviews$/);
     if (dinnerReviewsMatch && method === 'GET') {
       return json(await getDinnerReviews(env.DB, Number(dinnerReviewsMatch[1])));
+    }
+
+    const dinnerPriceMatch = path.match(/^\/api\/dinners\/(\d+)\/price$/);
+    if (dinnerPriceMatch && method === 'POST') {
+      const dinnerId = Number(dinnerPriceMatch[1]);
+      const body = await readJson<{ price?: number | string | null }>(request);
+      const res = await setDinnerMealPrice(env.DB, dinnerId, body.price ?? null);
+      return json({ ok: true, ...res });
     }
 
     const photoImageMatch = path.match(/^\/api\/photos\/(\d+)\/image$/);
@@ -716,11 +726,14 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
 
       const sql = `
         SELECT d.id, d.week_key, d.dinner_date, d.day_of_week, d.host_slug, d.host_label,
-               d.restaurant_id, d.raw_location, d.raw_summary, d.chosen_via,
+               d.restaurant_id, d.raw_location, d.raw_summary, d.chosen_via, d.meal_price,
                r.name AS restaurant_name, r.address AS restaurant_address, r.visit_count AS restaurant_visits, r.avg_rating AS restaurant_avg_rating,
                (SELECT COUNT(*) FROM ratings rt WHERE rt.dinner_id = d.id) AS rating_count,
                (SELECT ROUND(AVG(rt.score), 2) FROM ratings rt WHERE rt.dinner_id = d.id) AS dinner_avg_rating,
+               COALESCE(d.meal_price, (SELECT ROUND(AVG(rt.price), 2) FROM ratings rt WHERE rt.dinner_id = d.id AND rt.price IS NOT NULL)) AS dinner_avg_price,
+               (SELECT COUNT(rt.price) FROM ratings rt WHERE rt.dinner_id = d.id AND rt.price IS NOT NULL) AS price_entry_count,
                (SELECT rt.score FROM ratings rt WHERE rt.dinner_id = d.id AND rt.user_slug = ?) AS my_score,
+               (SELECT rt.price FROM ratings rt WHERE rt.dinner_id = d.id AND rt.user_slug = ?) AS my_price,
                (SELECT COUNT(*) FROM meal_photos mp WHERE mp.dinner_id = d.id) AS photo_count
         FROM dinners d
         LEFT JOIN restaurants r ON r.id = d.restaurant_id
@@ -735,7 +748,7 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
         WHERE ${where.join(' AND ')}
       `;
 
-      const items = (await env.DB.prepare(sql).bind(user.slug, ...binds, limit, offset).all()).results ?? [];
+      const items = (await env.DB.prepare(sql).bind(user.slug, user.slug, ...binds, limit, offset).all()).results ?? [];
       const totalRow = await env.DB.prepare(countSql).bind(...binds).first<{ total: number }>();
       return json({ items, total: Number(totalRow?.total ?? 0), limit, offset });
     }
@@ -743,7 +756,7 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
     const backfillMatch = path.match(/^\/api\/dinners\/(\d+)\/backfill$/);
     if (backfillMatch && method === 'POST') {
       const dinnerId = Number(backfillMatch[1]);
-      const body = await readJson<{ restaurantId?: number; newName?: string; newAddress?: string }>(request);
+      const body = await readJson<{ restaurantId?: number; newName?: string; newAddress?: string; price?: number | string | null; meal_price?: number | string | null }>(request);
       let restaurantId = body.restaurantId;
       if (!restaurantId && body.newName) {
         const created = await createRestaurant(env.DB, { name: body.newName, address: body.newAddress });
@@ -756,6 +769,9 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
         Number(restaurantId),
         env.CLUB_TIMEZONE || 'America/Chicago',
       );
+      if (body.price !== undefined || body.meal_price !== undefined) {
+        await setDinnerMealPrice(env.DB, dinnerId, body.price ?? body.meal_price);
+      }
       return json({ ok: true, ...res });
     }
 

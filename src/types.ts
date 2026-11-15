@@ -48,6 +48,33 @@ export interface RestaurantRow {
   avg_rating: number | null;
   rating_count?: number;
   photo_count?: number;
+  avg_meal_price?: number | null;
+  price_stats?: PlacePriceStats | null;
+}
+
+export interface PlaceVisitPrice {
+  dinner_id: number;
+  dinner_date: string;
+  day_of_week: string;
+  host_label: string;
+  avg_price: number;
+  my_price?: number | null;
+  entry_count: number;
+}
+
+export interface PlacePriceStats {
+  avg_price: number | null;
+  min_price: number | null;
+  max_price: number | null;
+  entry_count: number;
+  visit_count: number;
+  history: PlaceVisitPrice[];
+  first_price?: number | null;
+  first_date?: string | null;
+  latest_price?: number | null;
+  latest_date?: string | null;
+  price_change?: number | null;
+  price_change_pct?: number | null;
 }
 
 export type AllowedPhotoMime = 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif';
@@ -81,6 +108,7 @@ export interface RatingViewRow {
   score: number;
   dish: string;
   comment: string;
+  price?: number | null;
   rated_at: string;
   dinner_date?: string;
   day_of_week?: string;
@@ -126,6 +154,8 @@ export interface DinnerRow {
   reminder_sent_at: string | null;
   pre_event_sent_at: string | null;
   completed_at: string | null;
+  meal_price?: number | null;
+  dinner_avg_price?: number | null;
   is_historical: number;
 }
 

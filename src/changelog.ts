@@ -11,6 +11,18 @@ import type { WhatsNewEntry, WhatsNewPayload, WhatsNewViewEntry } from './types'
  */
 export const WHATS_NEW_RELEASES: readonly WhatsNewEntry[] = [
   {
+    id: '2026-11-15-meal-prices',
+    date: '2026-11-15',
+    kind: 'feature',
+    title: '💵 Meal Price & Inflation Tracking',
+    summary:
+      'Log what your meal cost when rating any dinner to track how restaurant prices increase across visits over the years—with price history badges, average dinner costs, and place inflation stats.',
+    creditSlug: 'jacob',
+    creditName: 'Jacob',
+    creditRole: 'idea',
+    issueNumber: 13,
+  },
+  {
     id: '2026-11-15-meal-pictures',
     date: '2026-11-15',
     kind: 'feature',

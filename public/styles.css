@@ -2051,3 +2051,109 @@ html[data-theme="dark"] .badge-photo {
   justify-content: space-between;
   gap: 8px;
 }
+
+/* Meal Price & Inflation Tracking */
+.badge-price {
+  background: #ecfdf5;
+  color: #047857;
+}
+html[data-theme="dark"] .badge-price {
+  background: rgba(16, 185, 129, 0.18);
+  color: #34d399;
+}
+
+.review-price {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-weight: 650;
+  color: #047857;
+  font-size: 12px;
+}
+html[data-theme="dark"] .review-price {
+  color: #34d399;
+}
+
+.price-tracker-card {
+  margin-top: 12px;
+  padding: 10px 12px;
+  background: var(--surf);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.price-tracker-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.price-tracker-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.price-history-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+  scrollbar-width: thin;
+}
+
+.price-history-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.price-trend-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 6px;
+}
+
+.price-trend-tag.up {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+html[data-theme="dark"] .price-trend-tag.up {
+  background: rgba(239, 68, 68, 0.18);
+  color: #fca5a5;
+}
+
+.price-trend-tag.down {
+  background: #ecfdf5;
+  color: #047857;
+}
+html[data-theme="dark"] .price-trend-tag.down {
+  background: rgba(16, 185, 129, 0.18);
+  color: #34d399;
+}
+
+.price-trend-tag.same {
+  background: var(--surf);
+  color: var(--muted);
+}

@@ -184,9 +184,17 @@ function starsText(score) {
   return `${'★'.repeat(s)}${'☆'.repeat(5 - s)}`;
 }
 
+function fmtPrice(amount) {
+  if (amount == null || amount === '' || isNaN(Number(amount))) return '';
+  return `$${Number(amount).toFixed(2)}`;
+}
+
 function renderReviewItem(r, showDate = false) {
   const name = r.user_name || r.user_slug;
-  const hasDetails = Boolean(r.dish || r.comment);
+  const hasDetails = Boolean(r.dish || r.comment || (r.price != null && !isNaN(Number(r.price))));
+  const priceBadge = r.price != null && !isNaN(Number(r.price))
+    ? `<span class="review-price" title="Meal price">💵 ${fmtPrice(r.price)}</span>`
+    : '';
   return `
     <div class="review-item">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
@@ -194,6 +202,7 @@ function renderReviewItem(r, showDate = false) {
           ${avatarHtml(r.user_slug, name, 'sm')}
           <strong style="font-size:13px;">${esc(name)}</strong>
           ${showDate && r.dinner_date ? `<span class="tabular" style="font-size:11px;color:var(--muted);">· ${fmtShortDate(r.dinner_date)}</span>` : ''}
+          ${priceBadge}
         </div>
         <span class="review-stars" aria-label="${r.score} out of 5 stars">${starsText(r.score)}</span>
       </div>
@@ -1111,6 +1120,7 @@ function renderWeekView() {
           <span>Last dinner</span>
           <div style="display:flex;align-items:center;gap:6px;">
             ${lastAvg != null ? `<span class="badge badge-star tabular">★ ${Number(lastAvg).toFixed(1)}${lastRatingCount ? ` (${lastRatingCount})` : ''}</span>` : ''}
+            ${lastCompleted.dinner_avg_price != null ? `<span class="badge badge-price tabular" title="Average meal price">💵 ${fmtPrice(lastCompleted.dinner_avg_price)}</span>` : ''}
             ${
               lastCompleted.restaurant_id
                 ? `<button class="badge badge-ok" style="border:0;cursor:pointer;" data-action="focus-place" data-place-id="${lastCompleted.restaurant_id}">View place →</button>`
@@ -1126,9 +1136,12 @@ function renderWeekView() {
         <div id="last-dinner-stars" class="star-row" style="margin-bottom:8px;">
           ${[1, 2, 3, 4, 5].map((n) => `<button type="button" class="star-btn ${state.ratingScore >= n ? 'on' : ''}" data-action="set-star" data-score="${n}">★</button>`).join('')}
         </div>
-        ${myLastRating ? `<div style="font-size:12px;color:var(--ok);font-weight:600;margin-bottom:8px;">✓ Your review (${myLastRating.score}/5) is saved</div>` : ''}
+        ${myLastRating ? `<div style="font-size:12px;color:var(--ok);font-weight:600;margin-bottom:8px;">✓ Your review (${myLastRating.score}/5${myLastRating.price != null ? ` · ${fmtPrice(myLastRating.price)}` : ''}) is saved</div>` : ''}
         <div class="stack" style="gap:8px;">
-          <input id="rate-dish-input" class="input" style="min-height:36px;" placeholder="Standout dish (optional)" value="${esc(myLastRating?.dish || '')}" />
+          <div style="display:flex;gap:8px;align-items:center;">
+            <input id="rate-dish-input" class="input" style="min-height:36px;flex:1;" placeholder="Standout dish (optional)" value="${esc(myLastRating?.dish || '')}" />
+            <input id="rate-price-input" class="input" type="text" inputmode="decimal" style="min-height:36px;width:125px;" placeholder="Price (e.g. 24.50)" value="${myLastRating?.price != null ? esc(String(myLastRating.price)) : ''}" />
+          </div>
           <textarea id="rate-comment-input" class="textarea" style="min-height:60px;" placeholder="Review note — food, vibe, would go back? (optional)">${esc(myLastRating?.comment || '')}</textarea>
           <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
             <button type="button" class="btn btn-sm btn-outline" data-action="open-photo-upload" data-dinner-id="${lastCompleted.id}" data-prefill-source="rate-dish-input">📷 Post meal photo</button>
@@ -1284,12 +1297,15 @@ function renderHistoryView() {
       const photoPill = d.photo_count > 0
         ? `<button class="badge badge-photo tabular" style="border:0;cursor:pointer;margin-left:6px;" data-action="open-review-modal" data-dinner-id="${d.id}">📷 ${d.photo_count}</button>`
         : '';
+      const pricePill = d.dinner_avg_price != null
+        ? `<button class="badge badge-price tabular" style="border:0;cursor:pointer;margin-left:6px;" data-action="open-review-modal" data-dinner-id="${d.id}" title="Average meal price">💵 ${fmtPrice(d.dinner_avg_price)}</button>`
+        : '';
       const placeCell = d.restaurant_id
         ? `<button class="link-btn" style="color:var(--ink);font-size:14px;text-align:left;" data-action="focus-place" data-place-id="${d.restaurant_id}">${esc(d.restaurant_name)}</button>
            ${d.restaurant_visits ? `<span style="font-size:12px;color:var(--muted);margin-left:6px;">(${d.restaurant_visits}×)</span>` : ''}
-           ${ratingPill}${photoPill}`
+           ${ratingPill}${photoPill}${pricePill}`
         : `<button class="link-btn" data-action="open-backfill" data-dinner-id="${d.id}" data-date="${esc(d.dinner_date)}">+ Add the place</button>
-           ${ratingPill}${photoPill}`;
+           ${ratingPill}${photoPill}${pricePill}`;
       listHtml += `
         <div class="history-row">
           <div class="tabular" style="font-size:13px;color:var(--muted);">${fmtDate(d.dinner_date)}</div>
@@ -1351,6 +1367,8 @@ function getFilteredPlaces() {
     list = list.filter((p) => (p.rating_count || 0) > 0 || p.avg_rating != null);
   } else if (state.placesFilter === 'photos') {
     list = list.filter((p) => (p.photo_count || 0) > 0);
+  } else if (state.placesFilter === 'priced') {
+    list = list.filter((p) => p.avg_meal_price != null);
   }
 
   if (q) {
@@ -1361,6 +1379,13 @@ function getFilteredPlaces() {
       (a, b) =>
         ((b.avg_rating ?? -1) - (a.avg_rating ?? -1)) ||
         ((b.rating_count ?? 0) - (a.rating_count ?? 0)) ||
+        (b.visit_count - a.visit_count) ||
+        a.name.localeCompare(b.name),
+    );
+  } else if (state.placesSort === 'price') {
+    list.sort(
+      (a, b) =>
+        ((b.avg_meal_price ?? -1) - (a.avg_meal_price ?? -1)) ||
         (b.visit_count - a.visit_count) ||
         a.name.localeCompare(b.name),
     );
@@ -1386,6 +1411,42 @@ function renderSelectedPlacePhotosHtml(place, cached) {
     <div style="margin-bottom:12px;">
       <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.04em;color:var(--muted);margin-bottom:6px;">Meal photos (${photos.length})</div>
       ${renderPhotoGallery(photos, { showDate: true })}
+    </div>
+  `;
+}
+
+function renderPriceTrackerHtml(place, cached) {
+  const stats = cached?.priceStats || cached?.place?.price_stats || place?.price_stats;
+  if (!stats || !stats.history || !stats.history.length) return '';
+  const avg = stats.avg_price != null ? fmtPrice(stats.avg_price) : '';
+  let trendHtml = '';
+  if (stats.price_change != null) {
+    if (stats.price_change > 0) {
+      trendHtml = `<span class="price-trend-tag up" title="Price increase across recorded visits">📈 +${fmtPrice(stats.price_change)} (+${stats.price_change_pct}%)</span>`;
+    } else if (stats.price_change < 0) {
+      trendHtml = `<span class="price-trend-tag down" title="Price decrease across recorded visits">📉 -${fmtPrice(Math.abs(stats.price_change))} (${stats.price_change_pct}%)</span>`;
+    } else {
+      trendHtml = `<span class="price-trend-tag same" title="Price steady across recorded visits">Flat (0%)</span>`;
+    }
+  }
+
+  const pills = stats.history
+    .map((h) => {
+      const p = fmtPrice(h.avg_price);
+      return `<span class="price-history-pill" title="${esc(h.host_label)}'s night"><strong>${fmtShortDate(h.dinner_date)}</strong>: ${p}</span>`;
+    })
+    .join('<span style="color:var(--muted);font-size:10px;">→</span>');
+
+  return `
+    <div class="price-tracker-card">
+      <div class="price-tracker-header">
+        <span class="price-tracker-title">💵 Meal Price &amp; Inflation Tracker</span>
+        <div style="display:flex;align-items:center;gap:6px;">
+          ${avg ? `<span class="badge badge-price tabular">Avg: ${avg}</span>` : ''}
+          ${trendHtml}
+        </div>
+      </div>
+      ${stats.history.length > 1 ? `<div class="price-history-row">${pills}</div>` : `<div style="font-size:12px;color:var(--muted);">First visit recorded at ${fmtPrice(stats.history[0]?.avg_price)} on ${fmtShortDate(stats.history[0]?.dinner_date)}. Rate future visits to track price increases over time.</div>`}
     </div>
   `;
 }
@@ -1438,6 +1499,7 @@ function renderSelectedPlaceCard(selected) {
         <button class="btn btn-sm btn-outline" data-action="filter-place-history" data-place-id="${place.id}">Visit history →</button>
         <span id="selected-place-rate-wrap">${rateBtnHtml}${photoBtnHtml}</span>
       </div>
+      <div id="selected-place-prices">${renderPriceTrackerHtml(place, cached)}</div>
       <div id="selected-place-photos">${photosBody}</div>
       <div id="selected-place-reviews">${reviewsBody}</div>
     </section>
@@ -1454,10 +1516,14 @@ async function loadPlaceReviews(placeId) {
       state.places[idx] = { ...state.places[idx], ...data.place };
     }
     if (state.tab === 'places' && state.selectedPlaceId === placeId) {
+      const pricesEl = document.getElementById('selected-place-prices');
       const photosEl = document.getElementById('selected-place-photos');
       const reviewsEl = document.getElementById('selected-place-reviews');
       const badgeEl = document.getElementById('selected-place-rating-badge');
       const rateWrapEl = document.getElementById('selected-place-rate-wrap');
+      if (pricesEl) {
+        pricesEl.innerHTML = renderPriceTrackerHtml(data.place, data);
+      }
       if (photosEl) {
         photosEl.innerHTML = renderSelectedPlacePhotosHtml(data.place, data);
       }
@@ -1623,10 +1689,13 @@ function renderPlacesView() {
     state.selectedPlaceId = selected.id;
   }
 
+  const pricedPlaces = all.filter((p) => p.avg_meal_price != null);
+
   const filterDefs = [
     { id: 'all', label: `All (${all.length})` },
     { id: 'photos', label: `📷 Photos (${placesWithPhotos.length})` },
     { id: 'reviewed', label: `⭐ Reviewed (${reviewedPlaces.length})` },
+    { id: 'priced', label: `💵 Prices (${pricedPlaces.length})` },
     { id: 'ten_plus', label: `🏆 10+ Club (${tenPlus.length})` },
     { id: 'regulars', label: `🔥 Regulars 5+ (${regulars.length})` },
     { id: 'comeback', label: '🕰️ Comeback Due' },
@@ -1651,6 +1720,7 @@ function renderPlacesView() {
         </div>
         <div style="display:flex;align-items:center;gap:6px;flex-shrink:0;">
           ${(p.photo_count || 0) > 0 ? `<span class="badge badge-photo tabular">📷 ${p.photo_count}</span>` : ''}
+          ${p.avg_meal_price != null ? `<span class="badge badge-price tabular" title="Average meal price">💵 ${fmtPrice(p.avg_meal_price)}</span>` : ''}
           ${p.avg_rating != null ? `<span class="badge badge-star tabular">★ ${Number(p.avg_rating).toFixed(1)}</span>` : ''}
           <span class="badge badge-muted tabular">${p.visit_count}×</span>
         </div>
@@ -1682,8 +1752,8 @@ function renderPlacesView() {
         <div class="places-stat-lbl">Logged venue visits</div>
       </div>
       <div class="places-stat-tile">
-        <div class="places-stat-val">${tenPlus.length}</div>
-        <div class="places-stat-lbl">10+ Visits Hall of Fame</div>
+        <div class="places-stat-val">${state.bootstrap?.stats?.avg_meal_price != null ? fmtPrice(state.bootstrap.stats.avg_meal_price) : tenPlus.length}</div>
+        <div class="places-stat-lbl">${state.bootstrap?.stats?.avg_meal_price != null ? 'Avg meal price' : '10+ Visits Hall of Fame'}</div>
       </div>
       <div class="places-stat-tile">
         <div class="places-stat-val">${oneHits.length}</div>
@@ -1696,6 +1766,7 @@ function renderPlacesView() {
       <select id="places-sort" class="select">
         <option value="visits" ${state.placesSort === 'visits' ? 'selected' : ''}>Most visited</option>
         <option value="rating" ${state.placesSort === 'rating' ? 'selected' : ''}>Top rated</option>
+        <option value="price" ${state.placesSort === 'price' ? 'selected' : ''}>Meal price</option>
         <option value="recent" ${state.placesSort === 'recent' ? 'selected' : ''}>Most recent</option>
         <option value="alpha" ${state.placesSort === 'alpha' ? 'selected' : ''}>A – Z</option>
       </select>
@@ -2993,7 +3064,7 @@ async function openReviewModal(dinnerId) {
 
     openModal(`
       <h2 class="hero-title" style="font-size:20px;margin-bottom:4px;">${esc(title)}</h2>
-      <p class="hero-sub" style="margin-bottom:12px;">${esc(d.day_of_week || 'Tuesday')}, ${fmtDate(d.dinner_date)} · Hosted by ${esc(d.host_label)}</p>
+      <p class="hero-sub" style="margin-bottom:12px;">${esc(d.day_of_week || 'Tuesday')}, ${fmtDate(d.dinner_date)} · Hosted by ${esc(d.host_label)}${d.dinner_avg_price != null ? ` · <span class="badge badge-price tabular" style="margin-left:4px;">💵 ${fmtPrice(d.dinner_avg_price)} avg</span>` : ''}</p>
       ${photosHtml}
       ${reviewsHtml}
       <div style="border-top:1px solid var(--line);padding-top:12px;">
@@ -3002,7 +3073,10 @@ async function openReviewModal(dinnerId) {
           ${[1, 2, 3, 4, 5].map((n) => `<button type="button" class="star-btn ${state.modalRatingScore >= n ? 'on' : ''}" data-action="set-modal-star" data-score="${n}">★</button>`).join('')}
         </div>
         <div class="stack" style="gap:8px;">
-          <input id="modal-rate-dish" class="input" placeholder="Standout dish (optional)" value="${esc(myReview?.dish || '')}" />
+          <div style="display:flex;gap:8px;align-items:center;">
+            <input id="modal-rate-dish" class="input" style="flex:1;" placeholder="Standout dish (optional)" value="${esc(myReview?.dish || '')}" />
+            <input id="modal-rate-price" class="input" type="text" inputmode="decimal" style="width:125px;" placeholder="Price (e.g. 24.50)" value="${myReview?.price != null ? esc(String(myReview.price)) : ''}" />
+          </div>
           <textarea id="modal-rate-comment" class="textarea" style="min-height:72px;" placeholder="Review note — food, vibe, would go back? (optional)">${esc(myReview?.comment || '')}</textarea>
         </div>
         <div class="btn-row" style="justify-content:flex-end;margin-top:12px;">
@@ -3368,10 +3442,17 @@ document.addEventListener('click', async (e) => {
       });
     } else if (action === 'submit-rate') {
       const dish = document.getElementById('rate-dish-input')?.value || '';
+      const priceVal = document.getElementById('rate-price-input')?.value || '';
       const comment = document.getElementById('rate-comment-input')?.value || '';
       await api('/api/week/rate', {
         method: 'POST',
-        body: JSON.stringify({ dinnerId: Number(actEl.dataset.dinnerId), score: state.ratingScore, dish, comment }),
+        body: JSON.stringify({
+          dinnerId: Number(actEl.dataset.dinnerId),
+          score: state.ratingScore,
+          dish,
+          comment,
+          price: priceVal || null,
+        }),
       });
       state.places = [];
       state.placeReviews = {};
@@ -3513,11 +3594,18 @@ document.addEventListener('click', async (e) => {
     } else if (action === 'submit-modal-rate') {
       const dinnerId = Number(actEl.dataset.dinnerId);
       const dish = document.getElementById('modal-rate-dish')?.value || '';
+      const priceVal = document.getElementById('modal-rate-price')?.value || '';
       const comment = document.getElementById('modal-rate-comment')?.value || '';
       const caption = document.getElementById('modal-photo-caption')?.value || '';
       await api('/api/week/rate', {
         method: 'POST',
-        body: JSON.stringify({ dinnerId, score: state.modalRatingScore, dish, comment }),
+        body: JSON.stringify({
+          dinnerId,
+          score: state.modalRatingScore,
+          dish,
+          comment,
+          price: priceVal || null,
+        }),
       });
       if (state.pendingModalPhoto?.dataUrl) {
         await api('/api/photos', {

@@ -22,6 +22,7 @@ const migration0006Sql = readFileSync(resolve(rootDir, 'migrations/0006_sellout_
 const migration0007Sql = readFileSync(resolve(rootDir, 'migrations/0007_extra_guests.sql'), 'utf8');
 const migration0008Sql = readFileSync(resolve(rootDir, 'migrations/0008_whats_new.sql'), 'utf8');
 const migration0009Sql = readFileSync(resolve(rootDir, 'migrations/0009_meal_photos.sql'), 'utf8');
+const migration0010Sql = readFileSync(resolve(rootDir, 'migrations/0010_meal_prices.sql'), 'utf8');
 
 function makeEnv(db: D1Database, overrides: Partial<Env> = {}): Env {
   return {
@@ -59,6 +60,7 @@ describe('Man Night PWA Worker & Seed', () => {
     await db.exec(migration0007Sql);
     await db.exec(migration0008Sql);
     await db.exec(migration0009Sql);
+    await db.exec(migration0010Sql);
     env = makeEnv(db);
   });
 
@@ -1627,15 +1629,16 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(appJs).toContain('I’m Feeling Lucky');
     expect(stylesCss).toContain('.btn-lucky');
     expect(stylesCss).toContain('.lucky-spot-card');
-    expect(swJs).toContain("CACHE_NAME = 'man-night-shell-v11'");
+    expect(swJs).toMatch(/CACHE_NAME = 'man-night-shell-v\d+'/);
   });
 
   it('tracks What’s New releases, crew idea/bug credits, per-user seen state, and UI wiring (issue #11)', async () => {
     // 1. Changelog integrity
     const seenIds = new Set<string>();
     expect(WHATS_NEW_RELEASES.length).toBeGreaterThanOrEqual(11);
-    expect(WHATS_NEW_RELEASES[0].id).toBe('2026-11-15-meal-pictures');
-    expect(WHATS_NEW_RELEASES[0].issueNumber).toBe(12);
+    expect(WHATS_NEW_RELEASES[0].id).toBe('2026-11-15-meal-prices');
+    expect(WHATS_NEW_RELEASES[0].issueNumber).toBe(13);
+    expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-15-meal-pictures' && e.issueNumber === 12)).toBe(true);
     expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-15-whats-new' && e.issueNumber === 11)).toBe(true);
     for (const entry of WHATS_NEW_RELEASES) {
       expect(seenIds.has(entry.id)).toBe(false);
@@ -1788,7 +1791,7 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(appJs).toContain('whatsNewOpen');
     expect(stylesCss).toContain('.whats-new-card');
     expect(stylesCss).toContain('.whats-new-credit');
-    expect(swJs).toContain("CACHE_NAME = 'man-night-shell-v11'");
+    expect(swJs).toMatch(/CACHE_NAME = 'man-night-shell-v\d+'/);
   });
 
   it('uploads, serves, syncs, lists, and deletes meal photos across dinners and places (issue #12)', async () => {
@@ -2033,6 +2036,162 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(appJs).toContain("api('/api/photos'");
     expect(stylesCss).toContain('.meal-photo-grid');
     expect(stylesCss).toContain('.meal-lightbox');
-    expect(swJs).toContain("CACHE_NAME = 'man-night-shell-v11'");
+    expect(swJs).toContain("CACHE_NAME = 'man-night-shell-v12'");
+  });
+
+  it('tracks meal prices, calculates dinner averages, surfaces price progression and inflation increase across places (issue #13)', async () => {
+    // 1. Verify What's New entry credits Jacob for issue #13
+    const whatsNew13 = WHATS_NEW_RELEASES.find((r) => r.issueNumber === 13);
+    expect(whatsNew13).toBeDefined();
+    expect(whatsNew13?.creditSlug).toBe('jacob');
+    expect(whatsNew13?.creditRole).toBe('idea');
+    expect(formatCrewCreditLabel(whatsNew13!)).toBe('Idea by Jacob');
+
+    // 2. Submit rating with meal price via /api/week/rate
+    // Dinner 614 is the last completed dinner (Poplar, restaurant 1)
+    const poplarId = 1;
+    const rateRes1 = await worker.fetch(
+      makeReq('/api/week/rate', 'POST', {
+        dinnerId: 614,
+        score: 5,
+        dish: 'Ribeye & fries',
+        comment: 'Outstanding meal',
+        price: '28.50',
+      }),
+      env,
+    );
+    expect(rateRes1.status).toBe(200);
+    const rateData1 = (await rateRes1.json()) as { ok: boolean; rating: { price: number; score: number } };
+    expect(rateData1.ok).toBe(true);
+    expect(rateData1.rating.price).toBe(28.5);
+
+    // Jacob rates the same dinner with a different dish and price
+    const rateRes2 = await worker.fetch(
+      makeReq(
+        '/api/week/rate',
+        'POST',
+        {
+          dinnerId: 614,
+          score: 4,
+          dish: 'Chicken fried steak',
+          comment: 'Hearty',
+          price: 21.5,
+        },
+        {
+          'Cf-Access-Authenticated-User-Email': 'werth6of7@gmail.com',
+        },
+      ),
+      env,
+    );
+    expect(rateRes2.status).toBe(200);
+
+    // 3. Verify dinner reviews calculation: avg price = (28.50 + 21.50) / 2 = 25.00
+    const dinnerRevRes = await worker.fetch(makeReq('/api/dinners/614/reviews'), env);
+    expect(dinnerRevRes.status).toBe(200);
+    const dinnerRevData = (await dinnerRevRes.json()) as {
+      dinner: { id: number; dinner_avg_price: number };
+      reviews: Array<{ user_slug: string; price: number; dish: string }>;
+    };
+    expect(dinnerRevData.dinner.dinner_avg_price).toBe(25.0);
+    expect(dinnerRevData.reviews.find((r) => r.user_slug === 'tyler')?.price).toBe(28.5);
+    expect(dinnerRevData.reviews.find((r) => r.user_slug === 'jacob')?.price).toBe(21.5);
+
+    // 4. Verify bootstrap reflects last dinner average price and overall stats
+    const bootRes = await worker.fetch(makeReq('/api/bootstrap'), env);
+    const bootData = (await bootRes.json()) as {
+      recentDinners: Array<{ id: number; dinner_avg_price?: number }>;
+      stats: { avg_meal_price: number | null; total_price_entries: number };
+    };
+    const lastDinner = bootData.recentDinners.find((d) => d.id === 614);
+    expect(lastDinner?.dinner_avg_price).toBe(25.0);
+    expect(bootData.stats.avg_meal_price).toBe(25.0);
+    expect(bootData.stats.total_price_entries).toBe(2);
+
+    // 5. Verify /api/history reflects dinner_avg_price and individual my_price
+    const histRes = await worker.fetch(makeReq('/api/history?limit=10'), env);
+    const histData = (await histRes.json()) as {
+      items: Array<{ id: number; dinner_avg_price?: number; my_price?: number }>;
+    };
+    const hist614 = histData.items.find((d) => d.id === 614);
+    expect(hist614?.dinner_avg_price).toBe(25.0);
+    expect(hist614?.my_price).toBe(28.5);
+
+    // 6. Test direct dinner meal price endpoint /api/dinners/:id/price
+    const priceSetRes = await worker.fetch(
+      makeReq('/api/dinners/613/price', 'POST', { price: '$19.75' }),
+      env,
+    );
+    expect(priceSetRes.status).toBe(200);
+    const priceSetData = (await priceSetRes.json()) as { ok: boolean; meal_price: number };
+    expect(priceSetData.meal_price).toBe(19.75);
+
+    const dinner613Row = await env.DB.prepare('SELECT meal_price FROM dinners WHERE id = 613').first<{ meal_price: number }>();
+    expect(dinner613Row?.meal_price).toBe(19.75);
+
+    // 7. Test place price progression & inflation calculation across multiple visits
+    const dinner614Row = await env.DB.prepare('SELECT restaurant_id FROM dinners WHERE id = 614').first<{ restaurant_id: number }>();
+    const placeId = dinner614Row!.restaurant_id;
+    const earlierDinner = await env.DB.prepare(
+      "SELECT id FROM dinners WHERE restaurant_id = ? AND id != 614 AND status = 'completed' ORDER BY dinner_date ASC LIMIT 1",
+    )
+      .bind(placeId)
+      .first<{ id: number }>();
+    expect(earlierDinner).toBeDefined();
+
+    // Log an earlier price on that older visit: e.g. $16.00
+    await worker.fetch(
+      makeReq(`/api/dinners/${earlierDinner!.id}/price`, 'POST', { price: 16.0 }),
+      env,
+    );
+
+    // Now query /api/places/:id/reviews
+    const placeRevRes = await worker.fetch(makeReq(`/api/places/${placeId}/reviews`), env);
+    expect(placeRevRes.status).toBe(200);
+    const placeRevData = (await placeRevRes.json()) as {
+      place: {
+        id: number;
+        avg_meal_price?: number;
+        price_stats?: {
+          first_price: number;
+          latest_price: number;
+          price_change: number;
+          price_change_pct: number;
+          history: Array<{ avg_price: number }>;
+        };
+      };
+      priceStats?: {
+        first_price: number;
+        latest_price: number;
+        price_change: number;
+        price_change_pct: number;
+      };
+    };
+
+    const stats = placeRevData.place.price_stats || placeRevData.priceStats;
+    expect(stats).toBeDefined();
+    expect(stats?.first_price).toBe(16.0);
+    expect(stats?.latest_price).toBe(25.0);
+    // Price increase: 25.00 - 16.00 = +9.00 (+56.3%)
+    expect(stats?.price_change).toBe(9.0);
+    expect(stats?.price_change_pct).toBe(56.3);
+
+    // 8. Places listing has avg_meal_price
+    const placesRes = await worker.fetch(makeReq('/api/places?q=Mexico'), env);
+    expect(placesRes.status).toBe(200);
+    const placesData = (await placesRes.json()) as { places: Array<{ id: number; avg_meal_price?: number }> };
+    const elMexicoPlace = placesData.places.find((p) => p.id === placeId);
+    expect(elMexicoPlace?.avg_meal_price).toBe(25.0);
+
+    // 9. Static UI & CSS validation
+    const appJs = readFileSync(resolve(rootDir, 'public/app.js'), 'utf8');
+    const stylesCss = readFileSync(resolve(rootDir, 'public/styles.css'), 'utf8');
+    expect(appJs).toContain('fmtPrice');
+    expect(appJs).toContain('renderPriceTrackerHtml');
+    expect(appJs).toContain('rate-price-input');
+    expect(appJs).toContain('modal-rate-price');
+    expect(stylesCss).toContain('.badge-price');
+    expect(stylesCss).toContain('.review-price');
+    expect(stylesCss).toContain('.price-tracker-card');
+    expect(stylesCss).toContain('.price-trend-tag');
   });
 });

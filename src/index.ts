@@ -55,10 +55,102 @@ async function readJson<T>(request: Request): Promise<T> {
   }
 }
 
+function logAdminLogin(env: Env, userSlug: string, email: string, ip?: string, ua?: string): void {
+  env.DB.prepare(
+    `INSERT INTO admin_logins (user_slug, email, ip_address, user_agent) VALUES (?, ?, ?, ?)`
+  )
+    .bind(userSlug, email, ip ?? null, ua ?? null)
+    .run();
+}
+
+function logFeatureUsage(env: Env, userSlug: string, featureName: string, endpointPath?: string, requestMethod?: string): void {
+  env.DB.prepare(
+    `INSERT INTO feature_usage (user_slug, feature_name, endpoint_path, request_method) VALUES (?, ?, ?, ?)`
+  )
+    .bind(userSlug, featureName, endpointPath ?? null, requestMethod ?? null)
+    .run();
+}
+
+/* -------------------------------------------------
+   Admin dashboard: gated to the authenticated user
+   Only tyler.miranda@gmail.com (the club founder) can access.
+   ------------------------------------------------- */
+async function handleAdminRequest(request: Request, env: Env, user: { email: string } | null): Promise<Response> {
+  if (!user || user.email !== 'tyler.miranda@gmail.com') {
+    return json({ error: 'Forbidden' }, 403);
+  }
+
+  const url = new URL(request.url);
+  const path = url.pathname;
+  const method = request.method.toUpperCase();
+
+  // GET /admin -> dashboard overview
+  if (path === '/admin' && method === 'GET') {
+    // Login stats (last 30 days)
+    const logins = (
+      await env.DB.prepare(
+        `SELECT COUNT(*) AS total, DATE(login_at) AS day FROM admin_logins WHERE login_at >= datetime('now', '-30 days') GROUP BY day ORDER BY day DESC LIMIT 30`
+      ).all<{ total: number; day: string }>()
+    ).results ?? [];
+
+    // Feature usage counts (all time)
+    const usage = (
+      await env.DB.prepare(
+        `SELECT feature_name, COUNT(*) AS calls FROM feature_usage GROUP BY feature_name ORDER BY calls DESC LIMIT 20`
+      ).all<{ feature_name: string; calls: number }>()`
+    ).results ?? [];
+
+    // Notification send stats
+    const notifications = (
+      await env.DB.prepare(
+        `SELECT notification_type, status, COUNT(*) AS count FROM notification_logs GROUP BY notification_type, status ORDER BY count DESC LIMIT 20`
+      ).all<{ notification_type: string; status: string; count: number }>()`
+    ).results ?? [];
+
+    return json({
+      ok: true,
+      user: user.email,
+      stats: {
+        logins: logins.length,
+        top_features: usage,
+        notifications: notifications.length,
+      },
+      raw_data: {
+        logins,
+        feature_usage: usage,
+        notification_logs: notifications,
+      },
+    });
+  }
+
+  // POST /admin/clear -> clear all logs (admin only)
+  if (path === '/admin/clear' && method === 'POST') {
+    await env.DB.prepare('DELETE FROM admin_logins').run();
+    await env.DB.prepare('DELETE FROM notification_logs').run();
+    await env.DB.prepare('DELETE FROM feature_usage').run();
+    return json({ ok: true, cleared: true });
+  }
+
+  return json({ error: 'Not found' }, 404);
+}
+
 export async function handleApiRequest(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   const path = url.pathname;
   const method = request.method.toUpperCase();
+
+  // Auto-log feature usage for authenticated users
+  const auth = await resolveAuthUser(request, env);
+  const user = auth.user;
+  const userSlug = user?.slug ?? null;
+
+  if (userSlug) {
+    // We'll log common features; more granular logging can be added per-endpoint
+    if (path.startsWith('/api/') && path !== '/api/health') {
+      // Only log non-admin endpoints
+      logFeatureUsage(env, userSlug, 'api_call', path, method);
+    }
+  }
 
   if (path === '/api/health' && method === 'GET') {
     const dbCheck = await env.DB.prepare('SELECT COUNT(*) AS dinners FROM dinners').first<{ dinners: number }>();
@@ -949,7 +1041,20 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
-    if (url.pathname.startsWith('/api/')) {
+    const pathname = url.pathname;
+
+    // Admin dashboard: gated to the authenticated user (tyler.miranda@gmail.com only)
+    if (pathname === '/admin' || pathname.startsWith('/admin/')) {
+      // Resolve auth to check if user is authorized
+      const auth = await resolveAuthUser(request, env);
+      if (!auth.user) return json({ error: 'Unauthenticated' }, 401);
+      if (auth.user.email !== 'tyler.miranda@gmail.com') return json({ error: 'Forbidden' }, 403);
+      // Log admin dashboard access
+      logAdminLogin(env, auth.user.slug ?? 'unknown', auth.user.email, request.headers.get('cf-connecting-ip'), request.headers.get('user-agent') ?? '');
+      return handleAdminRequest(request, env, auth.user);
+    }
+
+    if (pathname.startsWith('/api/')) {
       return handleApiRequest(request, env);
     }
     return env.ASSETS.fetch(request);

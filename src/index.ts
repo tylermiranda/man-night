@@ -14,11 +14,13 @@ import {
   createRestaurant,
   getActiveDinner,
   getBootstrapPayload,
+  getCentralDateStr,
   getDinnerReviews,
   getPlaceReviews,
   lockNight,
   lockPlace,
   openNoonDraw,
+  safeRestaurantSelectSql,
   submitRating,
 } from './workflow';
 
@@ -307,13 +309,16 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
 
     if (path === '/api/places' && method === 'GET') {
       const q = (url.searchParams.get('q') || '').trim().toLowerCase();
+      const todayStr = getCentralDateStr(new Date(), env.CLUB_TIMEZONE || 'America/Chicago');
       const rows = (
         await env.DB.prepare(
-          `SELECT r.*,
+          `SELECT ${safeRestaurantSelectSql('r')},
                   (SELECT COUNT(*) FROM ratings rt WHERE rt.restaurant_id = r.id) AS rating_count
            FROM restaurants r
-           ORDER BY r.visit_count DESC, r.name ASC`,
-        ).all<RestaurantRow>()
+           ORDER BY visit_count DESC, r.name ASC`,
+        )
+          .bind(todayStr, todayStr, todayStr, todayStr)
+          .all<RestaurantRow>()
       ).results ?? [];
       const filtered = q
         ? rows.filter((r) => r.name.toLowerCase().includes(q) || r.address.toLowerCase().includes(q))
@@ -323,7 +328,9 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
 
     const placeReviewsMatch = path.match(/^\/api\/places\/(\d+)\/reviews$/);
     if (placeReviewsMatch && method === 'GET') {
-      return json(await getPlaceReviews(env.DB, Number(placeReviewsMatch[1]), user.slug));
+      return json(
+        await getPlaceReviews(env.DB, Number(placeReviewsMatch[1]), user.slug, env.CLUB_TIMEZONE || 'America/Chicago'),
+      );
     }
 
     const dinnerReviewsMatch = path.match(/^\/api\/dinners\/(\d+)\/reviews$/);
@@ -395,7 +402,12 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
         restaurantId = created.id;
       }
       if (!restaurantId) return json({ error: 'restaurantId or newName required' }, 400);
-      const res = await backfillDinnerPlace(env.DB, dinnerId, Number(restaurantId));
+      const res = await backfillDinnerPlace(
+        env.DB,
+        dinnerId,
+        Number(restaurantId),
+        env.CLUB_TIMEZONE || 'America/Chicago',
+      );
       return json({ ok: true, ...res });
     }
 

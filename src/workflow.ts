@@ -35,6 +35,35 @@ export function addDaysToIsoDate(isoDate: string, days: number): string {
   return dt.toISOString().slice(0, 10);
 }
 
+export function getCentralDateStr(now = new Date(), timeZone = 'America/Chicago'): string {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(now);
+  const map: Record<string, string> = {};
+  for (const p of parts) {
+    if (p.type !== 'literal') map[p.type] = p.value;
+  }
+  return `${map.year}-${map.month}-${map.day}`;
+}
+
+export function safeRestaurantSelectSql(alias = 'r'): string {
+  return `${alias}.id, ${alias}.slug, ${alias}.name, ${alias}.address, ${alias}.city, ${alias}.lat, ${alias}.lng, ${alias}.google_place_id,
+         CASE
+           WHEN ${alias}.last_visited IS NOT NULL AND ${alias}.last_visited > ?
+           THEN (SELECT COUNT(*) FROM dinners d WHERE d.restaurant_id = ${alias}.id AND d.status = 'completed' AND d.dinner_date <= ?)
+           ELSE ${alias}.visit_count
+         END AS visit_count,
+         CASE
+           WHEN ${alias}.last_visited IS NOT NULL AND ${alias}.last_visited > ?
+           THEN (SELECT MAX(d.dinner_date) FROM dinners d WHERE d.restaurant_id = ${alias}.id AND d.status = 'completed' AND d.dinner_date <= ?)
+           ELSE ${alias}.last_visited
+         END AS last_visited,
+         ${alias}.avg_rating, ${alias}.created_at`;
+}
+
 export function isoWeekKey(dateStr: string): string {
   const [y, m, d] = dateStr.split('-').map(Number);
   const dt = new Date(Date.UTC(y, m - 1, d));
@@ -845,13 +874,18 @@ export async function backfillDinnerPlace(
   db: D1Database,
   dinnerId: number,
   restaurantId: number,
+  timeZone = 'America/Chicago',
 ): Promise<{ dinner: DinnerRow; restaurant: RestaurantRow }> {
   const dinner = await db.prepare('SELECT * FROM dinners WHERE id = ?').bind(dinnerId).first<DinnerRow>();
   if (!dinner) throw new Error('Dinner not found');
+  if (dinner.status !== 'completed') {
+    throw new Error('Only completed dinners can be backfilled; use pick-place for upcoming weeks');
+  }
 
   const restaurant = await db.prepare('SELECT * FROM restaurants WHERE id = ?').bind(restaurantId).first<RestaurantRow>();
   if (!restaurant) throw new Error('Restaurant not found');
 
+  const todayStr = getCentralDateStr(new Date(), timeZone);
   const prevRestaurantId = dinner.restaurant_id;
   const hadPrevious = prevRestaurantId !== null;
   await db
@@ -867,14 +901,40 @@ export async function backfillDinnerPlace(
     .run();
 
   if (!hadPrevious || prevRestaurantId !== restaurant.id) {
+    if (dinner.dinner_date <= todayStr) {
+      await db
+        .prepare(
+          `UPDATE restaurants
+           SET visit_count = visit_count + 1,
+               last_visited = CASE WHEN last_visited IS NULL OR last_visited < ? THEN ? ELSE last_visited END
+           WHERE id = ?`,
+        )
+        .bind(dinner.dinner_date, dinner.dinner_date, restaurant.id)
+        .run();
+    } else {
+      await db
+        .prepare('UPDATE restaurants SET visit_count = visit_count + 1 WHERE id = ?')
+        .bind(restaurant.id)
+        .run();
+    }
+  }
+
+  if (hadPrevious && prevRestaurantId !== null && prevRestaurantId !== restaurant.id) {
     await db
       .prepare(
         `UPDATE restaurants
-         SET visit_count = visit_count + 1,
-             last_visited = CASE WHEN last_visited IS NULL OR last_visited < ? THEN ? ELSE last_visited END
+         SET visit_count = MAX(0, visit_count - 1),
+             last_visited = CASE
+               WHEN last_visited = ? THEN (
+                 SELECT MAX(d.dinner_date)
+                 FROM dinners d
+                 WHERE d.restaurant_id = restaurants.id AND d.status = 'completed' AND d.dinner_date <= ?
+               )
+               ELSE last_visited
+             END
          WHERE id = ?`,
       )
-      .bind(dinner.dinner_date, dinner.dinner_date, restaurant.id)
+      .bind(dinner.dinner_date, todayStr, prevRestaurantId)
       .run();
   }
 
@@ -892,15 +952,21 @@ export async function backfillDinnerPlace(
   };
 }
 
-export async function getPlaceReviews(db: D1Database, placeId: number, currentUserSlug: string) {
+export async function getPlaceReviews(
+  db: D1Database,
+  placeId: number,
+  currentUserSlug: string,
+  timeZone = 'America/Chicago',
+) {
+  const todayStr = getCentralDateStr(new Date(), timeZone);
   const place = await db
     .prepare(
-      `SELECT r.*,
+      `SELECT ${safeRestaurantSelectSql('r')},
               (SELECT COUNT(*) FROM ratings rt WHERE rt.restaurant_id = r.id) AS rating_count
        FROM restaurants r
        WHERE r.id = ?`,
     )
-    .bind(placeId)
+    .bind(todayStr, todayStr, todayStr, todayStr, placeId)
     .first<RestaurantRow>();
   if (!place) throw new Error('Restaurant not found');
 
@@ -928,11 +994,11 @@ export async function getPlaceReviews(db: D1Database, placeId: number, currentUs
                 (SELECT COUNT(*) FROM ratings rt WHERE rt.dinner_id = d.id) AS rating_count,
                 (SELECT ROUND(AVG(rt.score), 2) FROM ratings rt WHERE rt.dinner_id = d.id) AS dinner_avg_rating
          FROM dinners d
-         WHERE d.restaurant_id = ? AND d.status = 'completed'
+         WHERE d.restaurant_id = ? AND d.status = 'completed' AND d.dinner_date <= ?
          ORDER BY d.dinner_date DESC
          LIMIT 12`,
       )
-      .bind(currentUserSlug, placeId)
+      .bind(currentUserSlug, placeId, todayStr)
       .all()
   ).results ?? [];
 
@@ -1096,6 +1162,7 @@ export async function createIssueReport(
 }
 
 export async function getBootstrapPayload(env: Env, currentUser: UserRow) {
+  const todayStr = getCentralDateStr(new Date(), env.CLUB_TIMEZONE || 'America/Chicago');
   const active = await getActiveDinner(env.DB);
   const users = (
     await env.DB.prepare('SELECT id, slug, name, avatar_class, initials, is_rotation, rotation_order FROM users ORDER BY COALESCE(rotation_order, 99), id')
@@ -1112,12 +1179,12 @@ export async function getBootstrapPayload(env: Env, currentUser: UserRow) {
   if (active) {
     if (active.restaurant_id) {
       activePlace = await env.DB.prepare(
-        `SELECT r.*,
+        `SELECT ${safeRestaurantSelectSql('r')},
                 (SELECT COUNT(*) FROM ratings rt WHERE rt.restaurant_id = r.id) AS rating_count
          FROM restaurants r
          WHERE r.id = ?`,
       )
-        .bind(active.restaurant_id)
+        .bind(todayStr, todayStr, todayStr, todayStr, active.restaurant_id)
         .first<RestaurantRow>();
     }
     nightVotes = (await env.DB.prepare('SELECT user_slug, choice FROM night_votes WHERE dinner_id = ?').bind(active.id).all()).results as typeof nightVotes;
@@ -1129,12 +1196,12 @@ export async function getBootstrapPayload(env: Env, currentUser: UserRow) {
     if (ids.length > 0) {
       const candRows = (
         await env.DB.prepare(
-          `SELECT r.*,
+          `SELECT ${safeRestaurantSelectSql('r')},
                   (SELECT COUNT(*) FROM ratings rt WHERE rt.restaurant_id = r.id) AS rating_count
            FROM restaurants r
            WHERE r.id IN (${ids.map(() => '?').join(',')})`,
         )
-          .bind(...ids)
+          .bind(todayStr, todayStr, todayStr, todayStr, ...ids)
           .all<RestaurantRow>()
       ).results ?? [];
       const candMap = new Map(candRows.map((r) => [Number(r.id), r]));
@@ -1240,6 +1307,7 @@ export async function getBootstrapPayload(env: Env, currentUser: UserRow) {
     upcoming,
     recentDinners,
     lastDinnerRatings,
+    today: todayStr,
     vapidPublicKey: env.VAPID_PUBLIC_KEY ?? null,
     appUrl: env.APP_URL,
     githubRepo: env.GITHUB_REPO,

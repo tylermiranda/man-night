@@ -58,8 +58,8 @@ function extractCity(addr) {
   return m ? m[1] : 'Wichita';
 }
 
-// Drop non-venue placeholders so we keep 226 distinct real places
-const SKIP_KEYS = new Set(['hello dan', 'jacobs']);
+// Drop non-venue placeholders and future-only duplicates so we keep 225 distinct real places
+const SKIP_KEYS = new Set(['hello dan', 'jacobs', 'deanos tapworks east']);
 const filteredPlaces = placesRaw.filter((p) => !SKIP_KEYS.has(p.key));
 
 const usedSlugs = new Set();
@@ -391,7 +391,8 @@ for (const r of restaurants) {
   const c = linkedCounts.get(r.id) || 0;
   r.visitCount = Math.max(c, r.seedVisits);
   const l = linkedLast.get(r.id) || '';
-  r.lastVisited = l > (r.seedLast || '') ? l : r.seedLast;
+  const safeSeedLast = r.seedLast && r.seedLast <= '2026-11-10' ? r.seedLast : null;
+  r.lastVisited = l > (safeSeedLast || '') ? l : safeSeedLast;
 }
 
 const users = [

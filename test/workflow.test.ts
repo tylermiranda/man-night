@@ -15,6 +15,7 @@ const rootDir = resolve(__dirname, '..');
 const schemaSql = readFileSync(resolve(rootDir, 'migrations/0001_schema.sql'), 'utf8');
 const seedSql = readFileSync(resolve(rootDir, 'migrations/0002_seed_history.sql'), 'utf8');
 const migration0003Sql = readFileSync(resolve(rootDir, 'migrations/0003_ratings_indexes.sql'), 'utf8');
+const migration0004Sql = readFileSync(resolve(rootDir, 'migrations/0004_fix_future_visit_dates.sql'), 'utf8');
 
 function makeEnv(db: D1Database, overrides: Partial<Env> = {}): Env {
   return {
@@ -46,6 +47,7 @@ describe('Man Night PWA Worker & Seed', () => {
   beforeEach(async () => {
     const db = createTestD1(schemaSql, seedSql);
     await db.exec(migration0003Sql);
+    await db.exec(migration0004Sql);
     env = makeEnv(db);
   });
 
@@ -64,7 +66,7 @@ describe('Man Night PWA Worker & Seed', () => {
     };
 
     expect(data.stats.total_dinners).toBe(614);
-    expect(data.stats.total_places).toBe(226);
+    expect(data.stats.total_places).toBe(225);
     expect(data.thisWeek.dinner.week_key).toBe('2026-W47');
     expect(data.thisWeek.dinner.host_slug).toBe('eric');
     expect(data.thisWeek.dinner.status).toBe('night_poll');
@@ -667,5 +669,90 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(closedEarly.dinner.restaurant_id).toBe(p3.id);
     expect(closedEarly.dinner.night_locked_at).toBeNull();
     expect(closedEarly.dinner.chosen_via).toBe('host_poll');
+  });
+
+  it('excludes future scheduled places from last_visited and Most Recent Stop rankings', async () => {
+    const placesRes = await worker.fetch(makeReq('/api/places'), env);
+    expect(placesRes.status).toBe(200);
+    const { places } = (await placesRes.json()) as {
+      places: Array<{ id: number; slug: string; name: string; visit_count: number; last_visited: string | null }>;
+    };
+
+    expect(places.find((p) => p.slug === 'deanos-tapworks-east')).toBeUndefined();
+    const deanos = places.find((p) => p.slug === 'deanos');
+    expect(deanos).toBeTruthy();
+    expect(deanos!.id).toBe(38);
+    expect(deanos!.visit_count).toBe(2);
+    expect(deanos!.last_visited).toBe('2023-09-27');
+
+    // Upcoming 2026-12-01 dinner stays linked to canonical Deano's
+    const bootRes = await worker.fetch(makeReq('/api/bootstrap'), env);
+    const boot = (await bootRes.json()) as {
+      today: string;
+      upcoming: Array<{ id: number; dinner_date: string; restaurant_id: number | null; restaurant_name: string | null }>;
+    };
+    expect(boot.today).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    const heathDinner = boot.upcoming.find((u) => u.dinner_date === '2026-12-01');
+    expect(heathDinner?.restaurant_id).toBe(38);
+    expect(heathDinner?.restaurant_name).toBe("Deano's");
+
+    // Seeded ledger must contain no future last_visited and El Mexico Cafe (2026-11-10) must be #1 most recent
+    const withLast = places.filter((p) => p.last_visited !== null);
+    for (const p of withLast) {
+      expect(p.last_visited! <= '2026-11-10').toBe(true);
+    }
+    const byRecent = [...withLast].sort((a, b) => b.last_visited!.localeCompare(a.last_visited!));
+    expect(byRecent[0].name).toBe('El Mexico Cafe');
+    expect(byRecent[0].last_visited).toBe('2026-11-10');
+
+    // Picking a place for an upcoming week must NOT alter visit_count or last_visited until completed
+    const nextWeek = boot.upcoming[0];
+    const poplar = places.find((p) => p.name.includes('Poplar'))!;
+    const pickRes = await worker.fetch(
+      makeReq('/api/week/pick-place', 'POST', {
+        dinnerId: nextWeek.id,
+        restaurantId: poplar.id,
+        dayOfWeek: 'Tuesday',
+      }),
+      env,
+    );
+    expect(pickRes.status).toBe(200);
+
+    const placesAfterPick = (
+      (await (await worker.fetch(makeReq('/api/places'), env)).json()) as {
+        places: Array<{ id: number; visit_count: number; last_visited: string | null }>;
+      }
+    ).places;
+    const poplarAfter = placesAfterPick.find((p) => p.id === poplar.id)!;
+    expect(poplarAfter.visit_count).toBe(poplar.visit_count);
+    expect(poplarAfter.last_visited).toBe(poplar.last_visited);
+
+    // Injecting a synthetic future last_visited into D1 is clamped on /api/places and /api/places/:id/reviews
+    await env.DB.prepare("UPDATE restaurants SET visit_count = 99, last_visited = '2099-12-31' WHERE id = 38").run();
+    const clampedList = (
+      (await (await worker.fetch(makeReq('/api/places'), env)).json()) as {
+        places: Array<{ id: number; visit_count: number; last_visited: string | null }>;
+      }
+    ).places;
+    const deanosClamped = clampedList.find((p) => p.id === 38)!;
+    expect(deanosClamped.visit_count).toBe(2);
+    expect(deanosClamped.last_visited).toBe('2023-09-27');
+
+    const placeRevRes = await worker.fetch(makeReq('/api/places/38/reviews'), env);
+    expect(placeRevRes.status).toBe(200);
+    const placeRev = (await placeRevRes.json()) as {
+      place: { visit_count: number; last_visited: string | null };
+      visits: Array<{ dinner_date: string }>;
+    };
+    expect(placeRev.place.visit_count).toBe(2);
+    expect(placeRev.place.last_visited).toBe('2023-09-27');
+    expect(placeRev.visits.every((v) => v.dinner_date <= boot.today)).toBe(true);
+
+    // Backfilling an uncompleted upcoming dinner must be rejected
+    const badBackfill = await worker.fetch(
+      makeReq(`/api/dinners/${nextWeek.id}/backfill`, 'POST', { restaurantId: 38 }),
+      env,
+    );
+    expect(badBackfill.status).toBe(400);
   });
 });

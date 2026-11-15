@@ -12,7 +12,7 @@ Weekly Wichita dinner club PWA at **https://dinner.tylermiranda.com** powered by
     - **Dinner Day 12:00 PM (Noon Rule)**: If unpicked, draws 4 random places from club history (skipping anything visited in the last 8 weeks).
     - **Dinner Day 4:00 PM**: Noon vote closes (random tiebreak), locks venue, updates Google Calendar (`Man Night @ <host>'s. Dinner @ <place>`), and pushes crew.
     - **30 min before dinner**: Push reminder carrying a Google Maps directions link (`data.url`).
-- **Database (`migrations/`)**: Seeded from `data/seed/man_night.ics` + `places.json` + enriched Wichita coordinates (`614` deduplicated dinners through Nov 10, 2026; `226` distinct places; upcoming rotation starting Nov 17 Eric → Nov 24 Tyler → Dec 1 Heath).
+- **Database (`migrations/`)**: Seeded from `data/seed/man_night.ics` + `places.json` + enriched Wichita coordinates (`614` deduplicated dinners through Nov 10, 2026; `225` distinct places; upcoming rotation starting Nov 17 Eric → Nov 24 Tyler → Dec 1 Heath).
 
 ## Development & Tests
 ```bash

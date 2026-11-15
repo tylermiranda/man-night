@@ -107,6 +107,29 @@ function shiftIsoDate(isoDate, deltaDays) {
   return dt.toISOString().slice(0, 10);
 }
 
+function getTodayCentralIso() {
+  const serverToday = state.bootstrap?.today;
+  if (typeof serverToday === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(serverToday)) {
+    return serverToday;
+  }
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Chicago',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date());
+  const map = {};
+  for (const p of parts) {
+    if (p.type !== 'literal') map[p.type] = p.value;
+  }
+  return `${map.year}-${map.month}-${map.day}`;
+}
+
+function effectiveLastVisited(place, todayIso = getTodayCentralIso()) {
+  const d = place?.last_visited;
+  return d && d <= todayIso ? d : null;
+}
+
 function parsePollIds(raw) {
   if (!raw) return [];
   try {
@@ -295,19 +318,21 @@ function closeModal() {
 function renderPlacePollOptions(tw) {
   const totalNoon = tw.noonVotes.length;
   const myNoon = tw.noonVotes.find((v) => v.user_slug === state.bootstrap?.user?.slug)?.restaurant_id;
+  const todayIso = getTodayCentralIso();
   return (tw.noonCandidates || [])
     .map((p) => {
       const voters = tw.noonVotes.filter((v) => v.restaurant_id === p.id);
       const pct = totalNoon ? Math.round((voters.length / totalNoon) * 100) : 0;
       const sel = myNoon === p.id;
       const ratingTxt = p.avg_rating != null ? `★ ${Number(p.avg_rating).toFixed(1)} · ` : '';
+      const lastVisited = effectiveLastVisited(p, todayIso);
       return `
         <button class="vote-option ${sel ? 'selected' : ''}" data-action="vote-noon" data-place-id="${p.id}">
           <div class="vote-fill" style="width:${pct}%"></div>
           <div class="vote-inner">
             <div>
               <div class="vote-main">${esc(p.name)}</div>
-              <div class="vote-meta">${ratingTxt}${p.visit_count} past visits · ${p.last_visited ? `Last ${fmtShortDate(p.last_visited)}` : 'In the books'}${p.address ? ` · ${esc(p.address)}` : ''}</div>
+              <div class="vote-meta">${ratingTxt}${p.visit_count} past visits · ${lastVisited ? `Last ${fmtShortDate(lastVisited)}` : 'In the books'}${p.address ? ` · ${esc(p.address)}` : ''}</div>
             </div>
             <div style="display:flex;align-items:center;gap:8px;">
               ${voters.map((v) => avatarHtml(v.user_slug, v.user_slug, 'sm')).join('')}
@@ -800,6 +825,7 @@ function renderHistoryView() {
 
 function getFilteredPlaces() {
   const q = state.placesQuery.trim().toLowerCase();
+  const todayIso = getTodayCentralIso();
   const cutoffTwoYearsAgo = new Date(Date.now() - 365 * 2 * 86400000).toISOString().slice(0, 10);
   let list = [...state.places];
 
@@ -808,7 +834,10 @@ function getFilteredPlaces() {
   } else if (state.placesFilter === 'regulars') {
     list = list.filter((p) => (p.visit_count || 0) >= 5);
   } else if (state.placesFilter === 'comeback') {
-    list = list.filter((p) => (p.visit_count || 0) >= 3 && p.last_visited && p.last_visited <= cutoffTwoYearsAgo);
+    list = list.filter((p) => {
+      const lv = effectiveLastVisited(p, todayIso);
+      return (p.visit_count || 0) >= 3 && lv && lv <= cutoffTwoYearsAgo;
+    });
   } else if (state.placesFilter === 'one_hit') {
     list = list.filter((p) => (p.visit_count || 0) === 1);
   } else if (state.placesFilter === 'reviewed') {
@@ -827,7 +856,11 @@ function getFilteredPlaces() {
         a.name.localeCompare(b.name),
     );
   } else if (state.placesSort === 'recent') {
-    list.sort((a, b) => (b.last_visited || '').localeCompare(a.last_visited || ''));
+    list.sort((a, b) => {
+      const aDate = effectiveLastVisited(a, todayIso) || '';
+      const bDate = effectiveLastVisited(b, todayIso) || '';
+      return bDate.localeCompare(aDate) || (b.visit_count - a.visit_count) || a.name.localeCompare(b.name);
+    });
   } else if (state.placesSort === 'alpha') {
     list.sort((a, b) => a.name.localeCompare(b.name));
   } else {
@@ -840,6 +873,7 @@ function renderSelectedPlaceCard(selected) {
   if (!selected) return '';
   const cached = state.placeReviews[selected.id];
   const place = cached?.place || selected;
+  const lastVisited = effectiveLastVisited(place);
   const ratingCount = place.rating_count ?? (cached?.reviews?.length ?? 0);
   const gmaps = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(place.address || place.name)}`;
   const ratingBadgeHtml =
@@ -865,7 +899,7 @@ function renderSelectedPlaceCard(selected) {
       </div>
       <div style="font-weight:750;font-size:18px;line-height:1.2;">${esc(place.name)}</div>
       <div style="font-size:13px;color:var(--muted);margin-top:3px;">
-        ${place.visit_count} ${place.visit_count === 1 ? 'visit' : 'visits'}${place.last_visited ? ` · Last ${fmtDate(place.last_visited)}` : ''}
+        ${place.visit_count} ${place.visit_count === 1 ? 'visit' : 'visits'}${lastVisited ? ` · Last ${fmtDate(lastVisited)}` : ''}
       </div>
       <div style="font-size:12px;color:var(--muted);margin-top:2px;margin-bottom:10px;">${esc(place.address || place.city)}</div>
       <div class="btn-row" style="margin-bottom:12px;">
@@ -921,16 +955,27 @@ async function loadPlaceReviews(placeId) {
 
 function renderPlacesView() {
   const all = state.places || [];
+  const todayIso = getTodayCentralIso();
   const totalVisits = all.reduce((sum, p) => sum + (p.visit_count || 0), 0);
   const tenPlus = [...all].filter((p) => (p.visit_count || 0) >= 10).sort((a, b) => b.visit_count - a.visit_count);
   const regulars = all.filter((p) => (p.visit_count || 0) >= 5);
   const oneHits = all.filter((p) => (p.visit_count || 0) === 1);
   const reviewedPlaces = all.filter((p) => (p.rating_count || 0) > 0 || p.avg_rating != null);
   const byVisits = [...all].sort((a, b) => (b.visit_count - a.visit_count) || a.name.localeCompare(b.name));
-  const byRecent = [...all].filter((p) => p.last_visited).sort((a, b) => b.last_visited.localeCompare(a.last_visited));
+  const byRecent = [...all]
+    .filter((p) => (p.visit_count || 0) > 0 && effectiveLastVisited(p, todayIso))
+    .sort((a, b) => {
+      const aDate = effectiveLastVisited(a, todayIso) || '';
+      const bDate = effectiveLastVisited(b, todayIso) || '';
+      return bDate.localeCompare(aDate) || (b.visit_count - a.visit_count) || a.name.localeCompare(b.name);
+    });
   const comebackPool = [...all]
-    .filter((p) => (p.visit_count || 0) >= 5 && p.last_visited)
-    .sort((a, b) => a.last_visited.localeCompare(b.last_visited));
+    .filter((p) => (p.visit_count || 0) >= 5 && effectiveLastVisited(p, todayIso))
+    .sort((a, b) => {
+      const aDate = effectiveLastVisited(a, todayIso) || '';
+      const bDate = effectiveLastVisited(b, todayIso) || '';
+      return aDate.localeCompare(bDate);
+    });
   const topDerby = [...all]
     .filter((p) => (p.city || '').toLowerCase().includes('derby') || (p.address || '').toLowerCase().includes('derby'))
     .sort((a, b) => b.visit_count - a.visit_count)[0];
@@ -958,13 +1003,13 @@ function renderPlacesView() {
       icon: '🕰️',
       title: 'Dusty Boot (Comeback Due)',
       place: comebackPool[0],
-      meta: `${comebackPool[0].visit_count}× regular · Last ${fmtShortDate(comebackPool[0].last_visited)}`,
+      meta: `${comebackPool[0].visit_count}× regular · Last ${fmtShortDate(effectiveLastVisited(comebackPool[0], todayIso))}`,
     },
     byRecent[0] && {
       icon: '🔥',
       title: 'Most Recent Stop',
       place: byRecent[0],
-      meta: `${fmtDate(byRecent[0].last_visited)} · ${byRecent[0].visit_count}× total`,
+      meta: `${fmtDate(effectiveLastVisited(byRecent[0], todayIso))} · ${byRecent[0].visit_count}× total`,
     },
     topDerby && {
       icon: '⭐',
@@ -1037,20 +1082,21 @@ function renderPlacesView() {
     .join('');
 
   const listHtml = list
-    .map(
-      (p) => `
+    .map((p) => {
+      const lv = effectiveLastVisited(p, todayIso);
+      return `
       <button class="place-card-row ${selected?.id === p.id ? 'selected' : ''}" data-action="select-place" data-place-id="${p.id}">
         <div style="min-width:0;">
           <div class="place-name">${esc(p.name)}${p.visit_count >= 10 ? ' 🏆' : p.visit_count >= 5 ? ' 🔥' : ''}</div>
-          <div class="place-addr">${esc(p.address || p.city)}${p.last_visited ? ` · Last ${fmtShortDate(p.last_visited)}` : ''}</div>
+          <div class="place-addr">${esc(p.address || p.city)}${lv ? ` · Last ${fmtShortDate(lv)}` : ''}</div>
         </div>
         <div style="display:flex;align-items:center;gap:6px;flex-shrink:0;">
           ${p.avg_rating != null ? `<span class="badge badge-star tabular">★ ${Number(p.avg_rating).toFixed(1)}</span>` : ''}
           <span class="badge badge-muted tabular">${p.visit_count}×</span>
         </div>
       </button>
-    `,
-    )
+    `;
+    })
     .join('');
 
   return `
@@ -1283,7 +1329,7 @@ function showWalkthrough(step = 0) {
   const steps = [
     {
       title: 'Welcome to Man Night',
-      body: `<p class="hero-sub">Established 2007. We now have <strong>${b.stats?.total_dinners ?? 614} dinners</strong> and <strong>${b.stats?.total_places ?? 226} Wichita &amp; Derby restaurants</strong> on the books—no more scrolling old calendar threads.</p>`,
+      body: `<p class="hero-sub">Established 2007. We now have <strong>${b.stats?.total_dinners ?? 614} dinners</strong> and <strong>${b.stats?.total_places ?? 225} Wichita &amp; Derby restaurants</strong> on the books—no more scrolling old calendar threads.</p>`,
     },
     {
       title: 'How a week works',
@@ -2008,8 +2054,12 @@ document.addEventListener('click', async (e) => {
       state.pollCandidateIds = state.pollCandidateIds.filter((id) => id !== placeId);
       renderPollBuilderBody();
     } else if (action === 'poll-fill-random') {
+      const todayIso = getTodayCentralIso();
       const cutoff = new Date(Date.now() - 56 * 86400000).toISOString().slice(0, 10);
-      const pool = state.places.filter((p) => !p.last_visited || p.last_visited < cutoff);
+      const pool = state.places.filter((p) => {
+        const lv = effectiveLastVisited(p, todayIso);
+        return !lv || lv < cutoff;
+      });
       const source = [...(pool.length >= 4 ? pool : state.places)];
       for (let i = source.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));

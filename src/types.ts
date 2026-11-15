@@ -159,11 +159,19 @@ export interface DinnerRow {
   is_historical: number;
 }
 
+export interface HostFavoritePlace {
+  restaurant_id: number;
+  restaurant_name: string;
+  times_picked: number;
+  last_picked: string;
+}
+
 export interface HostStatRow {
   host_slug: string;
   host_label: string;
   hosted_count: number;
   last_hosted: string | null;
+  favorite_place?: HostFavoritePlace | null;
 }
 
 export interface SelloutStatRow {

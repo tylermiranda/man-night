@@ -5,6 +5,7 @@ import type {
   AllowedPhotoMime,
   DinnerRow,
   Env,
+  HostFavoritePlace,
   HostStatRow,
   LuckyPool,
   MealPhotoViewRow,
@@ -2058,6 +2059,37 @@ export async function getBootstrapPayload(env: Env, currentUser: UserRow) {
        ORDER BY hosted_count DESC, COALESCE(u.rotation_order, 99) ASC, host_label ASC`,
     ).all<HostStatRow>()
   ).results ?? [];
+
+  const favRows = (
+    await env.DB.prepare(
+      `SELECT d.host_slug,
+              d.restaurant_id,
+              r.name AS restaurant_name,
+              COUNT(*) AS times_picked,
+              MAX(d.dinner_date) AS last_picked
+       FROM dinners d
+       JOIN restaurants r ON r.id = d.restaurant_id
+       WHERE d.status = 'completed' AND d.host_slug IS NOT NULL AND d.restaurant_id IS NOT NULL
+       GROUP BY d.host_slug, d.restaurant_id
+       ORDER BY d.host_slug, times_picked DESC, last_picked DESC`,
+    ).all<{ host_slug: string; restaurant_id: number; restaurant_name: string; times_picked: number; last_picked: string }>()
+  ).results ?? [];
+
+  const favMap = new Map<string, HostFavoritePlace>();
+  for (const row of favRows) {
+    if (!favMap.has(row.host_slug)) {
+      favMap.set(row.host_slug, {
+        restaurant_id: row.restaurant_id,
+        restaurant_name: row.restaurant_name,
+        times_picked: row.times_picked,
+        last_picked: row.last_picked,
+      });
+    }
+  }
+
+  for (const h of hostStats) {
+    h.favorite_place = favMap.get(h.host_slug) ?? null;
+  }
 
   const activeId = active?.id ?? -1;
 

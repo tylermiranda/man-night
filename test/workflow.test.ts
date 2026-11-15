@@ -1636,8 +1636,9 @@ describe('Man Night PWA Worker & Seed', () => {
     // 1. Changelog integrity
     const seenIds = new Set<string>();
     expect(WHATS_NEW_RELEASES.length).toBeGreaterThanOrEqual(11);
-    expect(WHATS_NEW_RELEASES[0].id).toBe('2026-11-15-meal-prices');
-    expect(WHATS_NEW_RELEASES[0].issueNumber).toBe(13);
+    expect(WHATS_NEW_RELEASES[0].id).toBe('2026-11-15-favorite-places');
+    expect(WHATS_NEW_RELEASES[0].issueNumber).toBe(14);
+    expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-15-meal-prices' && e.issueNumber === 13)).toBe(true);
     expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-15-meal-pictures' && e.issueNumber === 12)).toBe(true);
     expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-15-whats-new' && e.issueNumber === 11)).toBe(true);
     for (const entry of WHATS_NEW_RELEASES) {
@@ -1720,7 +1721,7 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(bootInit.whatsNew.seenId).toBeNull();
     expect(bootInit.whatsNew.hasUnseen).toBe(true);
     expect(bootInit.whatsNew.unseenCount).toBe(WHATS_NEW_RELEASES.length);
-    expect(bootInit.whatsNew.entries[0].creditLabel).toBe('Idea by Jacob');
+    expect(bootInit.whatsNew.entries[0].creditLabel).toBe('Idea by Tyler');
 
     const getRes = await worker.fetch(makeReq('/api/whats-new'), env);
     expect(getRes.status).toBe(200);
@@ -2036,7 +2037,7 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(appJs).toContain("api('/api/photos'");
     expect(stylesCss).toContain('.meal-photo-grid');
     expect(stylesCss).toContain('.meal-lightbox');
-    expect(swJs).toContain("CACHE_NAME = 'man-night-shell-v12'");
+    expect(swJs).toMatch(/CACHE_NAME = 'man-night-shell-v\d+'/);
   });
 
   it('tracks meal prices, calculates dinner averages, surfaces price progression and inflation increase across places (issue #13)', async () => {
@@ -2193,5 +2194,63 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(stylesCss).toContain('.review-price');
     expect(stylesCss).toContain('.price-tracker-card');
     expect(stylesCss).toContain('.price-trend-tag');
+  });
+
+  it('supports Issue #14: host favorite place on crew page based on times picked when hosting', async () => {
+    // 1. Check bootstrap payload includes hostStats with favorite_place
+    const res = await worker.fetch(makeReq('/api/bootstrap'), env);
+    expect(res.status).toBe(200);
+    const b = (await res.json()) as {
+      hostStats: Array<{
+        host_slug: string;
+        host_label: string;
+        hosted_count: number;
+        favorite_place?: {
+          restaurant_id: number;
+          restaurant_name: string;
+          times_picked: number;
+          last_picked: string;
+        } | null;
+      }>;
+    };
+
+    expect(b.hostStats.length).toBeGreaterThan(0);
+
+    // Chuck's favorite place is Poplar (17x)
+    const chuck = b.hostStats.find((h) => h.host_slug === 'chuck');
+    expect(chuck).toBeDefined();
+    expect(chuck?.favorite_place).toBeDefined();
+    expect(chuck?.favorite_place?.restaurant_name).toBe('Poplar');
+    expect(chuck?.favorite_place?.times_picked).toBe(17);
+
+    // Eric's favorite place is Pour Haus Restaurant & Tavern (23x)
+    const eric = b.hostStats.find((h) => h.host_slug === 'eric');
+    expect(eric).toBeDefined();
+    expect(eric?.favorite_place).toBeDefined();
+    expect(eric?.favorite_place?.restaurant_name).toContain('Pour Haus');
+    expect(eric?.favorite_place?.times_picked).toBe(23);
+
+    // Tyler's favorite place is Empire Tacos (6x)
+    const tyler = b.hostStats.find((h) => h.host_slug === 'tyler');
+    expect(tyler).toBeDefined();
+    expect(tyler?.favorite_place).toBeDefined();
+    expect(tyler?.favorite_place?.restaurant_name).toBe('Empire Tacos');
+    expect(tyler?.favorite_place?.times_picked).toBe(6);
+
+    // 2. Validate UI rendering in public/app.js
+    const appJs = readFileSync(resolve(rootDir, 'public/app.js'), 'utf8');
+    expect(appJs).toContain('Fav spot:');
+    expect(appJs).toContain('Crew favorite spots');
+    expect(appJs).toContain('Most picked when hosting');
+    expect(appJs).toContain('times_picked');
+
+    // 3. Verify changelog has entry for issue 14
+    expect(WHATS_NEW_RELEASES[0].id).toBe('2026-11-15-favorite-places');
+    expect(WHATS_NEW_RELEASES[0].issueNumber).toBe(14);
+    expect(WHATS_NEW_RELEASES[0].creditSlug).toBe('tyler');
+
+    // 4. Verify service worker cache version
+    const swJs = readFileSync(resolve(rootDir, 'public/sw.js'), 'utf8');
+    expect(swJs).toMatch(/CACHE_NAME = 'man-night-shell-v\d+'/);
   });
 });

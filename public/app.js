@@ -1891,15 +1891,26 @@ function renderCrewView() {
     .map((h) => {
       const pct = Math.round((h.hosted_count / maxHost) * 100);
       const isKing = kingSlugs.has(h.host_slug);
+      const fav = h.favorite_place;
+      const favHtml = fav
+        ? `<div style="font-size:11px;color:var(--muted);margin-top:2px;display:flex;align-items:center;gap:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+            <span>Fav spot:</span>
+            <button class="link-btn" data-action="focus-place" data-place-id="${fav.restaurant_id}" style="font-size:11px;font-weight:600;padding:0;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left;">${esc(fav.restaurant_name)}</button>
+            <span class="tabular">(${fav.times_picked}×)</span>
+          </div>`
+        : '';
       return `
-        <div style="display:flex;align-items:center;gap:10px;padding:7px 0;">
-          ${avatarHtml(h.host_slug, h.host_label, 'sm')}
-          <div style="width:110px;display:flex;align-items:center;gap:5px;flex-shrink:0;">
-            <span style="font-weight:${isKing ? '750' : '600'};font-size:13px;">${esc(h.host_label)}</span>
-            ${isKing ? `<span class="badge badge-gold" style="padding:1px 6px;font-size:10px;">👑 ${kingsOfHosting.length > 1 ? 'Co-King' : 'King'}</span>` : ''}
+        <div style="padding:7px 0;border-bottom:1px solid var(--line);">
+          <div style="display:flex;align-items:center;gap:10px;">
+            ${avatarHtml(h.host_slug, h.host_label, 'sm')}
+            <div style="width:110px;display:flex;align-items:center;gap:5px;flex-shrink:0;">
+              <span style="font-weight:${isKing ? '750' : '600'};font-size:13px;">${esc(h.host_label)}</span>
+              ${isKing ? `<span class="badge badge-gold" style="padding:1px 6px;font-size:10px;">👑 ${kingsOfHosting.length > 1 ? 'Co-King' : 'King'}</span>` : ''}
+            </div>
+            <div class="stat-bar-track"><div class="stat-bar-fill ${isKing ? 'gold' : ''}" style="width:${pct}%"></div></div>
+            <span class="tabular" style="width:36px;text-align:right;font-weight:700;font-size:13px;">${h.hosted_count}</span>
           </div>
-          <div class="stat-bar-track"><div class="stat-bar-fill ${isKing ? 'gold' : ''}" style="width:${pct}%"></div></div>
-          <span class="tabular" style="width:36px;text-align:right;font-weight:700;font-size:13px;">${h.hosted_count}</span>
+          ${favHtml}
         </div>
       `;
     })
@@ -1980,6 +1991,38 @@ function renderCrewView() {
         </section>
       </div>
       <div class="stack">
+        <section class="card">
+          <div class="card-kicker">
+            <span>Crew favorite spots</span>
+            <span>Most picked when hosting</span>
+          </div>
+          <div class="list-clean">
+            ${hostStats
+              .filter((h) => h.favorite_place)
+              .map(
+                (h) => `
+                <div class="row-item" style="padding:8px 0;">
+                  <div style="display:flex;align-items:center;gap:8px;min-width:0;">
+                    ${avatarHtml(h.host_slug, h.host_label, 'sm')}
+                    <div style="min-width:0;">
+                      <div style="font-weight:650;font-size:13px;line-height:1.2;">${esc(h.host_label)}</div>
+                      <div style="font-size:12px;color:var(--muted);margin-top:2px;">
+                        <button class="link-btn" data-action="focus-place" data-place-id="${h.favorite_place.restaurant_id}" style="font-weight:600;padding:0;text-align:left;">
+                          ${esc(h.favorite_place.restaurant_name)}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                  <div style="text-align:right;flex-shrink:0;">
+                    <span class="badge badge-star tabular">${h.favorite_place.times_picked}× hosted</span>
+                    ${h.favorite_place.last_picked ? `<div style="font-size:10px;color:var(--muted);margin-top:2px;">Last: ${fmtShortDate(h.favorite_place.last_picked)}</div>` : ''}
+                  </div>
+                </div>
+              `,
+              )
+              .join('')}
+          </div>
+        </section>
         <section class="card">
           <div class="card-kicker">
             <span>Sellout tracker · From Nov 2026</span>

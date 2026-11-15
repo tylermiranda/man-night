@@ -11,6 +11,18 @@ import type { WhatsNewEntry, WhatsNewPayload, WhatsNewViewEntry } from './types'
  */
 export const WHATS_NEW_RELEASES: readonly WhatsNewEntry[] = [
   {
+    id: '2026-11-15-favorite-places',
+    date: '2026-11-15',
+    kind: 'feature',
+    title: '👑 Crew Favorite Places',
+    summary:
+      'Check the Crew page to see each host’s all-time favorite restaurant based on how often they picked it when hosting, complete with quick links to view place details.',
+    creditSlug: 'tyler',
+    creditName: 'Tyler',
+    creditRole: 'idea',
+    issueNumber: 14,
+  },
+  {
     id: '2026-11-15-meal-prices',
     date: '2026-11-15',
     kind: 'feature',

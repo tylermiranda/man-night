@@ -1252,3 +1252,49 @@ html[data-theme="dark"] .maplibregl-popup-content {
   color: var(--ink);
   margin-top: 4px;
 }
+
+/* Place Poll Builder */
+.poll-tray {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 36px;
+  padding: 8px 10px;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  background: var(--bg);
+  margin-bottom: 10px;
+  align-items: center;
+}
+
+.poll-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  border: 1px solid #f7c7c9;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.poll-chip button {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0 2px;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.poll-chip button:hover {
+  color: var(--accent);
+}
+
+.place-card-row.selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}

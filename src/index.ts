@@ -10,6 +10,7 @@ import {
   castRsvp,
   closeNoonVote,
   createIssueReport,
+  createPlacePoll,
   createRestaurant,
   getActiveDinner,
   getBootstrapPayload,
@@ -180,7 +181,12 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
     }
 
     if (path === '/api/week/pick-place' && method === 'POST') {
-      const body = await readJson<{ dinnerId?: number; restaurantId: number; dayOfWeek?: string }>(request);
+      const body = await readJson<{
+        dinnerId?: number;
+        restaurantId: number;
+        dayOfWeek?: string;
+        keepNightVote?: boolean;
+      }>(request);
       const dinner = body.dinnerId
         ? await env.DB.prepare('SELECT id FROM dinners WHERE id = ?').bind(body.dinnerId).first<{ id: number }>()
         : await getActiveDinner(env.DB);
@@ -192,9 +198,43 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
         dinner.id,
         Number(body.restaurantId),
         'picker',
-        'Host picked directly (no vote)',
+        dayChoice || body.keepNightVote === false ? 'Host picked directly (no vote)' : '',
         dayChoice,
+        { keepNightVote: body.keepNightVote },
       );
+      return json({ ok: true, ...res });
+    }
+
+    if (path === '/api/week/create-poll' && method === 'POST') {
+      const body = await readJson<{
+        dinnerId?: number;
+        restaurantIds: number[];
+        dayOfWeek?: string;
+        keepNightVote?: boolean;
+      }>(request);
+      if (!Array.isArray(body.restaurantIds)) {
+        return json({ error: 'restaurantIds array is required' }, 400);
+      }
+      const dinner = body.dinnerId
+        ? await env.DB.prepare('SELECT id FROM dinners WHERE id = ?').bind(body.dinnerId).first<{ id: number }>()
+        : await getActiveDinner(env.DB);
+      if (!dinner) return json({ error: 'No active dinner found' }, 404);
+      const dayChoice =
+        body.dayOfWeek === 'Tuesday' || body.dayOfWeek === 'Wednesday' ? body.dayOfWeek : undefined;
+      const res = await createPlacePoll(env, dinner.id, body.restaurantIds.map(Number), {
+        keepNightVote: body.keepNightVote,
+        dayChoice,
+      });
+      return json({ ok: true, ...res });
+    }
+
+    if (path === '/api/week/close-poll' && method === 'POST') {
+      const body = await readJson<{ dinnerId?: number }>(request);
+      const dinner = body.dinnerId
+        ? await env.DB.prepare('SELECT id FROM dinners WHERE id = ?').bind(body.dinnerId).first<{ id: number }>()
+        : await getActiveDinner(env.DB);
+      if (!dinner) return json({ error: 'No active dinner found' }, 404);
+      const res = await closeNoonVote(env, dinner.id);
       return json({ ok: true, ...res });
     }
 

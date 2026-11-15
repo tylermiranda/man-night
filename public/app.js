@@ -16,6 +16,10 @@ const state = {
   ratingScore: 5,
   modalRatingScore: 5,
   pickerDay: 'Tuesday',
+  pickerKeepNightVote: true,
+  pickerAllowKeepNightVote: false,
+  pollCandidateIds: [],
+  pollSearchQuery: '',
   theme: localStorage.getItem('mn_theme') || 'light',
   deferredInstallPrompt: null,
   installBannerDismissed: localStorage.getItem('mn_install_dismissed') === '1',
@@ -94,6 +98,23 @@ function monthLabel(iso) {
   const [y, m, d] = iso.split('-').map(Number);
   const dt = new Date(Date.UTC(y, m - 1, d));
   return dt.toLocaleDateString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+}
+
+function shiftIsoDate(isoDate, deltaDays) {
+  if (!isoDate) return '';
+  const [y, m, d] = isoDate.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d + deltaDays));
+  return dt.toISOString().slice(0, 10);
+}
+
+function parsePollIds(raw) {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.map(Number).filter((n) => Number.isInteger(n) && n > 0) : [];
+  } catch {
+    return [];
+  }
 }
 
 function avatarHtml(slug, name, size = '') {
@@ -271,6 +292,34 @@ function closeModal() {
   document.getElementById('modal-panel').innerHTML = '';
 }
 
+function renderPlacePollOptions(tw) {
+  const totalNoon = tw.noonVotes.length;
+  const myNoon = tw.noonVotes.find((v) => v.user_slug === state.bootstrap?.user?.slug)?.restaurant_id;
+  return (tw.noonCandidates || [])
+    .map((p) => {
+      const voters = tw.noonVotes.filter((v) => v.restaurant_id === p.id);
+      const pct = totalNoon ? Math.round((voters.length / totalNoon) * 100) : 0;
+      const sel = myNoon === p.id;
+      const ratingTxt = p.avg_rating != null ? `★ ${Number(p.avg_rating).toFixed(1)} · ` : '';
+      return `
+        <button class="vote-option ${sel ? 'selected' : ''}" data-action="vote-noon" data-place-id="${p.id}">
+          <div class="vote-fill" style="width:${pct}%"></div>
+          <div class="vote-inner">
+            <div>
+              <div class="vote-main">${esc(p.name)}</div>
+              <div class="vote-meta">${ratingTxt}${p.visit_count} past visits · ${p.last_visited ? `Last ${fmtShortDate(p.last_visited)}` : 'In the books'}${p.address ? ` · ${esc(p.address)}` : ''}</div>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;">
+              ${voters.map((v) => avatarHtml(v.user_slug, v.user_slug, 'sm')).join('')}
+              <span class="vote-count">${voters.length}</span>
+            </div>
+          </div>
+        </button>
+      `;
+    })
+    .join('');
+}
+
 function renderWeekView() {
   const b = state.bootstrap;
   const tw = b.thisWeek;
@@ -285,34 +334,40 @@ function renderWeekView() {
   const wedCount = tw.nightVotes.filter((v) => v.choice === 'wednesday').length;
   const totalNight = tueCount + wedCount;
   const myNight = tw.nightVotes.find((v) => v.user_slug === me.slug)?.choice;
-  const myNoon = tw.noonVotes.find((v) => v.user_slug === me.slug)?.restaurant_id;
   const myRsvp = tw.rsvps.find((v) => v.user_slug === me.slug)?.status;
 
-  let statusPill = `<span class="badge badge-red">Vote open</span>`;
-  if (d.status === 'scheduled') statusPill = `<span class="badge badge-muted">Scheduled · Poll opens Sun 10 AM</span>`;
-  if (d.status === 'awaiting_pick') statusPill = `<span class="badge badge-muted">Waiting on ${esc(d.host_label)}</span>`;
-  if (d.status === 'noon_vote') statusPill = `<span class="badge badge-red">Noon rule · Closes 4:00 PM</span>`;
-  if (d.status === 'place_locked') statusPill = `<span class="badge badge-ok">✓ Confirmed</span>`;
+  const nightOpen = !d.night_locked_at && (d.status === 'scheduled' || d.status === 'night_poll');
+  const hasPlacePoll = !d.restaurant_id && (tw.noonCandidates || []).length >= 2;
+  const hasPickedPlace = Boolean(d.restaurant_id && tw.place);
+  const tueDate = d.day_of_week === 'Wednesday' ? shiftIsoDate(d.dinner_date, -1) : d.dinner_date;
+  const wedDate = d.day_of_week === 'Tuesday' ? shiftIsoDate(d.dinner_date, 1) : d.dinner_date;
+
+  let statusPill = `<span class="badge badge-red">Night vote open</span>`;
+  if (nightOpen) {
+    if (d.status === 'scheduled') {
+      if (hasPickedPlace) statusPill = `<span class="badge badge-ok">Place set · Night vote open</span>`;
+      else if (hasPlacePoll) statusPill = `<span class="badge badge-red">Early vote + Place poll</span>`;
+      else statusPill = `<span class="badge badge-muted">Early vote · Opens Sun 10 AM</span>`;
+    } else if (hasPickedPlace) {
+      statusPill = `<span class="badge badge-ok">Place set · Night vote open</span>`;
+    } else if (hasPlacePoll) {
+      statusPill = `<span class="badge badge-red">Night + Place polls open</span>`;
+    }
+  } else {
+    if (d.status === 'awaiting_pick') statusPill = `<span class="badge badge-muted">Waiting on ${esc(d.host_label)}</span>`;
+    if (d.status === 'noon_vote') {
+      statusPill =
+        d.chosen_via === 'host_poll'
+          ? `<span class="badge badge-red">Host place poll</span>`
+          : `<span class="badge badge-red">Noon rule · Closes 4:00 PM</span>`;
+    }
+    if (d.status === 'place_locked') statusPill = `<span class="badge badge-ok">✓ Confirmed</span>`;
+  }
 
   let bodyHtml = '';
+  let locationCardHtml = '';
 
-  if (d.status === 'scheduled') {
-    bodyHtml = `
-      <h1 class="hero-title">${esc(d.host_label)} is up next</h1>
-      <p class="hero-sub">Tentatively ${esc(d.day_of_week)} · ${fmtDate(d.dinner_date)} · 6:30 PM. Night poll opens Sunday 10:00 AM unless ${esc(d.host_label)} picks in advance.</p>
-      <div class="host-strip">
-        ${avatarHtml(d.host_slug, d.host_label, 'lg')}
-        <div class="host-strip-text">
-          <strong>${esc(d.host_label)} can lock it in now</strong>
-          <span>Choosing a restaurant in advance locks the night &amp; skips all voting.</span>
-        </div>
-      </div>
-      <div class="btn-row">
-        <button class="btn btn-primary" data-action="open-picker" data-dinner-id="${d.id}" data-day="${esc(d.day_of_week)}" data-host="${esc(d.host_label)}" data-date="${esc(d.dinner_date)}">Pick place in advance (no vote)</button>
-        <button class="btn btn-secondary" data-action="open-pass-swap">Pass / Swap turn</button>
-      </div>
-    `;
-  } else if (d.status === 'night_poll') {
+  if (nightOpen) {
     const tuePct = totalNight ? Math.round((tueCount / totalNight) * 100) : 0;
     const wedPct = totalNight ? Math.round((wedCount / totalNight) * 100) : 0;
     const tueVoters = tw.nightVotes.filter((v) => v.choice === 'tuesday').map((v) => avatarHtml(v.user_slug, v.user_slug, 'sm')).join('');
@@ -320,23 +375,17 @@ function renderWeekView() {
 
     bodyHtml = `
       <h1 class="hero-title">Tuesday or Wednesday?</h1>
-      <p class="hero-sub">Locks Monday at 12:00 PM · Tuesday wins ties · 6:30 PM</p>
-      <div class="host-strip">
-        ${avatarHtml(d.host_slug, d.host_label, 'lg')}
-        <div class="host-strip-text">
-          <strong>${esc(d.host_label)}’s turn to pick this week</strong>
-          <span class="muted">Or let the Noon Rule draw 4 places on dinner day</span>
-        </div>
-      </div>
-      <div class="host-shortcut-box">
-        <strong>Host Option — Skip the vote:</strong> ${esc(d.host_label)} can pick a place right now to lock the week immediately with no night vote or noon vote.
-      </div>
+      <p class="hero-sub">${
+        d.status === 'scheduled'
+          ? 'Early voting open · Official poll Sunday 10:00 AM · Locks Monday 12:00 PM · Tuesday wins ties'
+          : 'Locks Monday at 12:00 PM · Tuesday wins ties · 6:30 PM'
+      }</p>
       <div class="vote-list">
         <button class="vote-option ${myNight === 'tuesday' ? 'selected' : ''}" data-action="vote-night" data-choice="tuesday">
           <div class="vote-fill" style="width:${tuePct}%"></div>
           <div class="vote-inner">
             <div>
-              <div class="vote-main">Tuesday · ${fmtShortDate(d.day_of_week === 'Tuesday' ? d.dinner_date : d.dinner_date)}</div>
+              <div class="vote-main">Tuesday · ${fmtShortDate(tueDate)}</div>
               <div class="vote-meta">Preferred default (76% of weeks since 2025)</div>
             </div>
             <div style="display:flex;align-items:center;gap:8px;">
@@ -349,7 +398,7 @@ function renderWeekView() {
           <div class="vote-fill" style="width:${wedPct}%"></div>
           <div class="vote-inner">
             <div>
-              <div class="vote-main">Wednesday</div>
+              <div class="vote-main">Wednesday · ${fmtShortDate(wedDate)}</div>
               <div class="vote-meta">Traditional Man Night backup</div>
             </div>
             <div style="display:flex;align-items:center;gap:8px;">
@@ -359,11 +408,66 @@ function renderWeekView() {
           </div>
         </button>
       </div>
-      <div class="btn-row">
-        <button class="btn ${isHost ? 'btn-primary' : 'btn-outline'}" data-action="open-picker" data-dinner-id="${d.id}" data-day="${esc(d.day_of_week)}" data-host="${esc(d.host_label)}" data-date="${esc(d.dinner_date)}">${isHost ? 'Pick place in advance (no vote)' : `Pick for ${esc(d.host_label)} (no vote)`}</button>
-        <button class="btn btn-secondary" data-action="open-pass-swap">Pass / Swap turn</button>
-      </div>
     `;
+
+    if (hasPickedPlace) {
+      const p = tw.place;
+      locationCardHtml = `
+        <section class="card">
+          <div class="card-kicker">
+            <span>Location · ${esc(d.host_label)}’s pick</span>
+            <span class="badge badge-ok">Spot set</span>
+          </div>
+          <h2 class="hero-title" style="font-size:24px;">${esc(p.name)}</h2>
+          <p class="hero-sub">${p.avg_rating != null ? `<span class="badge badge-star tabular" style="margin-right:6px;">★ ${Number(p.avg_rating).toFixed(1)}</span>` : ''}${p.visit_count ? `${p.visit_count} prior visits · ` : ''}Picked ${d.chosen_via === 'host_poll' ? `via ${esc(d.host_label)}’s poll` : `in advance by ${esc(d.host_label)}`} · Tue/Wed vote open</p>
+          <div style="font-size:13px;color:var(--muted);">${esc(p.address || p.city)}</div>
+          <div id="tonight-map" class="minimap"></div>
+          <div class="btn-row">
+            <a class="btn btn-primary" href="${esc(tw.directions_url)}" target="_blank" rel="noopener">Directions in Google Maps</a>
+            <button class="btn btn-outline" data-action="open-picker" data-dinner-id="${d.id}" data-day="${esc(d.day_of_week)}" data-host="${esc(d.host_label)}" data-date="${esc(d.dinner_date)}" data-night-open="1">Change place</button>
+            <button class="btn btn-secondary" data-action="open-poll-builder" data-dinner-id="${d.id}">Switch to poll</button>
+          </div>
+        </section>
+      `;
+    } else if (hasPlacePoll) {
+      locationCardHtml = `
+        <section class="card">
+          <div class="card-kicker">
+            <span>Location poll · ${esc(d.host_label)}’s shortlist</span>
+            <span class="badge badge-red">${tw.noonCandidates.length} spots · Vote open</span>
+          </div>
+          <h2 class="hero-title" style="font-size:24px;">Where should we eat?</h2>
+          <p class="hero-sub">Vote on the restaurant right alongside Tuesday/Wednesday. Host can lock the winner anytime.</p>
+          <div class="vote-list">${renderPlacePollOptions(tw)}</div>
+          <div class="btn-row" style="margin-top:12px;">
+            <button class="btn btn-primary btn-sm" data-action="close-place-poll" data-dinner-id="${d.id}">Lock winning place</button>
+            <button class="btn btn-outline btn-sm" data-action="open-poll-builder" data-dinner-id="${d.id}">Edit poll</button>
+            <button class="btn btn-secondary btn-sm" data-action="open-picker" data-dinner-id="${d.id}" data-day="${esc(d.day_of_week)}" data-host="${esc(d.host_label)}" data-date="${esc(d.dinner_date)}" data-night-open="1">Pick 1 spot instead</button>
+          </div>
+        </section>
+      `;
+    } else {
+      locationCardHtml = `
+        <section class="card">
+          <div class="card-kicker">
+            <span>Location · ${esc(d.host_label)}’s turn</span>
+            <span class="badge badge-muted">Open for host pick or poll</span>
+          </div>
+          <div class="host-strip">
+            ${avatarHtml(d.host_slug, d.host_label, 'lg')}
+            <div class="host-strip-text">
+              <strong>${esc(d.host_label)} can set the spot or start a poll now</strong>
+              <span>Picking or polling now keeps the Tuesday/Wednesday night vote open for everyone.</span>
+            </div>
+          </div>
+          <div class="btn-row">
+            <button class="btn btn-primary" data-action="open-picker" data-dinner-id="${d.id}" data-day="${esc(d.day_of_week)}" data-host="${esc(d.host_label)}" data-date="${esc(d.dinner_date)}" data-night-open="1">${isHost ? 'Pick a place' : `Pick for ${esc(d.host_label)}`}</button>
+            <button class="btn btn-outline" data-action="open-poll-builder" data-dinner-id="${d.id}">Create place poll</button>
+            <button class="btn btn-secondary" data-action="open-pass-swap">Pass / Swap turn</button>
+          </div>
+        </section>
+      `;
+    }
   } else if (d.status === 'awaiting_pick') {
     bodyHtml = `
       <h1 class="hero-title">Waiting on ${esc(d.host_label)}</h1>
@@ -377,52 +481,43 @@ function renderWeekView() {
       </div>
       <div class="btn-row">
         <button class="btn btn-primary" data-action="open-picker" data-dinner-id="${d.id}" data-day="${esc(d.day_of_week)}" data-host="${esc(d.host_label)}" data-date="${esc(d.dinner_date)}">${isHost ? 'Pick the restaurant' : `Choose place for ${esc(d.host_label)}`}</button>
+        <button class="btn btn-outline" data-action="open-poll-builder" data-dinner-id="${d.id}">Create place poll</button>
         <button class="btn btn-secondary" data-action="open-pass-swap">Pass / Swap turn</button>
       </div>
     `;
   } else if (d.status === 'noon_vote') {
-    const totalNoon = tw.noonVotes.length;
-    const optsHtml = tw.noonCandidates
-      .map((p) => {
-        const voters = tw.noonVotes.filter((v) => v.restaurant_id === p.id);
-        const pct = totalNoon ? Math.round((voters.length / totalNoon) * 100) : 0;
-        const sel = myNoon === p.id;
-        return `
-          <button class="vote-option ${sel ? 'selected' : ''}" data-action="vote-noon" data-place-id="${p.id}">
-            <div class="vote-fill" style="width:${pct}%"></div>
-            <div class="vote-inner">
-              <div>
-                <div class="vote-main">${esc(p.name)}</div>
-                <div class="vote-meta">${p.visit_count} past visits · ${p.last_visited ? `Last ${fmtShortDate(p.last_visited)}` : 'In the books'}${p.address ? ` · ${esc(p.address)}` : ''}</div>
-              </div>
-              <div style="display:flex;align-items:center;gap:8px;">
-                ${voters.map((v) => avatarHtml(v.user_slug, v.user_slug, 'sm')).join('')}
-                <span class="vote-count">${voters.length}</span>
-              </div>
-            </div>
-          </button>
-        `;
-      })
-      .join('');
-
+    const isHostPoll = d.chosen_via === 'host_poll';
     bodyHtml = `
-      <h1 class="hero-title">${esc(d.host_label)} didn’t pick. Vote for one.</h1>
-      <p class="hero-sub">4 random spots from history (none visited in last 8 weeks). Closes 4:00 PM; ties break at random.</p>
-      <div class="vote-list">${optsHtml}</div>
+      <h1 class="hero-title">${isHostPoll ? `${esc(d.host_label)}’s place poll — vote for one` : `${esc(d.host_label)} didn’t pick. Vote for one.`}</h1>
+      <p class="hero-sub">${
+        isHostPoll
+          ? `For ${esc(d.day_of_week)} · ${fmtDate(d.dinner_date)} · 6:30 PM. Host can lock the winner anytime.`
+          : '4 random spots from history (none visited in last 8 weeks). Closes 4:00 PM; ties break at random.'
+      }</p>
+      <div class="vote-list">${renderPlacePollOptions(tw)}</div>
       <div class="btn-row" style="margin-top:12px;">
-        <button class="btn btn-outline btn-sm" data-action="open-picker" data-dinner-id="${d.id}" data-day="${esc(d.day_of_week)}" data-host="${esc(d.host_label)}" data-date="${esc(d.dinner_date)}">Host override: Pick place directly</button>
+        <button class="btn btn-primary btn-sm" data-action="close-place-poll" data-dinner-id="${d.id}">Lock winning place</button>
+        <button class="btn btn-outline btn-sm" data-action="open-poll-builder" data-dinner-id="${d.id}">Edit poll</button>
+        <button class="btn btn-secondary btn-sm" data-action="open-picker" data-dinner-id="${d.id}" data-day="${esc(d.day_of_week)}" data-host="${esc(d.host_label)}" data-date="${esc(d.dinner_date)}">Pick 1 place directly</button>
       </div>
     `;
   } else if (d.status === 'place_locked' && tw.place) {
     const p = tw.place;
+    const sourceLabel =
+      d.chosen_via === 'noon_draw'
+        ? 'Noon draw'
+        : d.chosen_via === 'host_poll'
+          ? `${esc(d.host_label)}’s poll`
+          : esc(d.host_label);
     bodyHtml = `
       <h1 class="hero-title">${esc(p.name)}</h1>
-      <p class="hero-sub">${esc(d.day_of_week)} · ${fmtDate(d.dinner_date)} · 6:30 PM · Picked via ${d.chosen_via === 'noon_draw' ? 'Noon draw' : esc(d.host_label)}${p.visit_count ? ` · ${p.visit_count} prior visits` : ''}</p>
+      <p class="hero-sub">${esc(d.day_of_week)} · ${fmtDate(d.dinner_date)} · 6:30 PM · Picked via ${sourceLabel}${p.visit_count ? ` · ${p.visit_count} prior visits` : ''}${p.avg_rating != null ? ` · ★ ${Number(p.avg_rating).toFixed(1)}` : ''}</p>
       <div style="font-size:13px;color:var(--muted);">${esc(p.address || p.city)}</div>
       <div id="tonight-map" class="minimap"></div>
       <div class="btn-row">
         <a class="btn btn-primary" href="${esc(tw.directions_url)}" target="_blank" rel="noopener">Directions in Google Maps</a>
         <button class="btn btn-outline" data-action="open-picker" data-dinner-id="${d.id}" data-day="${esc(d.day_of_week)}" data-host="${esc(d.host_label)}" data-date="${esc(d.dinner_date)}">Change place</button>
+        <button class="btn btn-secondary" data-action="open-poll-builder" data-dinner-id="${d.id}">Switch to poll</button>
       </div>
     `;
   }
@@ -530,27 +625,47 @@ function renderWeekView() {
 
   const upcomingRows = (b.upcoming || [])
     .slice(0, 4)
-    .map(
-      (u) => `
-      <div class="row-item" style="gap:10px;">
-        <div style="display:flex;align-items:center;gap:10px;">
-          ${avatarHtml(u.host_slug, u.host_label)}
-          <div>
-            <div style="font-weight:650;font-size:14px;">${esc(u.host_label)}</div>
-            <div style="font-size:12px;color:var(--muted);">${esc(u.day_of_week)} · ${fmtShortDate(u.dinner_date)}</div>
+    .map((u) => {
+      const isNightOpen = !u.night_locked_at;
+      const pollIds = parsePollIds(u.noon_draw_ids);
+      const nightFlag = isNightOpen ? '1' : '';
+      let rightHtml = '';
+      if (u.restaurant_name) {
+        const badge = isNightOpen
+          ? `<span class="badge badge-ok" title="Spot set — Tue/Wed vote stays open">📍 ${esc(u.restaurant_name)} · Tue/Wed vote</span>`
+          : `<span class="badge badge-ok" title="Locked in advance — no vote needed">✓ ${esc(u.restaurant_name)}</span>`;
+        rightHtml = `
+          ${badge}
+          <button class="link-btn" style="font-size:12px;" data-action="open-picker" data-dinner-id="${u.id}" data-day="${esc(u.day_of_week)}" data-host="${esc(u.host_label)}" data-date="${esc(u.dinner_date)}" data-night-open="${nightFlag}">Change</button>
+          <button class="link-btn" style="font-size:12px;" data-action="open-poll-builder" data-dinner-id="${u.id}">Poll</button>
+        `;
+      } else if (pollIds.length >= 2) {
+        rightHtml = `
+          <span class="badge badge-red">🗳 Poll (${pollIds.length} spots)</span>
+          <button class="link-btn" style="font-size:12px;" data-action="open-poll-builder" data-dinner-id="${u.id}">Edit poll</button>
+          <button class="link-btn" style="font-size:12px;" data-action="open-picker" data-dinner-id="${u.id}" data-day="${esc(u.day_of_week)}" data-host="${esc(u.host_label)}" data-date="${esc(u.dinner_date)}" data-night-open="${nightFlag}">Pick</button>
+        `;
+      } else {
+        rightHtml = `
+          <button class="btn btn-outline btn-sm" style="min-height:28px;padding:3px 10px;font-size:12px;" data-action="open-picker" data-dinner-id="${u.id}" data-day="${esc(u.day_of_week)}" data-host="${esc(u.host_label)}" data-date="${esc(u.dinner_date)}" data-night-open="${nightFlag}">Pick in advance</button>
+          <button class="btn btn-secondary btn-sm" style="min-height:28px;padding:3px 10px;font-size:12px;" data-action="open-poll-builder" data-dinner-id="${u.id}">Poll</button>
+        `;
+      }
+      return `
+        <div class="row-item" style="gap:10px;">
+          <div style="display:flex;align-items:center;gap:10px;">
+            ${avatarHtml(u.host_slug, u.host_label)}
+            <div>
+              <div style="font-weight:650;font-size:14px;">${esc(u.host_label)}</div>
+              <div style="font-size:12px;color:var(--muted);">${esc(u.day_of_week)} · ${fmtShortDate(u.dinner_date)}</div>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;justify-content:flex-end;flex-wrap:wrap;">
+            ${rightHtml}
           </div>
         </div>
-        <div style="display:flex;align-items:center;gap:8px;justify-content:flex-end;flex-wrap:wrap;">
-          ${
-            u.restaurant_name
-              ? `<span class="badge badge-ok" title="Locked in advance — no vote needed">✓ ${esc(u.restaurant_name)}</span>
-                 <button class="link-btn" style="font-size:12px;" data-action="open-picker" data-dinner-id="${u.id}" data-day="${esc(u.day_of_week)}" data-host="${esc(u.host_label)}" data-date="${esc(u.dinner_date)}">Change</button>`
-              : `<button class="btn btn-outline btn-sm" style="min-height:28px;padding:3px 10px;font-size:12px;" data-action="open-picker" data-dinner-id="${u.id}" data-day="${esc(u.day_of_week)}" data-host="${esc(u.host_label)}" data-date="${esc(u.dinner_date)}">Pick in advance</button>`
-          }
-        </div>
-      </div>
-    `,
-    )
+      `;
+    })
     .join('');
 
   const installBannerHtml =
@@ -579,6 +694,7 @@ function renderWeekView() {
           </div>
           ${bodyHtml}
         </section>
+        ${locationCardHtml}
         ${rsvpCard}
       </div>
       <aside class="stack">
@@ -1154,7 +1270,7 @@ function showWalkthrough(step = 0) {
     {
       title: 'How a week works',
       body: `<div style="font-size:14px;line-height:1.6;color:var(--muted);margin-bottom:16px;">
-        <div><strong style="color:var(--ink);">Host Advance Pick (Anytime)</strong> · Hosts can pick their spot early to lock the week immediately with <strong>no vote</strong>.</div>
+        <div><strong style="color:var(--ink);">Pick or Poll Anytime</strong> · Hosts can pick a restaurant or start a place poll ahead of time—the Tuesday/Wednesday vote stays open alongside it (or skip voting).</div>
         <div><strong style="color:var(--ink);">Sun 10:00 AM</strong> · Night vote opens (Tue vs Wed; Tuesday wins ties at Mon noon).</div>
         <div><strong style="color:var(--ink);">Noon Rule</strong> · Unpicked by 12:00 PM on dinner day? App draws <strong>4 random places</strong> (skipping last 8 weeks) until 4:00 PM.</div>
         <div><strong style="color:var(--ink);">30 min before dinner</strong> · Tap your reminder alert to launch Google Maps directions.</div>
@@ -1265,17 +1381,43 @@ async function openPlacePickerModal(mode, dinnerId = null, dinnerDate = null, op
       : `Pick place for ${hostLabel}${dinnerDate ? ` (${fmtShortDate(dinnerDate)})` : ''}`;
 
   state.pickerDay = opts.dayOfWeek === 'Wednesday' ? 'Wednesday' : 'Tuesday';
-  const daySelectorHtml =
-    mode === 'pick'
-      ? `<div class="host-shortcut-box">
-           <strong>Locks immediately — no vote held.</strong> Both the night and restaurant are confirmed right away.
-         </div>
-         <div style="font-size:12px;font-weight:700;color:var(--muted);margin-bottom:6px;">Which night?</div>
-         <div class="day-toggle-group" id="picker-day-group">
-           <button type="button" class="day-toggle-btn ${state.pickerDay === 'Tuesday' ? 'active' : ''}" data-action="set-picker-day" data-day="Tuesday">Tuesday (Default)</button>
-           <button type="button" class="day-toggle-btn ${state.pickerDay === 'Wednesday' ? 'active' : ''}" data-action="set-picker-day" data-day="Wednesday">Wednesday</button>
-         </div>`
-      : '';
+  let daySelectorHtml = '';
+  if (mode === 'pick') {
+    if (opts.nightOpen) {
+      state.pickerAllowKeepNightVote = true;
+      state.pickerKeepNightVote = true;
+      daySelectorHtml = `
+        <div style="font-size:12px;font-weight:700;color:var(--muted);margin-bottom:6px;">Tue/Wed night vote</div>
+        <div class="day-toggle-group" id="picker-vote-mode-group">
+          <button type="button" class="day-toggle-btn active" data-action="set-picker-vote-mode" data-keep="1">Keep Tue/Wed vote open</button>
+          <button type="button" class="day-toggle-btn" data-action="set-picker-vote-mode" data-keep="0">Skip vote &amp; lock night now</button>
+        </div>
+        <div id="picker-day-wrap" style="display:none;">
+          <div style="font-size:12px;font-weight:700;color:var(--muted);margin-bottom:6px;">Which night?</div>
+          <div class="day-toggle-group" id="picker-day-group">
+            <button type="button" class="day-toggle-btn ${state.pickerDay === 'Tuesday' ? 'active' : ''}" data-action="set-picker-day" data-day="Tuesday">Tuesday (Default)</button>
+            <button type="button" class="day-toggle-btn ${state.pickerDay === 'Wednesday' ? 'active' : ''}" data-action="set-picker-day" data-day="Wednesday">Wednesday</button>
+          </div>
+        </div>
+      `;
+    } else {
+      state.pickerAllowKeepNightVote = false;
+      state.pickerKeepNightVote = false;
+      daySelectorHtml = `
+        <div class="host-shortcut-box">
+          <strong>Confirming spot for ${esc(state.pickerDay)}, ${fmtShortDate(dinnerDate)} · 6:30 PM.</strong>
+        </div>
+        <div style="font-size:12px;font-weight:700;color:var(--muted);margin-bottom:6px;">Which night?</div>
+        <div class="day-toggle-group" id="picker-day-group">
+          <button type="button" class="day-toggle-btn ${state.pickerDay === 'Tuesday' ? 'active' : ''}" data-action="set-picker-day" data-day="Tuesday">Tuesday (Default)</button>
+          <button type="button" class="day-toggle-btn ${state.pickerDay === 'Wednesday' ? 'active' : ''}" data-action="set-picker-day" data-day="Wednesday">Wednesday</button>
+        </div>
+      `;
+    }
+  } else {
+    state.pickerAllowKeepNightVote = false;
+    state.pickerKeepNightVote = false;
+  }
 
   openModal(`
     <h2 class="hero-title" style="font-size:20px;margin-bottom:10px;">${esc(title)}</h2>
@@ -1318,6 +1460,106 @@ function renderPickerOptions(mode, dinnerId, q) {
     `,
     )
     .join('');
+}
+
+function renderPollBuilderBody() {
+  const tray = document.getElementById('poll-selected-tray');
+  const results = document.getElementById('poll-results');
+  const launchBtn = document.getElementById('poll-launch-btn');
+  if (!tray || !results) return;
+
+  const selectedSet = new Set(state.pollCandidateIds);
+  const selectedPlaces = state.pollCandidateIds
+    .map((id) => state.places.find((p) => p.id === id))
+    .filter(Boolean);
+
+  tray.innerHTML = selectedPlaces.length
+    ? selectedPlaces
+        .map(
+          (p) => `
+          <span class="poll-chip">
+            ${esc(p.name)}
+            <button type="button" data-action="remove-poll-chip" data-place-id="${p.id}" aria-label="Remove ${esc(p.name)}">✕</button>
+          </span>
+        `,
+        )
+        .join('')
+    : '<span style="font-size:12px;color:var(--muted);">Select 2–6 places below (or tap Suggest 4 random).</span>';
+
+  const term = state.pollSearchQuery.trim().toLowerCase();
+  const matching = term
+    ? state.places.filter((p) => p.name.toLowerCase().includes(term) || (p.address || '').toLowerCase().includes(term))
+    : [...selectedPlaces, ...state.places.filter((p) => !selectedSet.has(p.id))];
+  const visible = matching.slice(0, 40);
+
+  results.innerHTML = visible
+    .map((p) => {
+      const isSel = selectedSet.has(p.id);
+      const badge = isSel
+        ? '<span class="badge badge-ok">✓ In poll</span>'
+        : `<span class="badge badge-muted tabular">${p.visit_count}×${p.avg_rating != null ? ` · ★ ${Number(p.avg_rating).toFixed(1)}` : ''}</span>`;
+      return `
+        <button type="button" class="place-card-row ${isSel ? 'selected' : ''}" data-action="toggle-poll-place" data-place-id="${p.id}">
+          <div>
+            <div class="place-name">${esc(p.name)}</div>
+            <div class="place-addr">${esc(p.address || p.city)}</div>
+          </div>
+          ${badge}
+        </button>
+      `;
+    })
+    .join('');
+
+  if (launchBtn) {
+    const count = state.pollCandidateIds.length;
+    launchBtn.textContent = `Launch poll (${count})`;
+    launchBtn.disabled = count < 2;
+  }
+}
+
+async function openPollBuilderModal(dinnerId) {
+  await loadPlacesIfNeeded();
+  const activeDinner = state.bootstrap?.thisWeek?.dinner;
+  const target =
+    activeDinner?.id === dinnerId
+      ? activeDinner
+      : (state.bootstrap?.upcoming || []).find((u) => u.id === dinnerId) || activeDinner;
+  if (!target) return;
+
+  const nightOpen = !target.night_locked_at && (target.status === 'scheduled' || target.status === 'night_poll');
+  const dayOfWeek = target.day_of_week === 'Wednesday' ? 'Wednesday' : 'Tuesday';
+  const existingIds = parsePollIds(target.noon_draw_ids);
+  state.pollCandidateIds = existingIds.slice(0, 6);
+  state.pollSearchQuery = '';
+  const isEditing = state.pollCandidateIds.length >= 2;
+
+  openModal(`
+    <h2 class="hero-title" style="font-size:20px;margin-bottom:6px;">${isEditing ? 'Edit place poll' : 'Create place poll'} for ${esc(target.host_label)}’s dinner (${fmtShortDate(target.dinner_date)})</h2>
+    <p class="hero-sub" style="margin-bottom:10px;font-size:13px;">${
+      nightOpen
+        ? 'The Tuesday/Wednesday night vote stays open — members can vote on both day and place.'
+        : `Vote opens immediately for ${esc(dayOfWeek)} · ${fmtShortDate(target.dinner_date)}.`
+    }</p>
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px;">
+      <span style="font-size:12px;font-weight:700;color:var(--muted);">Poll options (2–6 places)</span>
+      <button type="button" class="btn btn-outline btn-sm" style="min-height:28px;padding:3px 10px;font-size:12px;" data-action="poll-fill-random">🎲 Suggest 4 random</button>
+    </div>
+    <div id="poll-selected-tray" class="poll-tray"></div>
+    <input id="poll-q" class="input" style="width:100%;margin-bottom:10px;" placeholder="Search ${state.places.length} spots to toggle in poll…" />
+    <div id="poll-results" style="max-height:240px;overflow-y:auto;display:flex;flex-direction:column;gap:6px;margin-bottom:12px;"></div>
+    <div style="border-top:1px solid var(--line);padding-top:10px;margin-bottom:12px;">
+      <div style="font-size:12px;font-weight:700;color:var(--muted);margin-bottom:6px;">Add a new spot to poll?</div>
+      <div style="display:flex;gap:8px;">
+        <input id="poll-new-name" class="input" style="flex:1;min-height:36px;" placeholder="New restaurant name" />
+        <button type="button" class="btn btn-sm btn-outline" data-action="poll-create-and-add">Add to poll</button>
+      </div>
+    </div>
+    <div class="btn-row" style="justify-content:flex-end;">
+      <button type="button" class="btn btn-secondary btn-sm" data-action="close-modal">Cancel</button>
+      <button type="button" id="poll-launch-btn" class="btn btn-primary btn-sm" data-action="submit-place-poll" data-dinner-id="${target.id}" data-night-open="${nightOpen ? '1' : '0'}" data-day="${esc(dayOfWeek)}">Launch poll (${state.pollCandidateIds.length})</button>
+    </div>
+  `);
+  renderPollBuilderBody();
 }
 
 async function refreshRecentIssuesList() {
@@ -1710,6 +1952,13 @@ document.addEventListener('click', async (e) => {
       } else if (state.tab === 'history') {
         await loadHistory(false);
       }
+    } else if (action === 'set-picker-vote-mode') {
+      state.pickerKeepNightVote = actEl.dataset.keep === '1';
+      document.querySelectorAll('#picker-vote-mode-group .day-toggle-btn').forEach((btn) => {
+        btn.classList.toggle('active', (btn.dataset.keep === '1') === state.pickerKeepNightVote);
+      });
+      const dayWrap = document.getElementById('picker-day-wrap');
+      if (dayWrap) dayWrap.style.display = state.pickerKeepNightVote ? 'none' : 'block';
     } else if (action === 'set-picker-day') {
       state.pickerDay = actEl.dataset.day === 'Wednesday' ? 'Wednesday' : 'Tuesday';
       document.querySelectorAll('#picker-day-group .day-toggle-btn').forEach((btn) => {
@@ -1721,7 +1970,72 @@ document.addEventListener('click', async (e) => {
       const dinnerDate = actEl.dataset.date || d.dinner_date;
       const dayOfWeek = actEl.dataset.day || d.day_of_week;
       const hostLabel = actEl.dataset.host || d.host_label;
-      await openPlacePickerModal('pick', dinnerId, dinnerDate, { dayOfWeek, hostLabel });
+      const nightOpen = actEl.dataset.nightOpen === '1';
+      await openPlacePickerModal('pick', dinnerId, dinnerDate, { dayOfWeek, hostLabel, nightOpen });
+    } else if (action === 'open-poll-builder') {
+      const dinnerId = Number(actEl.dataset.dinnerId || state.bootstrap?.thisWeek?.dinner?.id);
+      await openPollBuilderModal(dinnerId);
+    } else if (action === 'toggle-poll-place') {
+      const placeId = Number(actEl.dataset.placeId);
+      const idx = state.pollCandidateIds.indexOf(placeId);
+      if (idx >= 0) {
+        state.pollCandidateIds = state.pollCandidateIds.filter((id) => id !== placeId);
+      } else {
+        if (state.pollCandidateIds.length >= 6) return toast('Poll supports up to 6 places');
+        state.pollCandidateIds = [...state.pollCandidateIds, placeId];
+      }
+      renderPollBuilderBody();
+    } else if (action === 'remove-poll-chip') {
+      const placeId = Number(actEl.dataset.placeId);
+      state.pollCandidateIds = state.pollCandidateIds.filter((id) => id !== placeId);
+      renderPollBuilderBody();
+    } else if (action === 'poll-fill-random') {
+      const cutoff = new Date(Date.now() - 56 * 86400000).toISOString().slice(0, 10);
+      const pool = state.places.filter((p) => !p.last_visited || p.last_visited < cutoff);
+      const source = [...(pool.length >= 4 ? pool : state.places)];
+      for (let i = source.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [source[i], source[j]] = [source[j], source[i]];
+      }
+      state.pollCandidateIds = source.slice(0, 4).map((p) => p.id);
+      renderPollBuilderBody();
+    } else if (action === 'poll-create-and-add') {
+      const nameEl = document.getElementById('poll-new-name');
+      const name = nameEl?.value?.trim();
+      if (!name) return toast('Enter a restaurant name');
+      const created = await api('/api/places', { method: 'POST', body: JSON.stringify({ name }) });
+      state.places = [created.place, ...state.places];
+      if (!state.pollCandidateIds.includes(created.place.id)) {
+        if (state.pollCandidateIds.length >= 6) return toast('Poll supports up to 6 places');
+        state.pollCandidateIds = [...state.pollCandidateIds, created.place.id];
+      }
+      if (nameEl) nameEl.value = '';
+      renderPollBuilderBody();
+      toast(`Added ${created.place.name}`);
+    } else if (action === 'submit-place-poll') {
+      if (state.pollCandidateIds.length < 2) return toast('Select at least 2 places');
+      const dinnerId = Number(actEl.dataset.dinnerId);
+      const keepNightVote = actEl.dataset.nightOpen === '1';
+      await api('/api/week/create-poll', {
+        method: 'POST',
+        body: JSON.stringify({
+          dinnerId,
+          restaurantIds: state.pollCandidateIds,
+          keepNightVote,
+          dayOfWeek: keepNightVote ? undefined : actEl.dataset.day,
+        }),
+      });
+      closeModal();
+      toast('Place poll live!');
+      await refreshBootstrap();
+    } else if (action === 'close-place-poll') {
+      const dinnerId = Number(actEl.dataset.dinnerId || state.bootstrap?.thisWeek?.dinner?.id);
+      await api('/api/week/close-poll', {
+        method: 'POST',
+        body: JSON.stringify({ dinnerId }),
+      });
+      toast('Winning place set!');
+      await refreshBootstrap();
     } else if (action === 'open-backfill') {
       await openPlacePickerModal('backfill', Number(actEl.dataset.dinnerId), actEl.dataset.date);
     } else if (action === 'confirm-place-choice') {
@@ -1735,12 +2049,12 @@ document.addEventListener('click', async (e) => {
         await refreshBootstrap();
         if (state.tab === 'history') await loadHistory(false);
       } else {
-        await api('/api/week/pick-place', {
-          method: 'POST',
-          body: JSON.stringify({ dinnerId, restaurantId: placeId, dayOfWeek: state.pickerDay }),
-        });
+        const body = state.pickerKeepNightVote
+          ? { dinnerId, restaurantId: placeId, keepNightVote: true }
+          : { dinnerId, restaurantId: placeId, dayOfWeek: state.pickerDay, keepNightVote: false };
+        await api('/api/week/pick-place', { method: 'POST', body: JSON.stringify(body) });
         closeModal();
-        toast(`Locked in (${state.pickerDay}, no vote)!`);
+        toast(state.pickerKeepNightVote ? 'Spot set! Tue/Wed night vote stays open.' : `Locked in (${state.pickerDay}, no vote)!`);
         await refreshBootstrap();
       }
     } else if (action === 'picker-create-and-use') {
@@ -1755,15 +2069,16 @@ document.addEventListener('click', async (e) => {
         closeModal();
         await refreshBootstrap();
         if (state.tab === 'history') await loadHistory(false);
+        toast(`Added & linked ${created.place.name}`);
       } else {
-        await api('/api/week/pick-place', {
-          method: 'POST',
-          body: JSON.stringify({ dinnerId, restaurantId: created.place.id, dayOfWeek: state.pickerDay }),
-        });
+        const body = state.pickerKeepNightVote
+          ? { dinnerId, restaurantId: created.place.id, keepNightVote: true }
+          : { dinnerId, restaurantId: created.place.id, dayOfWeek: state.pickerDay, keepNightVote: false };
+        await api('/api/week/pick-place', { method: 'POST', body: JSON.stringify(body) });
         closeModal();
         await refreshBootstrap();
+        toast(state.pickerKeepNightVote ? `Added & set ${created.place.name}` : `Added & locked ${created.place.name}`);
       }
-      toast(`Added & locked ${created.place.name}`);
     } else if (action === 'open-pass-swap') {
       openPassSwapModal();
     } else if (action === 'exec-rotation') {
@@ -1870,6 +2185,9 @@ document.addEventListener('input', (e) => {
   if (e.target.id === 'picker-q') {
     const btn = document.querySelector('[data-action="picker-create-and-use"]');
     renderPickerOptions(btn?.dataset.mode || 'pick', btn?.dataset.dinnerId || '', e.target.value);
+  } else if (e.target.id === 'poll-q') {
+    state.pollSearchQuery = e.target.value;
+    renderPollBuilderBody();
   } else if (e.target.id === 'history-search') {
     state.historyQuery = e.target.value;
     clearTimeout(searchTimer);

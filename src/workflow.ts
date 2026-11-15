@@ -135,6 +135,32 @@ export async function castNightVote(
   return { tuesday, wednesday, userChoice: choice };
 }
 
+function parseIdListJson(raw: string | null | undefined): number[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map(Number).filter((n) => Number.isInteger(n) && n > 0);
+  } catch {
+    return [];
+  }
+}
+
+async function syncRatingsForDinnerPlace(
+  db: D1Database,
+  dinnerId: number,
+  newRestaurantId: number,
+  prevRestaurantId: number | null,
+): Promise<void> {
+  await db.prepare('UPDATE ratings SET restaurant_id = ? WHERE dinner_id = ?')
+    .bind(newRestaurantId, dinnerId)
+    .run();
+  await recalcRestaurantAvgRating(db, newRestaurantId);
+  if (prevRestaurantId && prevRestaurantId !== newRestaurantId) {
+    await recalcRestaurantAvgRating(db, prevRestaurantId);
+  }
+}
+
 /**
  * Locks the dinner night. Tuesday wins ties per Man Night rules.
  */
@@ -163,7 +189,13 @@ export async function lockNight(env: Env, dinnerId: number): Promise<DinnerRow |
     newDate = addDaysToIsoDate(dinner.dinner_date, -1);
   }
 
-  const nextStatus = dinner.restaurant_id ? 'place_locked' : 'awaiting_pick';
+  const existingPollIds = parseIdListJson(dinner.noon_draw_ids);
+  const nextStatus = dinner.restaurant_id
+    ? 'place_locked'
+    : existingPollIds.length >= 2
+      ? 'noon_vote'
+      : 'awaiting_pick';
+
   await env.DB.prepare(
     `UPDATE dinners
      SET day_of_week = ?,
@@ -177,15 +209,38 @@ export async function lockNight(env: Env, dinnerId: number): Promise<DinnerRow |
     .bind(winningDay, newDate, isoWeekKey(newDate), nextStatus, dinnerId)
     .run();
 
+  const updated = await env.DB.prepare('SELECT * FROM dinners WHERE id = ?').bind(dinnerId).first<DinnerRow>();
+  let lockedPlace: RestaurantRow | null = null;
+  if (updated && updated.restaurant_id) {
+    lockedPlace = await env.DB.prepare('SELECT * FROM restaurants WHERE id = ?')
+      .bind(updated.restaurant_id)
+      .first<RestaurantRow>();
+    if (lockedPlace) {
+      const cal = await syncLockedPlaceToCalendar(
+        env,
+        updated,
+        lockedPlace,
+        `Night vote locked (${winningDay} ${newDate}); place picked in advance by ${updated.host_label}.`,
+      );
+      if (cal.eventId) {
+        await env.DB.prepare('UPDATE dinners SET gcal_event_id = ? WHERE id = ?').bind(cal.eventId, dinnerId).run();
+      }
+    }
+  }
+
+  const pushBody = lockedPlace
+    ? `${updated?.host_label} picked ${lockedPlace.name} · ${winningDay} ${updated?.start_time}`
+    : nextStatus === 'noon_vote'
+      ? `Vote on ${updated?.host_label}'s place poll for ${winningDay} ${updated?.start_time}`
+      : `Waiting on ${updated?.host_label} to pick by noon on ${winningDay}`;
+
   await sendWebPushToSubscribers(
     env,
     {
       title: `Night locked: ${winningDay}`,
-      body: dinner.restaurant_id
-        ? `${dinner.host_label}'s turn · dinner ${winningDay} ${dinner.start_time}`
-        : `Waiting on ${dinner.host_label} to pick by noon on ${winningDay}`,
+      body: pushBody,
       tag: `night-lock-${dinnerId}`,
-      url: env.APP_URL,
+      url: lockedPlace ? buildDirectionsUrl(lockedPlace) : env.APP_URL,
       dinnerId,
     },
     'notify_night_vote',
@@ -198,9 +253,10 @@ export async function lockPlace(
   env: Env,
   dinnerId: number,
   restaurantId: number,
-  chosenVia: 'picker' | 'noon_draw',
+  chosenVia: 'picker' | 'noon_draw' | 'host_poll',
   voteSummary = '',
   dayChoice?: 'Tuesday' | 'Wednesday',
+  options?: { keepNightVote?: boolean },
 ): Promise<{ dinner: DinnerRow; restaurant: RestaurantRow; calendar: { synced: boolean; reason?: string } }> {
   const existing = await env.DB.prepare('SELECT * FROM dinners WHERE id = ?').bind(dinnerId).first<DinnerRow>();
   if (!existing) throw new Error('Dinner not found');
@@ -209,6 +265,63 @@ export async function lockPlace(
     .bind(restaurantId)
     .first<RestaurantRow>();
   if (!restaurant) throw new Error('Restaurant not found');
+
+  const nightNotLockedYet =
+    !existing.night_locked_at && (existing.status === 'scheduled' || existing.status === 'night_poll');
+  const shouldKeepNightVote =
+    nightNotLockedYet && (options?.keepNightVote === true || (options?.keepNightVote === undefined && !dayChoice));
+
+  if (shouldKeepNightVote) {
+    if (chosenVia === 'picker') {
+      await env.DB.prepare(
+        `UPDATE dinners
+         SET restaurant_id = ?,
+             raw_location = ?,
+             chosen_via = ?,
+             noon_draw_ids = NULL,
+             noon_draw_opened_at = NULL,
+             place_locked_at = datetime('now'),
+             updated_at = datetime('now')
+         WHERE id = ?`,
+      )
+        .bind(restaurant.id, restaurant.address || restaurant.name, chosenVia, dinnerId)
+        .run();
+      await env.DB.prepare('DELETE FROM noon_votes WHERE dinner_id = ?').bind(dinnerId).run();
+    } else {
+      await env.DB.prepare(
+        `UPDATE dinners
+         SET restaurant_id = ?,
+             raw_location = ?,
+             chosen_via = ?,
+             place_locked_at = datetime('now'),
+             updated_at = datetime('now')
+         WHERE id = ?`,
+      )
+        .bind(restaurant.id, restaurant.address || restaurant.name, chosenVia, dinnerId)
+        .run();
+    }
+
+    await syncRatingsForDinnerPlace(env.DB, dinnerId, restaurant.id, existing.restaurant_id);
+
+    const updatedRestaurant = (await env.DB.prepare('SELECT * FROM restaurants WHERE id = ?')
+      .bind(restaurant.id)
+      .first<RestaurantRow>())!;
+    const updated = (await env.DB.prepare('SELECT * FROM dinners WHERE id = ?').bind(dinnerId).first<DinnerRow>())!;
+
+    await sendWebPushToSubscribers(
+      env,
+      {
+        title: `${updated.host_label} picked ${updatedRestaurant.name}`,
+        body: 'Spot is set! Vote Tuesday or Wednesday before Monday noon.',
+        tag: `place-pick-${dinnerId}`,
+        url: env.APP_URL,
+        dinnerId,
+      },
+      'notify_place',
+    );
+
+    return { dinner: updated, restaurant: updatedRestaurant, calendar: { synced: false, reason: 'awaiting_night_vote' } };
+  }
 
   const targetDay: 'Tuesday' | 'Wednesday' =
     dayChoice === 'Tuesday' || dayChoice === 'Wednesday'
@@ -226,30 +339,46 @@ export async function lockPlace(
   const newWeekKey = isoWeekKey(newDate);
   const wasEarlyAdvanceLock = existing.status === 'scheduled' || existing.status === 'night_poll';
 
-  await env.DB.prepare(
-    `UPDATE dinners
-     SET restaurant_id = ?,
-         raw_location = ?,
-         day_of_week = ?,
-         dinner_date = ?,
-         week_key = ?,
-         status = 'place_locked',
-         chosen_via = ?,
-         night_locked_at = COALESCE(night_locked_at, datetime('now')),
-         place_locked_at = datetime('now'),
-         updated_at = datetime('now')
-     WHERE id = ?`,
-  )
-    .bind(restaurant.id, restaurant.address || restaurant.name, targetDay, newDate, newWeekKey, chosenVia, dinnerId)
-    .run();
-
-  await env.DB.prepare('UPDATE ratings SET restaurant_id = ? WHERE dinner_id = ?')
-    .bind(restaurant.id, dinnerId)
-    .run();
-  await recalcRestaurantAvgRating(env.DB, restaurant.id);
-  if (existing.restaurant_id && existing.restaurant_id !== restaurant.id) {
-    await recalcRestaurantAvgRating(env.DB, existing.restaurant_id);
+  if (chosenVia === 'picker') {
+    await env.DB.prepare(
+      `UPDATE dinners
+       SET restaurant_id = ?,
+           raw_location = ?,
+           day_of_week = ?,
+           dinner_date = ?,
+           week_key = ?,
+           status = 'place_locked',
+           chosen_via = ?,
+           noon_draw_ids = NULL,
+           noon_draw_opened_at = NULL,
+           night_locked_at = COALESCE(night_locked_at, datetime('now')),
+           place_locked_at = datetime('now'),
+           updated_at = datetime('now')
+       WHERE id = ?`,
+    )
+      .bind(restaurant.id, restaurant.address || restaurant.name, targetDay, newDate, newWeekKey, chosenVia, dinnerId)
+      .run();
+    await env.DB.prepare('DELETE FROM noon_votes WHERE dinner_id = ?').bind(dinnerId).run();
+  } else {
+    await env.DB.prepare(
+      `UPDATE dinners
+       SET restaurant_id = ?,
+           raw_location = ?,
+           day_of_week = ?,
+           dinner_date = ?,
+           week_key = ?,
+           status = 'place_locked',
+           chosen_via = ?,
+           night_locked_at = COALESCE(night_locked_at, datetime('now')),
+           place_locked_at = datetime('now'),
+           updated_at = datetime('now')
+       WHERE id = ?`,
+    )
+      .bind(restaurant.id, restaurant.address || restaurant.name, targetDay, newDate, newWeekKey, chosenVia, dinnerId)
+      .run();
   }
+
+  await syncRatingsForDinnerPlace(env.DB, dinnerId, restaurant.id, existing.restaurant_id);
 
   const updatedRestaurant = (await env.DB.prepare('SELECT * FROM restaurants WHERE id = ?')
     .bind(restaurant.id)
@@ -259,7 +388,9 @@ export async function lockPlace(
     voteSummary ||
     (chosenVia === 'noon_draw'
       ? `Locked by 4:00 PM noon-rule vote (${updated.day_of_week} ${updated.dinner_date}).`
-      : `Picked in advance by ${updated.host_label} for ${updated.day_of_week} ${updated.dinner_date} (no vote).`);
+      : chosenVia === 'host_poll'
+        ? `Picked via ${updated.host_label}'s poll for ${updated.day_of_week} ${updated.dinner_date}.`
+        : `Picked in advance by ${updated.host_label} for ${updated.day_of_week} ${updated.dinner_date} (no vote).`);
 
   const cal = await syncLockedPlaceToCalendar(env, updated, updatedRestaurant, note);
   if (cal.eventId) {
@@ -267,13 +398,19 @@ export async function lockPlace(
   }
 
   const mapsUrl = buildDirectionsUrl(updatedRestaurant);
+  const viaText =
+    chosenVia === 'noon_draw'
+      ? 'Noon draw result'
+      : chosenVia === 'host_poll'
+        ? `Picked via ${updated.host_label}'s poll`
+        : `Picked by ${updated.host_label}`;
   await sendWebPushToSubscribers(
     env,
     {
       title: `Place locked: ${updatedRestaurant.name}`,
       body: wasEarlyAdvanceLock
         ? `${updated.host_label} picked ${updatedRestaurant.name} for ${updated.day_of_week} (${updated.dinner_date}) — no vote needed`
-        : `${updated.day_of_week} 6:30 PM · ${chosenVia === 'noon_draw' ? 'Noon draw result' : `Picked by ${updated.host_label}`}`,
+        : `${updated.day_of_week} 6:30 PM · ${viaText}`,
       tag: `place-lock-${dinnerId}`,
       url: mapsUrl,
       actions: [
@@ -288,6 +425,122 @@ export async function lockPlace(
   return { dinner: updated, restaurant: updatedRestaurant, calendar: { synced: cal.synced, reason: cal.reason } };
 }
 
+export async function createPlacePoll(
+  env: Env,
+  dinnerId: number,
+  restaurantIds: number[],
+  options?: { keepNightVote?: boolean; dayChoice?: 'Tuesday' | 'Wednesday' },
+): Promise<{ dinner: DinnerRow; candidates: RestaurantRow[] }> {
+  const existing = await env.DB.prepare('SELECT * FROM dinners WHERE id = ?').bind(dinnerId).first<DinnerRow>();
+  if (!existing) throw new Error('Dinner not found');
+  if (existing.status === 'completed') throw new Error('Completed dinner cannot open a poll');
+
+  const seen = new Set<number>();
+  const uniqueIds: number[] = [];
+  for (const rawId of restaurantIds) {
+    const id = Number(rawId);
+    if (Number.isInteger(id) && id > 0 && !seen.has(id)) {
+      seen.add(id);
+      uniqueIds.push(id);
+    }
+  }
+  if (uniqueIds.length < 2 || uniqueIds.length > 6) {
+    throw new Error('Select between 2 and 6 places for a poll');
+  }
+
+  const rows = (
+    await env.DB.prepare(
+      `SELECT r.*,
+              (SELECT COUNT(*) FROM ratings rt WHERE rt.restaurant_id = r.id) AS rating_count
+       FROM restaurants r
+       WHERE r.id IN (${uniqueIds.map(() => '?').join(',')})`,
+    )
+      .bind(...uniqueIds)
+      .all<RestaurantRow>()
+  ).results ?? [];
+
+  const byId = new Map(rows.map((r) => [Number(r.id), r]));
+  const candidates = uniqueIds.map((id) => byId.get(id)).filter((r): r is RestaurantRow => Boolean(r));
+  if (candidates.length < 2) {
+    throw new Error('Select at least 2 valid restaurants');
+  }
+
+  const candIds = candidates.map((c) => Number(c.id));
+  const drawIdsJson = JSON.stringify(candIds);
+
+  const nightNotLockedYet =
+    !existing.night_locked_at && (existing.status === 'scheduled' || existing.status === 'night_poll');
+  const shouldKeepNightVote = nightNotLockedYet && options?.keepNightVote !== false;
+
+  if (shouldKeepNightVote) {
+    await env.DB.prepare(
+      `UPDATE dinners
+       SET restaurant_id = NULL,
+           raw_location = '',
+           place_locked_at = NULL,
+           chosen_via = 'host_poll',
+           noon_draw_ids = ?,
+           noon_draw_opened_at = COALESCE(noon_draw_opened_at, datetime('now')),
+           updated_at = datetime('now')
+       WHERE id = ?`,
+    )
+      .bind(drawIdsJson, dinnerId)
+      .run();
+  } else {
+    const targetDay: 'Tuesday' | 'Wednesday' =
+      options?.dayChoice === 'Tuesday' || options?.dayChoice === 'Wednesday'
+        ? options.dayChoice
+        : existing.day_of_week === 'Wednesday'
+          ? 'Wednesday'
+          : 'Tuesday';
+    let newDate = existing.dinner_date;
+    if (existing.day_of_week === 'Tuesday' && targetDay === 'Wednesday') {
+      newDate = addDaysToIsoDate(existing.dinner_date, 1);
+    } else if (existing.day_of_week === 'Wednesday' && targetDay === 'Tuesday') {
+      newDate = addDaysToIsoDate(existing.dinner_date, -1);
+    }
+    await env.DB.prepare(
+      `UPDATE dinners
+       SET restaurant_id = NULL,
+           raw_location = '',
+           place_locked_at = NULL,
+           day_of_week = ?,
+           dinner_date = ?,
+           week_key = ?,
+           status = 'noon_vote',
+           chosen_via = 'host_poll',
+           noon_draw_ids = ?,
+           noon_draw_opened_at = COALESCE(noon_draw_opened_at, datetime('now')),
+           night_locked_at = COALESCE(night_locked_at, datetime('now')),
+           updated_at = datetime('now')
+       WHERE id = ?`,
+    )
+      .bind(targetDay, newDate, isoWeekKey(newDate), drawIdsJson, dinnerId)
+      .run();
+  }
+
+  await env.DB.prepare(
+    `DELETE FROM noon_votes WHERE dinner_id = ? AND restaurant_id NOT IN (${candIds.map(() => '?').join(',')})`,
+  )
+    .bind(dinnerId, ...candIds)
+    .run();
+
+  const updated = (await env.DB.prepare('SELECT * FROM dinners WHERE id = ?').bind(dinnerId).first<DinnerRow>())!;
+  await sendWebPushToSubscribers(
+    env,
+    {
+      title: `${updated.host_label} opened a place poll`,
+      body: `${candidates.map((c) => c.name).join(', ')}${shouldKeepNightVote ? ' · Vote on place & Tue/Wed' : ` · For ${updated.day_of_week}`}`,
+      tag: `host-poll-${dinnerId}`,
+      url: env.APP_URL,
+      dinnerId,
+    },
+    'notify_place',
+  );
+
+  return { dinner: updated, candidates };
+}
+
 export async function openNoonDraw(env: Env, dinnerId: number): Promise<{ dinner: DinnerRow; candidates: RestaurantRow[] }> {
   const dinner = await env.DB.prepare('SELECT * FROM dinners WHERE id = ?').bind(dinnerId).first<DinnerRow>();
   if (!dinner) throw new Error('Dinner not found');
@@ -298,6 +551,7 @@ export async function openNoonDraw(env: Env, dinnerId: number): Promise<{ dinner
   await env.DB.prepare(
     `UPDATE dinners
      SET status = 'noon_vote',
+         chosen_via = 'noon_draw',
          noon_draw_ids = ?,
          noon_draw_opened_at = datetime('now'),
          updated_at = datetime('now')
@@ -329,10 +583,13 @@ export async function castNoonVote(
   restaurantId: number,
 ): Promise<Array<{ restaurant_id: number; count: number }>> {
   const dinner = await db.prepare('SELECT * FROM dinners WHERE id = ?').bind(dinnerId).first<DinnerRow>();
-  if (!dinner || dinner.status !== 'noon_vote') throw new Error('Noon vote is not open');
+  if (!dinner || dinner.status === 'completed' || dinner.status === 'place_locked' || dinner.restaurant_id) {
+    throw new Error('Place poll is not open');
+  }
 
-  const drawIds = JSON.parse(dinner.noon_draw_ids || '[]') as number[];
-  if (!drawIds.includes(restaurantId)) throw new Error('Restaurant is not in this week’s draw');
+  const drawIds = parseIdListJson(dinner.noon_draw_ids);
+  if (drawIds.length === 0) throw new Error('Place poll is not open');
+  if (!drawIds.includes(restaurantId)) throw new Error('Restaurant is not in this week’s poll');
 
   await db
     .prepare(
@@ -356,8 +613,8 @@ export async function closeNoonVote(env: Env, dinnerId: number) {
   const dinner = await env.DB.prepare('SELECT * FROM dinners WHERE id = ?').bind(dinnerId).first<DinnerRow>();
   if (!dinner) throw new Error('Dinner not found');
 
-  const drawIds = JSON.parse(dinner.noon_draw_ids || '[]') as number[];
-  if (drawIds.length === 0) throw new Error('No candidates drawn for noon vote');
+  const drawIds = parseIdListJson(dinner.noon_draw_ids);
+  if (drawIds.length === 0) throw new Error('No candidates drawn for poll');
 
   const tallies = await env.DB.prepare(
     'SELECT restaurant_id, COUNT(*) AS count FROM noon_votes WHERE dinner_id = ? GROUP BY restaurant_id',
@@ -376,12 +633,17 @@ export async function closeNoonVote(env: Env, dinnerId: number) {
   const tiedTop = [...scoreMap.entries()].filter(([, cnt]) => cnt === maxVotes).map(([id]) => id);
   const winnerId = tiedTop[pickRandomIndex(tiedTop.length)];
 
+  const isHostPoll = dinner.chosen_via === 'host_poll';
+  const label = isHostPoll ? 'Place poll' : 'Noon vote';
   const summary =
     tiedTop.length > 1
-      ? `Noon vote tied (${maxVotes} votes each); random tiebreak selected winner.`
-      : `Noon vote won with ${maxVotes} vote(s).`;
+      ? `${label} tied (${maxVotes} votes each); random tiebreak selected winner.`
+      : `${label} won with ${maxVotes} vote(s).`;
 
-  return lockPlace(env, dinnerId, winnerId, 'noon_draw', summary);
+  const keepNightVote = !dinner.night_locked_at && (dinner.status === 'night_poll' || dinner.status === 'scheduled');
+  return lockPlace(env, dinnerId, winnerId, isHostPoll ? 'host_poll' : 'noon_draw', summary, undefined, {
+    keepNightVote,
+  });
 }
 
 export async function completeDinner(db: D1Database, dinnerId: number): Promise<void> {
@@ -849,20 +1111,34 @@ export async function getBootstrapPayload(env: Env, currentUser: UserRow) {
 
   if (active) {
     if (active.restaurant_id) {
-      activePlace = await env.DB.prepare('SELECT * FROM restaurants WHERE id = ?').bind(active.restaurant_id).first<RestaurantRow>();
+      activePlace = await env.DB.prepare(
+        `SELECT r.*,
+                (SELECT COUNT(*) FROM ratings rt WHERE rt.restaurant_id = r.id) AS rating_count
+         FROM restaurants r
+         WHERE r.id = ?`,
+      )
+        .bind(active.restaurant_id)
+        .first<RestaurantRow>();
     }
     nightVotes = (await env.DB.prepare('SELECT user_slug, choice FROM night_votes WHERE dinner_id = ?').bind(active.id).all()).results as typeof nightVotes;
     noonVotes = (await env.DB.prepare('SELECT user_slug, restaurant_id FROM noon_votes WHERE dinner_id = ?').bind(active.id).all()).results as typeof noonVotes;
     rsvps = (await env.DB.prepare('SELECT user_slug, status, eta_minutes, note FROM rsvps WHERE dinner_id = ?').bind(active.id).all()).results as typeof rsvps;
     ratings = (await env.DB.prepare('SELECT user_slug, score, dish, comment FROM ratings WHERE dinner_id = ?').bind(active.id).all()).results as typeof ratings;
 
-    if (active.noon_draw_ids) {
-      const ids = JSON.parse(active.noon_draw_ids) as number[];
-      if (ids.length > 0) {
-        noonCandidates = (
-          await env.DB.prepare(`SELECT * FROM restaurants WHERE id IN (${ids.map(() => '?').join(',')})`).bind(...ids).all<RestaurantRow>()
-        ).results ?? [];
-      }
+    const ids = parseIdListJson(active.noon_draw_ids);
+    if (ids.length > 0) {
+      const candRows = (
+        await env.DB.prepare(
+          `SELECT r.*,
+                  (SELECT COUNT(*) FROM ratings rt WHERE rt.restaurant_id = r.id) AS rating_count
+           FROM restaurants r
+           WHERE r.id IN (${ids.map(() => '?').join(',')})`,
+        )
+          .bind(...ids)
+          .all<RestaurantRow>()
+      ).results ?? [];
+      const candMap = new Map(candRows.map((r) => [Number(r.id), r]));
+      noonCandidates = ids.map((id) => candMap.get(id)).filter((r): r is RestaurantRow => Boolean(r));
     }
   }
 

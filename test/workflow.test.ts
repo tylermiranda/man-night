@@ -507,4 +507,165 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(backfilledPlaceRev.reviews[0].restaurant_id).toBe(1);
     expect(backfilledPlaceRev.reviews[0].dish).toBe('Ribeye');
   });
+
+  it('lets host pick a place during night_poll without closing Tuesday/Wednesday voting', async () => {
+    const poplar = await env.DB.prepare("SELECT id, name FROM restaurants WHERE name LIKE '%Poplar%' LIMIT 1").first<{
+      id: number;
+      name: string;
+    }>();
+    expect(poplar).toBeTruthy();
+
+    // Host picks Poplar with keepNightVote: true during 2026-W47 (night_poll)
+    const pickRes = await worker.fetch(
+      makeReq('/api/week/pick-place', 'POST', {
+        restaurantId: poplar!.id,
+        keepNightVote: true,
+      }),
+      env,
+    );
+    expect(pickRes.status).toBe(200);
+    const pickData = (await pickRes.json()) as {
+      dinner: { status: string; restaurant_id: number; night_locked_at: string | null; chosen_via: string };
+    };
+    expect(pickData.dinner.status).toBe('night_poll');
+    expect(pickData.dinner.restaurant_id).toBe(poplar!.id);
+    expect(pickData.dinner.night_locked_at).toBeNull();
+    expect(pickData.dinner.chosen_via).toBe('picker');
+
+    // Bootstrap exposes both the open night_poll and the picked place
+    const bootMid = (await (await worker.fetch(makeReq('/api/bootstrap'), env)).json()) as {
+      thisWeek: { dinner: { status: string; restaurant_id: number }; place: { id: number; name: string } | null };
+    };
+    expect(bootMid.thisWeek.dinner.status).toBe('night_poll');
+    expect(bootMid.thisWeek.place?.id).toBe(poplar!.id);
+
+    // Crew still votes for Wednesday after the place is picked
+    const v1 = await worker.fetch(makeReq('/api/week/vote-night', 'POST', { choice: 'wednesday' }), env);
+    expect(v1.status).toBe(200);
+    const v2 = await worker.fetch(
+      makeReq('/api/week/vote-night', 'POST', { choice: 'wednesday' }, { 'Cf-Access-Authenticated-User-Email': 'storme2@gmail.com' }),
+      env,
+    );
+    expect(v2.status).toBe(200);
+
+    // Monday 2026-11-16 at 12:05 PM CST locks the night to Wednesday and moves straight to place_locked
+    const tick = await runWeeklyCronTick(env, new Date('2026-11-16T18:05:00Z'));
+    expect(tick.actions).toContain('locked_night:2026-W47');
+
+    const bootAfter = (await (await worker.fetch(makeReq('/api/bootstrap'), env)).json()) as {
+      thisWeek: { dinner: { status: string; day_of_week: string; dinner_date: string; restaurant_id: number; noon_draw_ids: string | null } };
+    };
+    expect(bootAfter.thisWeek.dinner.status).toBe('place_locked');
+    expect(bootAfter.thisWeek.dinner.day_of_week).toBe('Wednesday');
+    expect(bootAfter.thisWeek.dinner.dinner_date).toBe('2026-11-18');
+    expect(bootAfter.thisWeek.dinner.restaurant_id).toBe(poplar!.id);
+    expect(bootAfter.thisWeek.dinner.noon_draw_ids).toBeNull();
+
+    // Tuesday 12:05 PM CST must NOT trigger a noon draw
+    const tueTick = await runWeeklyCronTick(env, new Date('2026-11-17T18:05:00Z'));
+    expect(tueTick.actions).not.toContain('opened_noon_draw:2026-W47');
+  });
+
+  it('supports creating, voting on, and locking a host place poll alongside the Tuesday/Wednesday vote', async () => {
+    const spots = (
+      await env.DB.prepare('SELECT id, name FROM restaurants ORDER BY id ASC LIMIT 3').all<{ id: number; name: string }>()
+    ).results ?? [];
+    expect(spots).toHaveLength(3);
+    const [p1, p2, p3] = spots;
+
+    // 1. Host creates a 3-place poll while night_poll stays open
+    const createRes = await worker.fetch(
+      makeReq('/api/week/create-poll', 'POST', {
+        restaurantIds: [p1.id, p2.id, p3.id],
+        keepNightVote: true,
+      }),
+      env,
+    );
+    expect(createRes.status).toBe(200);
+    const created = (await createRes.json()) as {
+      dinner: { status: string; chosen_via: string; restaurant_id: number | null; night_locked_at: string | null };
+      candidates: Array<{ id: number }>;
+    };
+    expect(created.dinner.status).toBe('night_poll');
+    expect(created.dinner.chosen_via).toBe('host_poll');
+    expect(created.dinner.restaurant_id).toBeNull();
+    expect(created.dinner.night_locked_at).toBeNull();
+    expect(created.candidates.map((c) => c.id)).toEqual([p1.id, p2.id, p3.id]);
+
+    // Crew votes simultaneously on Tuesday/Wednesday AND on the host place poll
+    await worker.fetch(makeReq('/api/week/vote-night', 'POST', { choice: 'tuesday' }), env);
+    const vote1 = await worker.fetch(makeReq('/api/week/vote-noon', 'POST', { restaurantId: p2.id }), env);
+    expect(vote1.status).toBe(200);
+    const vote2 = await worker.fetch(
+      makeReq('/api/week/vote-noon', 'POST', { restaurantId: p2.id }, { 'Cf-Access-Authenticated-User-Email': 'storme2@gmail.com' }),
+      env,
+    );
+    expect(vote2.status).toBe(200);
+    const vote3 = await worker.fetch(
+      makeReq('/api/week/vote-noon', 'POST', { restaurantId: p1.id }, { 'Cf-Access-Authenticated-User-Email': 'bigheadwillie@gmail.com' }),
+      env,
+    );
+    expect(vote3.status).toBe(200);
+
+    // Monday 12:05 PM CST locks Tuesday and transitions to noon_vote while keeping host poll candidates & votes intact
+    const monTick = await runWeeklyCronTick(env, new Date('2026-11-16T18:05:00Z'));
+    expect(monTick.actions).toContain('locked_night:2026-W47');
+
+    const bootMon = (await (await worker.fetch(makeReq('/api/bootstrap'), env)).json()) as {
+      thisWeek: {
+        dinner: { status: string; chosen_via: string };
+        noonCandidates: Array<{ id: number }>;
+        noonVotes: Array<{ restaurant_id: number }>;
+      };
+    };
+    expect(bootMon.thisWeek.dinner.status).toBe('noon_vote');
+    expect(bootMon.thisWeek.dinner.chosen_via).toBe('host_poll');
+    expect(bootMon.thisWeek.noonCandidates.map((c) => c.id)).toEqual([p1.id, p2.id, p3.id]);
+    expect(bootMon.thisWeek.noonVotes).toHaveLength(3);
+
+    // Tuesday 12:05 PM CST skips random 4-place draw since status is already noon_vote; 4:05 PM closes with p2 (2 votes)
+    const tueNoon = await runWeeklyCronTick(env, new Date('2026-11-17T18:05:00Z'));
+    expect(tueNoon.actions).not.toContain('opened_noon_draw:2026-W47');
+    const tueClose = await runWeeklyCronTick(env, new Date('2026-11-17T22:05:00Z'));
+    expect(tueClose.actions).toContain('closed_noon_vote:2026-W47');
+
+    const bootFinal = (await (await worker.fetch(makeReq('/api/bootstrap'), env)).json()) as {
+      thisWeek: { dinner: { status: string; chosen_via: string; restaurant_id: number } };
+    };
+    expect(bootFinal.thisWeek.dinner.status).toBe('place_locked');
+    expect(bootFinal.thisWeek.dinner.chosen_via).toBe('host_poll');
+    expect(bootFinal.thisWeek.dinner.restaurant_id).toBe(p2.id);
+
+    // 2. Host can also close a place poll early during an open night_poll without locking the night early
+    const nextWeek = await env.DB.prepare("SELECT id FROM dinners WHERE status = 'scheduled' ORDER BY dinner_date ASC LIMIT 1").first<{
+      id: number;
+    }>();
+    expect(nextWeek).toBeTruthy();
+    await env.DB.prepare("UPDATE dinners SET status = 'night_poll' WHERE id = ?").bind(nextWeek!.id).run();
+
+    await worker.fetch(
+      makeReq('/api/week/create-poll', 'POST', {
+        dinnerId: nextWeek!.id,
+        restaurantIds: [p1.id, p3.id],
+        keepNightVote: true,
+      }),
+      env,
+    );
+    await worker.fetch(
+      makeReq('/api/week/vote-noon', 'POST', { dinnerId: nextWeek!.id, restaurantId: p3.id }),
+      env,
+    );
+    const closeEarlyRes = await worker.fetch(
+      makeReq('/api/week/close-poll', 'POST', { dinnerId: nextWeek!.id }),
+      env,
+    );
+    expect(closeEarlyRes.status).toBe(200);
+    const closedEarly = (await closeEarlyRes.json()) as {
+      dinner: { status: string; restaurant_id: number; night_locked_at: string | null; chosen_via: string };
+    };
+    expect(closedEarly.dinner.status).toBe('night_poll');
+    expect(closedEarly.dinner.restaurant_id).toBe(p3.id);
+    expect(closedEarly.dinner.night_locked_at).toBeNull();
+    expect(closedEarly.dinner.chosen_via).toBe('host_poll');
+  });
 });

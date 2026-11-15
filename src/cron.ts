@@ -86,11 +86,21 @@ export async function runWeeklyCronTick(env: Env, now = new Date()): Promise<{ a
           .bind(nextScheduled.id)
           .run();
 
+        let pushBody = 'Tuesday is listed first and wins ties at Monday noon.';
+        if (nextScheduled.restaurant_id) {
+          const pickedPlace = await env.DB.prepare('SELECT name FROM restaurants WHERE id = ?')
+            .bind(nextScheduled.restaurant_id)
+            .first<{ name: string }>();
+          pushBody = `${pickedPlace ? `${pickedPlace.name} is set` : 'Place is set'} · Vote Tuesday or Wednesday (Tuesday wins ties at Monday noon).`;
+        } else if (nextScheduled.noon_draw_ids) {
+          pushBody = 'Place poll is live! Vote on the restaurant and Tuesday or Wednesday (Tuesday wins ties).';
+        }
+
         await sendWebPushToSubscribers(
           env,
           {
             title: `This week: ${nextScheduled.host_label}'s pick — vote Tuesday or Wednesday`,
-            body: 'Tuesday is listed first and wins ties at Monday noon.',
+            body: pushBody,
             tag: `night-open-${nextScheduled.id}`,
             url: env.APP_URL,
             dinnerId: nextScheduled.id,
@@ -112,11 +122,14 @@ export async function runWeeklyCronTick(env: Env, now = new Date()): Promise<{ a
   ).results ?? [];
 
   for (const dinner of activeList) {
-    // 2. Monday >= 12:00 CT (or later in week): lock night poll
+    const diffDays =
+      (Date.parse(dinner.dinner_date + 'T00:00:00Z') - Date.parse(clock.dateStr + 'T00:00:00Z')) / 86400000;
+
+    // 2. Monday >= 12:00 CT (or later in week): lock night poll for current week
     if (
       dinner.status === 'night_poll' &&
-      ((clock.weekday === 'Monday' && clock.minutesOfDay >= 12 * 60) ||
-        clock.dateStr >= dinner.dinner_date)
+      diffDays <= 3 &&
+      ((clock.weekday === 'Monday' && clock.minutesOfDay >= 12 * 60) || clock.dateStr >= dinner.dinner_date)
     ) {
       await lockNight(env, dinner.id);
       actions.push(`locked_night:${dinner.week_key}`);

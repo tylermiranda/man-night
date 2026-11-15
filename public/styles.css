@@ -1679,3 +1679,100 @@ html[data-theme="dark"] .badge-shame {
   font-weight: 700;
   color: var(--ink);
 }
+
+/* I'm Feeling Lucky */
+.btn-lucky {
+  background: linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%);
+  color: #92400e;
+  border-color: #fcd34d;
+}
+.btn-lucky:hover {
+  background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
+}
+html[data-theme="dark"] .btn-lucky {
+  background: linear-gradient(135deg, #2b230f 0%, #3d2f0e 100%);
+  color: #fcd34d;
+  border-color: #785d1a;
+}
+html[data-theme="dark"] .btn-lucky:hover {
+  background: linear-gradient(135deg, #3d2f0e 0%, #4d3b11 100%);
+}
+
+.lucky-inline-bar {
+  background: var(--surf);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 9px 12px;
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.lucky-pool-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.lucky-spot-card {
+  background: var(--surf);
+  border: 1.5px solid var(--accent);
+  border-radius: 14px;
+  padding: 14px 16px;
+  margin-bottom: 12px;
+}
+
+.lucky-poll-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-bottom: 12px;
+}
+
+.lucky-poll-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--surf);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.lucky-row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.lucky-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.lucky-icon-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.lucky-icon-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}

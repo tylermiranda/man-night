@@ -1077,7 +1077,7 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(appJs).not.toContain('Notifications &amp; Phone App');
     expect(indexHtml).toContain('id="btn-report-top"');
     expect(indexHtml).toContain('data-action="open-settings"');
-    expect(swJs).toContain("CACHE_NAME = 'man-night-shell-v8'");
+    expect(swJs).toContain("CACHE_NAME = 'man-night-shell-v9'");
   });
 
   it('tracks optional extra guests on RSVPs, updates live headcount, validates bounds, and resets on sellout (issue #9)', async () => {
@@ -1330,8 +1330,298 @@ describe('Man Night PWA Worker & Seed', () => {
     const swJs = readFileSync(resolve(rootDir, 'public/sw.js'), 'utf8');
     expect(appJs).toContain('set-extra-guests');
     expect(appJs).toContain('5-min headcount');
-    expect(swJs).toContain("CACHE_NAME = 'man-night-shell-v8'");
+    expect(swJs).toContain("CACHE_NAME = 'man-night-shell-v9'");
     expect(swJs).toContain("event.action === 'directions'");
     expect(swJs).toContain('directionsUrl');
+  });
+
+  it("supports I'm Feeling Lucky preview draws, pool filters, re-roll exclusions, and direct pick/poll commits (issue #10)", async () => {
+    const bootRes = await worker.fetch(makeReq('/api/bootstrap'), env);
+    expect(bootRes.status).toBe(200);
+    const boot = (await bootRes.json()) as {
+      thisWeek: { dinner: { id: number; dinner_date: string; status: string } };
+      upcoming: Array<{ id: number; dinner_date: string; restaurant_id: number | null }>;
+    };
+    const activeId = boot.thisWeek.dinner.id;
+    const cutoff = addDaysToIsoDate(boot.thisWeek.dinner.dinner_date, -56);
+
+    // 1. Preview single-spot draw (commit: false) respects 8-week cooldown, avoids upcoming Deano's (#38), and does not mutate dinner
+    const pickPreviewRes = await worker.fetch(
+      makeReq('/api/week/lucky', 'POST', { dinnerId: activeId, mode: 'pick' }),
+      env,
+    );
+    expect(pickPreviewRes.status).toBe(200);
+    const pickPreview = (await pickPreviewRes.json()) as {
+      ok: boolean;
+      mode: string;
+      committed: boolean;
+      place: RestaurantRow;
+      places: RestaurantRow[];
+      poolRequested: string;
+      poolUsed: string;
+      eligibleCount: number;
+    };
+    expect(pickPreview.ok).toBe(true);
+    expect(pickPreview.mode).toBe('pick');
+    expect(pickPreview.committed).toBe(false);
+    expect(pickPreview.places).toHaveLength(1);
+    expect(pickPreview.place.id).toBe(pickPreview.places[0].id);
+    expect(pickPreview.poolRequested).toBe('any');
+    expect(pickPreview.poolUsed).toBe('any');
+    expect(pickPreview.eligibleCount).toBeGreaterThan(100);
+    expect(pickPreview.place.id).not.toBe(7); // El Mexico Cafe (visited 2026-11-10)
+    expect(pickPreview.place.id).not.toBe(38); // Deano's (scheduled 2026-12-01)
+    expect(!pickPreview.place.last_visited || pickPreview.place.last_visited < cutoff).toBe(true);
+
+    // 2. Preview poll draws with default 4, custom 3, and max 6 counts return unique cooldown-eligible places without mutating dinner
+    for (const pollCount of [undefined, 3, 6]) {
+      const pollPreviewRes = await worker.fetch(
+        makeReq('/api/week/lucky', 'POST', {
+          dinnerId: activeId,
+          mode: 'poll',
+          ...(pollCount !== undefined ? { count: pollCount } : {}),
+        }),
+        env,
+      );
+      expect(pollPreviewRes.status).toBe(200);
+      const pollPreview = (await pollPreviewRes.json()) as {
+        mode: string;
+        committed: boolean;
+        place: RestaurantRow | null;
+        places: RestaurantRow[];
+      };
+      const expectedLen = pollCount ?? 4;
+      expect(pollPreview.mode).toBe('poll');
+      expect(pollPreview.committed).toBe(false);
+      expect(pollPreview.place).toBeNull();
+      expect(pollPreview.places).toHaveLength(expectedLen);
+      const ids = pollPreview.places.map((p) => p.id);
+      expect(new Set(ids).size).toBe(expectedLen);
+      for (const p of pollPreview.places) {
+        expect(p.id).not.toBe(7);
+        expect(p.id).not.toBe(38);
+        expect(!p.last_visited || p.last_visited < cutoff).toBe(true);
+      }
+    }
+
+    const dinnerAfterPreview = await env.DB.prepare('SELECT status, restaurant_id, noon_draw_ids FROM dinners WHERE id = ?')
+      .bind(activeId)
+      .first<{ status: string; restaurant_id: number | null; noon_draw_ids: string | null }>();
+    expect(dinnerAfterPreview?.status).toBe('night_poll');
+    expect(dinnerAfterPreview?.restaurant_id).toBeNull();
+    expect(dinnerAfterPreview?.noon_draw_ids).toBeNull();
+
+    // 3. Pool filters: regulars (visit_count >= 5), comeback (3+ visits & >2 yrs ago), and top_rated (fallback before ratings -> exact after ratings)
+    const regRes = await worker.fetch(
+      makeReq('/api/week/lucky', 'POST', { dinnerId: activeId, mode: 'poll', count: 4, pool: 'regulars' }),
+      env,
+    );
+    expect(regRes.status).toBe(200);
+    const regData = (await regRes.json()) as { poolUsed: string; eligibleCount: number; places: RestaurantRow[] };
+    expect(regData.poolUsed).toBe('regulars');
+    expect(regData.eligibleCount).toBeGreaterThanOrEqual(4);
+    for (const p of regData.places) {
+      expect(p.visit_count).toBeGreaterThanOrEqual(5);
+    }
+
+    const comebackCutoff = addDaysToIsoDate(boot.thisWeek.dinner.dinner_date, -730);
+    const comebackRes = await worker.fetch(
+      makeReq('/api/week/lucky', 'POST', { dinnerId: activeId, mode: 'poll', count: 4, pool: 'comeback' }),
+      env,
+    );
+    expect(comebackRes.status).toBe(200);
+    const comebackData = (await comebackRes.json()) as { poolUsed: string; eligibleCount: number; places: RestaurantRow[] };
+    expect(comebackData.poolUsed).toBe('comeback');
+    expect(comebackData.eligibleCount).toBeGreaterThanOrEqual(4);
+    for (const p of comebackData.places) {
+      expect(p.visit_count).toBeGreaterThanOrEqual(3);
+      expect(p.last_visited && p.last_visited <= comebackCutoff).toBe(true);
+    }
+
+    // Before any ratings exist, top_rated falls back cleanly to eligible spots
+    const topEmptyRes = await worker.fetch(
+      makeReq('/api/week/lucky', 'POST', { dinnerId: activeId, mode: 'pick', pool: 'top_rated' }),
+      env,
+    );
+    expect(topEmptyRes.status).toBe(200);
+    const topEmptyData = (await topEmptyRes.json()) as { poolUsed: string; eligibleCount: number; places: RestaurantRow[] };
+    expect(topEmptyData.eligibleCount).toBe(0);
+    expect(topEmptyData.poolUsed).toBe('fallback_any');
+    expect(topEmptyData.places).toHaveLength(1);
+
+    // Rate two cooldown-eligible completed dinners >= 4 stars to verify top_rated + excludeIds non-repeat + wraparound
+    const oldDinners = (
+      await env.DB.prepare(
+        `SELECT d.id, d.restaurant_id
+         FROM dinners d
+         JOIN restaurants r ON r.id = d.restaurant_id
+         WHERE d.status = 'completed'
+           AND d.dinner_date < ?
+           AND r.id NOT IN (7, 38)
+           AND (r.last_visited IS NULL OR r.last_visited < ?)
+         GROUP BY d.restaurant_id
+         ORDER BY d.dinner_date DESC
+         LIMIT 2`,
+      )
+        .bind(cutoff, cutoff)
+        .all<{ id: number; restaurant_id: number }>()
+    ).results ?? [];
+    expect(oldDinners).toHaveLength(2);
+    const ratedIdA = oldDinners[0].restaurant_id;
+    const ratedIdB = oldDinners[1].restaurant_id;
+    await worker.fetch(makeReq('/api/week/rate', 'POST', { dinnerId: oldDinners[0].id, score: 5 }), env);
+    await worker.fetch(makeReq('/api/week/rate', 'POST', { dinnerId: oldDinners[1].id, score: 4 }), env);
+
+    const topFirstRes = await worker.fetch(
+      makeReq('/api/week/lucky', 'POST', { dinnerId: activeId, mode: 'pick', pool: 'top_rated' }),
+      env,
+    );
+    const topFirst = (await topFirstRes.json()) as { poolUsed: string; eligibleCount: number; place: RestaurantRow };
+    expect(topFirst.poolUsed).toBe('top_rated');
+    expect(topFirst.eligibleCount).toBe(2);
+    expect([ratedIdA, ratedIdB]).toContain(topFirst.place.id);
+
+    const otherRatedId = topFirst.place.id === ratedIdA ? ratedIdB : ratedIdA;
+    const topSecondRes = await worker.fetch(
+      makeReq('/api/week/lucky', 'POST', {
+        dinnerId: activeId,
+        mode: 'pick',
+        pool: 'top_rated',
+        excludeIds: [topFirst.place.id],
+      }),
+      env,
+    );
+    const topSecond = (await topSecondRes.json()) as { poolUsed: string; place: RestaurantRow };
+    expect(topSecond.poolUsed).toBe('top_rated');
+    expect(topSecond.place.id).toBe(otherRatedId);
+
+    // Excluding both wraps around cleanly within the top_rated pool rather than leaking outside it
+    const topWrapRes = await worker.fetch(
+      makeReq('/api/week/lucky', 'POST', {
+        dinnerId: activeId,
+        mode: 'pick',
+        pool: 'top_rated',
+        excludeIds: [ratedIdA, ratedIdB],
+      }),
+      env,
+    );
+    const topWrap = (await topWrapRes.json()) as { poolUsed: string; place: RestaurantRow };
+    expect(topWrap.poolUsed).toBe('top_rated');
+    expect([ratedIdA, ratedIdB]).toContain(topWrap.place.id);
+
+    // 4. Commit flows: random single-spot pick during night_poll keeps Tue/Wed vote open
+    const commitPickRes = await worker.fetch(
+      makeReq('/api/week/lucky', 'POST', {
+        dinnerId: activeId,
+        mode: 'pick',
+        pool: 'regulars',
+        commit: true,
+        keepNightVote: true,
+      }),
+      env,
+    );
+    expect(commitPickRes.status).toBe(200);
+    const commitPick = (await commitPickRes.json()) as {
+      ok: boolean;
+      committed: boolean;
+      place: RestaurantRow;
+      dinner: { status: string; restaurant_id: number; night_locked_at: string | null; chosen_via: string };
+    };
+    expect(commitPick.ok).toBe(true);
+    expect(commitPick.committed).toBe(true);
+    expect(commitPick.dinner.status).toBe('night_poll');
+    expect(commitPick.dinner.restaurant_id).toBe(commitPick.place.id);
+    expect(commitPick.dinner.night_locked_at).toBeNull();
+    expect(commitPick.dinner.chosen_via).toBe('picker');
+
+    // Commit single-spot pick with keepNightVote: false & dayOfWeek: 'Wednesday' on upcoming week locks night and place
+    const nextUpcoming = boot.upcoming[0];
+    const commitAdvanceRes = await worker.fetch(
+      makeReq('/api/week/lucky', 'POST', {
+        dinnerId: nextUpcoming.id,
+        mode: 'pick',
+        commit: true,
+        keepNightVote: false,
+        dayOfWeek: 'Wednesday',
+      }),
+      env,
+    );
+    expect(commitAdvanceRes.status).toBe(200);
+    const commitAdvance = (await commitAdvanceRes.json()) as {
+      committed: boolean;
+      dinner: { status: string; day_of_week: string; night_locked_at: string | null; restaurant_id: number };
+      place: RestaurantRow;
+    };
+    expect(commitAdvance.committed).toBe(true);
+    expect(commitAdvance.dinner.status).toBe('place_locked');
+    expect(commitAdvance.dinner.day_of_week).toBe('Wednesday');
+    expect(commitAdvance.dinner.night_locked_at).toBeTruthy();
+    expect(commitAdvance.dinner.restaurant_id).toBe(commitAdvance.place.id);
+
+    // Commit random 4-place poll on active dinner, then cast a crew vote via /api/week/vote-noon
+    const commitPollRes = await worker.fetch(
+      makeReq('/api/week/lucky', 'POST', {
+        dinnerId: activeId,
+        mode: 'poll',
+        count: 4,
+        commit: true,
+        keepNightVote: true,
+      }),
+      env,
+    );
+    expect(commitPollRes.status).toBe(200);
+    const commitPoll = (await commitPollRes.json()) as {
+      ok: boolean;
+      mode: string;
+      committed: boolean;
+      candidates: RestaurantRow[];
+      dinner: { status: string; chosen_via: string; restaurant_id: number | null; noon_draw_ids: string };
+    };
+    expect(commitPoll.ok).toBe(true);
+    expect(commitPoll.mode).toBe('poll');
+    expect(commitPoll.committed).toBe(true);
+    expect(commitPoll.candidates).toHaveLength(4);
+    expect(commitPoll.dinner.status).toBe('night_poll');
+    expect(commitPoll.dinner.chosen_via).toBe('host_poll');
+    expect(commitPoll.dinner.restaurant_id).toBeNull();
+    expect(JSON.parse(commitPoll.dinner.noon_draw_ids)).toEqual(commitPoll.candidates.map((c) => c.id));
+
+    const votePollRes = await worker.fetch(
+      makeReq('/api/week/vote-noon', 'POST', {
+        dinnerId: activeId,
+        restaurantId: commitPoll.candidates[1].id,
+      }),
+      env,
+    );
+    expect(votePollRes.status).toBe(200);
+
+    // 5. Validation guards reject bad mode, pool, count, excludeIds, and completed dinners
+    const badInputs: Array<Record<string, unknown>> = [
+      { dinnerId: activeId, mode: 'invalid' },
+      { dinnerId: activeId, mode: 'pick', pool: 'bad_pool' },
+      { dinnerId: activeId, mode: 'pick', count: 3 },
+      { dinnerId: activeId, mode: 'poll', count: 1 },
+      { dinnerId: activeId, mode: 'poll', count: 7 },
+      { dinnerId: activeId, mode: 'poll', count: 3.5 },
+      { dinnerId: activeId, mode: 'pick', excludeIds: 'not-array' },
+      { dinnerId: 614, mode: 'pick' },
+    ];
+    for (const payload of badInputs) {
+      const errRes = await worker.fetch(makeReq('/api/week/lucky', 'POST', payload), env);
+      expect(errRes.status).toBe(400);
+    }
+
+    // 6. Frontend & SW static checks
+    const appJs = readFileSync(resolve(rootDir, 'public/app.js'), 'utf8');
+    const stylesCss = readFileSync(resolve(rootDir, 'public/styles.css'), 'utf8');
+    const swJs = readFileSync(resolve(rootDir, 'public/sw.js'), 'utf8');
+    expect(appJs).toContain('data-action="open-lucky"');
+    expect(appJs).toContain("api('/api/week/lucky'");
+    expect(appJs).toContain('lucky-confirm-pick');
+    expect(appJs).toContain('lucky-confirm-poll');
+    expect(appJs).toContain('I’m Feeling Lucky');
+    expect(stylesCss).toContain('.btn-lucky');
+    expect(stylesCss).toContain('.lucky-spot-card');
+    expect(swJs).toContain("CACHE_NAME = 'man-night-shell-v9'");
   });
 });

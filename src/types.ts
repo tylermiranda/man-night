@@ -158,6 +158,8 @@ export interface DinnerHeadcount {
   unansweredCount: number;
 }
 
+export type LuckyPool = 'any' | 'regulars' | 'comeback' | 'top_rated';
+
 export interface PushPayload {
   title: string;
   body: string;

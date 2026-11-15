@@ -1,7 +1,7 @@
 import { resolveAuthUser } from './auth';
 import { runWeeklyCronTick } from './cron';
 import { sendWebPushToSubscribers } from './push';
-import type { Env, RestaurantRow } from './types';
+import type { Env, LuckyPool, RestaurantRow } from './types';
 import {
   applyRotationOverride,
   backfillDinnerPlace,
@@ -12,6 +12,7 @@ import {
   createIssueReport,
   createPlacePoll,
   createRestaurant,
+  drawLuckyPlaces,
   getActiveDinner,
   getBootstrapPayload,
   getCentralDateStr,
@@ -228,6 +229,136 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
         dayChoice,
       });
       return json({ ok: true, ...res });
+    }
+
+    if (path === '/api/week/lucky' && method === 'POST') {
+      const body = await readJson<{
+        dinnerId?: number;
+        mode?: string;
+        count?: unknown;
+        pool?: string;
+        excludeIds?: unknown;
+        commit?: boolean;
+        dayOfWeek?: string;
+        keepNightVote?: boolean;
+      }>(request);
+
+      const mode = body.mode === undefined ? 'pick' : body.mode;
+      if (mode !== 'pick' && mode !== 'poll') {
+        return json({ error: 'Mode must be pick or poll' }, 400);
+      }
+
+      const pool = body.pool === undefined ? 'any' : body.pool;
+      if (pool !== 'any' && pool !== 'regulars' && pool !== 'comeback' && pool !== 'top_rated') {
+        return json({ error: 'Invalid pool filter' }, 400);
+      }
+
+      let count = 1;
+      if (mode === 'pick') {
+        if (body.count !== undefined && body.count !== 1) {
+          return json({ error: 'Pick mode draws 1 place' }, 400);
+        }
+        count = 1;
+      } else {
+        const rawCount = body.count === undefined ? 4 : body.count;
+        if (typeof rawCount !== 'number' || !Number.isInteger(rawCount) || rawCount < 2 || rawCount > 6) {
+          return json({ error: 'Poll count must be between 2 and 6' }, 400);
+        }
+        count = rawCount;
+      }
+
+      let excludeIds: number[] = [];
+      if (body.excludeIds !== undefined) {
+        if (!Array.isArray(body.excludeIds)) {
+          return json({ error: 'excludeIds must be an array' }, 400);
+        }
+        excludeIds = body.excludeIds.map(Number).filter((n) => Number.isInteger(n) && n > 0);
+      }
+
+      const dinner = body.dinnerId
+        ? await env.DB.prepare('SELECT id, dinner_date, status FROM dinners WHERE id = ?')
+            .bind(body.dinnerId)
+            .first<{ id: number; dinner_date: string; status: string }>()
+        : await getActiveDinner(env.DB);
+      if (!dinner) return json({ error: 'No active dinner found' }, 404);
+      if (dinner.status === 'completed') {
+        return json({ error: 'Completed dinner cannot use I’m Feeling Lucky' }, 400);
+      }
+
+      const todayStr = getCentralDateStr(new Date(), env.CLUB_TIMEZONE || 'America/Chicago');
+      const drawn = await drawLuckyPlaces(env.DB, {
+        dinnerId: dinner.id,
+        referenceDate: dinner.dinner_date || todayStr,
+        todayStr,
+        count,
+        pool: pool as LuckyPool,
+        excludeIds,
+      });
+
+      if (!body.commit) {
+        return json({
+          ok: true,
+          mode,
+          committed: false,
+          place: mode === 'pick' ? (drawn.places[0] ?? null) : null,
+          places: drawn.places,
+          poolRequested: drawn.poolRequested,
+          poolUsed: drawn.poolUsed,
+          eligibleCount: drawn.eligibleCount,
+        });
+      }
+
+      if (drawn.places.length === 0) {
+        return json({ error: 'No restaurants available' }, 400);
+      }
+
+      const dayChoice =
+        body.dayOfWeek === 'Tuesday' || body.dayOfWeek === 'Wednesday' ? body.dayOfWeek : undefined;
+
+      if (mode === 'pick') {
+        const res = await lockPlace(
+          env,
+          dinner.id,
+          drawn.places[0].id,
+          'picker',
+          dayChoice || body.keepNightVote === false ? "Host picked via I'm Feeling Lucky (no vote)" : '',
+          dayChoice,
+          { keepNightVote: body.keepNightVote },
+        );
+        return json({
+          ok: true,
+          mode: 'pick',
+          committed: true,
+          place: res.restaurant,
+          places: [res.restaurant],
+          dinner: res.dinner,
+          calendar: res.calendar,
+          poolRequested: drawn.poolRequested,
+          poolUsed: drawn.poolUsed,
+          eligibleCount: drawn.eligibleCount,
+        });
+      }
+
+      if (drawn.places.length < 2) {
+        return json({ error: 'Need at least 2 restaurants for a poll' }, 400);
+      }
+      const res = await createPlacePoll(
+        env,
+        dinner.id,
+        drawn.places.map((p) => p.id),
+        { keepNightVote: body.keepNightVote, dayChoice },
+      );
+      return json({
+        ok: true,
+        mode: 'poll',
+        committed: true,
+        places: res.candidates,
+        candidates: res.candidates,
+        dinner: res.dinner,
+        poolRequested: drawn.poolRequested,
+        poolUsed: drawn.poolUsed,
+        eligibleCount: drawn.eligibleCount,
+      });
     }
 
     if (path === '/api/week/close-poll' && method === 'POST') {

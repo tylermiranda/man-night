@@ -4,6 +4,7 @@ import type {
   DinnerRow,
   Env,
   HostStatRow,
+  LuckyPool,
   NightVoteViewRow,
   RatingViewRow,
   RestaurantRow,
@@ -143,6 +144,129 @@ export async function drawFourRandomPlaces(db: D1Database, referenceDate: string
   // Fallback only if fewer than 4 venues exist outside 8-week cooldown
   const allRows = await db.prepare('SELECT * FROM restaurants ORDER BY id ASC').all<RestaurantRow>();
   return shuffleRandom(allRows.results ?? []).slice(0, 4);
+}
+
+/**
+ * Draws 1–6 random places for "I'm Feeling Lucky" (single pick or poll shortlist),
+ * respecting the 8-week cooldown, avoiding spots already scheduled in the next 8 weeks,
+ * and prioritizing non-excluded venues when re-rolling.
+ */
+export async function drawLuckyPlaces(
+  db: D1Database,
+  options: {
+    dinnerId?: number | null;
+    referenceDate: string;
+    todayStr: string;
+    count: number;
+    pool?: LuckyPool;
+    excludeIds?: number[];
+  },
+): Promise<{
+  places: RestaurantRow[];
+  poolRequested: LuckyPool;
+  poolUsed: LuckyPool | 'fallback_any' | 'fallback_all';
+  eligibleCount: number;
+}> {
+  const cutoff56 = addDaysToIsoDate(options.referenceDate, -56);
+  const futureCutoff56 = addDaysToIsoDate(options.referenceDate, 56);
+  const comebackCutoff = addDaysToIsoDate(options.referenceDate, -730);
+
+  type LuckyQueryRow = RestaurantRow & { in_recent_window: number };
+  const rawRows = (
+    await db
+      .prepare(
+        `SELECT ${safeRestaurantSelectSql('r')},
+                (SELECT COUNT(*) FROM ratings rt WHERE rt.restaurant_id = r.id) AS rating_count,
+                EXISTS (
+                  SELECT 1 FROM dinners d
+                  WHERE d.restaurant_id = r.id
+                    AND d.id != ?
+                    AND d.dinner_date >= ?
+                    AND d.dinner_date <= ?
+                ) AS in_recent_window
+         FROM restaurants r
+         ORDER BY visit_count DESC, r.id ASC`,
+      )
+      .bind(
+        options.todayStr,
+        options.todayStr,
+        options.todayStr,
+        options.todayStr,
+        options.dinnerId ?? -1,
+        cutoff56,
+        futureCutoff56,
+      )
+      .all<LuckyQueryRow>()
+  ).results ?? [];
+
+  const allCleanRows: RestaurantRow[] = [];
+  const cooldownEligible: RestaurantRow[] = [];
+  for (const row of rawRows) {
+    const { in_recent_window, ...clean } = row;
+    allCleanRows.push(clean);
+    const isCooldownEligible = (!clean.last_visited || clean.last_visited < cutoff56) && !in_recent_window;
+    if (isCooldownEligible) {
+      cooldownEligible.push(clean);
+    }
+  }
+
+  const poolRequested: LuckyPool = options.pool || 'any';
+  let primaryPool: RestaurantRow[];
+  if (poolRequested === 'regulars') {
+    primaryPool = cooldownEligible.filter((r) => (r.visit_count || 0) >= 5);
+  } else if (poolRequested === 'comeback') {
+    primaryPool = cooldownEligible.filter(
+      (r) => (r.visit_count || 0) >= 3 && Boolean(r.last_visited && r.last_visited <= comebackCutoff),
+    );
+  } else if (poolRequested === 'top_rated') {
+    primaryPool = cooldownEligible.filter((r) => r.avg_rating !== null && Number(r.avg_rating) >= 4);
+  } else {
+    primaryPool = cooldownEligible;
+  }
+
+  const eligibleCount = primaryPool.length;
+  const targetCount = Math.max(1, Math.min(6, Math.trunc(options.count)));
+  const excludeSet = new Set(
+    (options.excludeIds || []).map(Number).filter((n) => Number.isInteger(n) && n > 0),
+  );
+  const selected: RestaurantRow[] = [];
+  const chosenIds = new Set<number>();
+
+  const appendFrom = (poolRows: RestaurantRow[]) => {
+    if (selected.length >= targetCount) return;
+    const fresh = shuffleRandom(poolRows.filter((r) => !chosenIds.has(r.id) && !excludeSet.has(r.id)));
+    for (const r of fresh) {
+      if (selected.length >= targetCount) break;
+      chosenIds.add(r.id);
+      selected.push(r);
+    }
+    if (selected.length < targetCount) {
+      const wrapped = shuffleRandom(poolRows.filter((r) => !chosenIds.has(r.id)));
+      for (const r of wrapped) {
+        if (selected.length >= targetCount) break;
+        chosenIds.add(r.id);
+        selected.push(r);
+      }
+    }
+  };
+
+  appendFrom(primaryPool);
+  let poolUsed: LuckyPool | 'fallback_any' | 'fallback_all' = poolRequested;
+  if (selected.length < targetCount) {
+    poolUsed = 'fallback_any';
+    appendFrom(cooldownEligible);
+  }
+  if (selected.length < targetCount) {
+    poolUsed = 'fallback_all';
+    appendFrom(allCleanRows);
+  }
+
+  return {
+    places: selected,
+    poolRequested,
+    poolUsed,
+    eligibleCount,
+  };
 }
 
 export async function getNightVotesForDinner(db: D1Database, dinnerId: number): Promise<NightVoteViewRow[]> {

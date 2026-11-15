@@ -30,6 +30,18 @@ const state = {
   selloutModalDinnerId: null,
   pollCandidateIds: [],
   pollSearchQuery: '',
+  luckyDinnerId: null,
+  luckyDinnerDate: null,
+  luckyHostLabel: '',
+  luckyNightOpen: false,
+  luckyMode: 'pick',
+  luckyPool: 'any',
+  luckyPollCount: 4,
+  luckyPlaces: [],
+  luckySeenIds: [],
+  luckyPoolUsed: 'any',
+  luckyEligibleCount: 0,
+  luckyLoading: false,
   theme: localStorage.getItem('mn_theme') || 'light',
   deferredInstallPrompt: null,
   installBannerDismissed: localStorage.getItem('mn_install_dismissed') === '1',
@@ -574,6 +586,7 @@ function renderWeekView() {
           </div>
           <div class="btn-row">
             <button class="btn btn-primary" data-action="open-picker" data-dinner-id="${d.id}" data-day="${esc(d.day_of_week)}" data-host="${esc(d.host_label)}" data-date="${esc(d.dinner_date)}" data-night-open="1">${isHost ? 'Pick a place' : `Pick for ${esc(d.host_label)}`}</button>
+            <button class="btn btn-lucky" data-action="open-lucky" data-dinner-id="${d.id}" data-day="${esc(d.day_of_week)}" data-host="${esc(d.host_label)}" data-date="${esc(d.dinner_date)}" data-night-open="1">🎲 I’m Feeling Lucky</button>
             <button class="btn btn-outline" data-action="open-poll-builder" data-dinner-id="${d.id}">Create place poll</button>
             <button class="btn btn-secondary" data-action="open-pass-swap">Pass / Swap turn</button>
           </div>
@@ -593,6 +606,7 @@ function renderWeekView() {
       </div>
       <div class="btn-row">
         <button class="btn btn-primary" data-action="open-picker" data-dinner-id="${d.id}" data-day="${esc(d.day_of_week)}" data-host="${esc(d.host_label)}" data-date="${esc(d.dinner_date)}">${isHost ? 'Pick the restaurant' : `Choose place for ${esc(d.host_label)}`}</button>
+        <button class="btn btn-lucky" data-action="open-lucky" data-dinner-id="${d.id}" data-day="${esc(d.day_of_week)}" data-host="${esc(d.host_label)}" data-date="${esc(d.dinner_date)}">🎲 I’m Feeling Lucky</button>
         <button class="btn btn-outline" data-action="open-poll-builder" data-dinner-id="${d.id}">Create place poll</button>
         <button class="btn btn-secondary" data-action="open-pass-swap">Pass / Swap turn</button>
       </div>
@@ -822,6 +836,7 @@ function renderWeekView() {
       } else {
         rightHtml = `
           <button class="btn btn-outline btn-sm" style="min-height:28px;padding:3px 10px;font-size:12px;" data-action="open-picker" data-dinner-id="${u.id}" data-day="${esc(u.day_of_week)}" data-host="${esc(u.host_label)}" data-date="${esc(u.dinner_date)}" data-night-open="${nightFlag}">Pick in advance</button>
+          <button class="btn btn-lucky btn-sm" style="min-height:28px;padding:3px 10px;font-size:12px;" data-action="open-lucky" data-dinner-id="${u.id}" data-day="${esc(u.day_of_week)}" data-host="${esc(u.host_label)}" data-date="${esc(u.dinner_date)}" data-night-open="${nightFlag}">🎲 Lucky</button>
           <button class="btn btn-secondary btn-sm" style="min-height:28px;padding:3px 10px;font-size:12px;" data-action="open-poll-builder" data-dinner-id="${u.id}">Poll</button>
         `;
       }
@@ -1829,9 +1844,23 @@ async function openPlacePickerModal(mode, dinnerId = null, dinnerDate = null, op
     state.pickerKeepNightVote = false;
   }
 
+  const luckyBarHtml =
+    mode === 'pick'
+      ? `
+        <div class="lucky-inline-bar">
+          <span style="font-size:12px;font-weight:700;color:var(--muted);">Can’t think of a spot?</span>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            <button type="button" class="btn btn-lucky btn-sm" data-action="open-lucky" data-lucky-mode="pick" data-dinner-id="${dinnerId || ''}" data-day="${esc(state.pickerDay)}" data-host="${esc(opts.hostLabel || '')}" data-date="${esc(dinnerDate || '')}" data-night-open="${opts.nightOpen ? '1' : ''}">🎲 I’m Feeling Lucky</button>
+            <button type="button" class="btn btn-outline btn-sm" data-action="open-lucky" data-lucky-mode="poll" data-dinner-id="${dinnerId || ''}" data-day="${esc(state.pickerDay)}" data-host="${esc(opts.hostLabel || '')}" data-date="${esc(dinnerDate || '')}" data-night-open="${opts.nightOpen ? '1' : ''}">🎲 Random poll</button>
+          </div>
+        </div>
+      `
+      : '';
+
   openModal(`
     <h2 class="hero-title" style="font-size:20px;margin-bottom:10px;">${esc(title)}</h2>
     ${daySelectorHtml}
+    ${luckyBarHtml}
     <input id="picker-q" class="input" style="width:100%;margin-bottom:10px;" placeholder="Search ${state.places.length} spots…" />
     <div id="picker-results" style="max-height:280px;overflow-y:auto;display:flex;flex-direction:column;gap:6px;margin-bottom:14px;"></div>
     <div style="border-top:1px solid var(--line);padding-top:12px;">
@@ -1894,7 +1923,7 @@ function renderPollBuilderBody() {
         `,
         )
         .join('')
-    : '<span style="font-size:12px;color:var(--muted);">Select 2–6 places below (or tap Suggest 4 random).</span>';
+    : '<span style="font-size:12px;color:var(--muted);">Select 2–6 places below (or tap 🎲 I’m Feeling Lucky).</span>';
 
   const term = state.pollSearchQuery.trim().toLowerCase();
   const matching = term
@@ -1927,7 +1956,7 @@ function renderPollBuilderBody() {
   }
 }
 
-async function openPollBuilderModal(dinnerId) {
+async function openPollBuilderModal(dinnerId, presetIds = null) {
   await loadPlacesIfNeeded();
   const activeDinner = state.bootstrap?.thisWeek?.dinner;
   const target =
@@ -1939,9 +1968,9 @@ async function openPollBuilderModal(dinnerId) {
   const nightOpen = !target.night_locked_at && (target.status === 'scheduled' || target.status === 'night_poll');
   const dayOfWeek = target.day_of_week === 'Wednesday' ? 'Wednesday' : 'Tuesday';
   const existingIds = parsePollIds(target.noon_draw_ids);
-  state.pollCandidateIds = existingIds.slice(0, 6);
+  state.pollCandidateIds = Array.isArray(presetIds) ? presetIds.slice(0, 6) : existingIds.slice(0, 6);
   state.pollSearchQuery = '';
-  const isEditing = state.pollCandidateIds.length >= 2;
+  const isEditing = !Array.isArray(presetIds) && existingIds.length >= 2;
 
   openModal(`
     <h2 class="hero-title" style="font-size:20px;margin-bottom:6px;">${isEditing ? 'Edit place poll' : 'Create place poll'} for ${esc(target.host_label)}’s dinner (${fmtShortDate(target.dinner_date)})</h2>
@@ -1952,7 +1981,7 @@ async function openPollBuilderModal(dinnerId) {
     }</p>
     <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px;">
       <span style="font-size:12px;font-weight:700;color:var(--muted);">Poll options (2–6 places)</span>
-      <button type="button" class="btn btn-outline btn-sm" style="min-height:28px;padding:3px 10px;font-size:12px;" data-action="poll-fill-random">🎲 Suggest 4 random</button>
+      <button type="button" class="btn btn-lucky btn-sm" style="min-height:28px;padding:3px 10px;font-size:12px;" data-action="poll-fill-random" data-dinner-id="${target.id}">🎲 I’m Feeling Lucky</button>
     </div>
     <div id="poll-selected-tray" class="poll-tray"></div>
     <input id="poll-q" class="input" style="width:100%;margin-bottom:10px;" placeholder="Search ${state.places.length} spots to toggle in poll…" />
@@ -1970,6 +1999,221 @@ async function openPollBuilderModal(dinnerId) {
     </div>
   `);
   renderPollBuilderBody();
+}
+
+function renderLuckyModalContent() {
+  const container = document.getElementById('lucky-modal-body');
+  if (!container) return;
+
+  const todayIso = getTodayCentralIso();
+  const hostLabel = state.luckyHostLabel ? `${state.luckyHostLabel}’s dinner` : 'this week’s dinner';
+  const poolDefs = [
+    { id: 'any', label: 'All spots' },
+    { id: 'regulars', label: '🔥 Regulars 5+' },
+    { id: 'comeback', label: '🕰️ Comeback due' },
+    { id: 'top_rated', label: '⭐ Top rated' },
+  ];
+
+  const poolPillsHtml = poolDefs
+    .map(
+      (p) =>
+        `<button type="button" class="filter-pill ${state.luckyPool === p.id ? 'active' : ''}" data-action="set-lucky-pool" data-pool="${p.id}">${p.label}</button>`,
+    )
+    .join('');
+
+  const countPillsHtml =
+    state.luckyMode === 'poll'
+      ? `
+        <div class="lucky-pool-row">
+          <span style="font-size:12px;font-weight:700;color:var(--muted);">Poll size:</span>
+          ${[3, 4, 5, 6]
+            .map(
+              (n) =>
+                `<button type="button" class="filter-pill ${state.luckyPollCount === n ? 'active' : ''}" data-action="set-lucky-count" data-count="${n}">${n} spots</button>`,
+            )
+            .join('')}
+        </div>
+      `
+      : '';
+
+  const targetCount = state.luckyMode === 'poll' ? state.luckyPollCount : 1;
+  let poolStatusText = '';
+  if (state.luckyLoading) {
+    poolStatusText = 'Rolling the dice…';
+  } else if (state.luckyPoolUsed === 'fallback_any') {
+    poolStatusText = `Only ${state.luckyEligibleCount} matching spot(s) outside 8-week cooldown — widened to all eligible spots.`;
+  } else if (state.luckyPoolUsed === 'fallback_all') {
+    poolStatusText = `Fewer than ${targetCount} spots outside 8-week cooldown — widened to full venue list.`;
+  } else {
+    poolStatusText = `${state.luckyEligibleCount} eligible spot${state.luckyEligibleCount === 1 ? '' : 's'} outside 8-week cooldown.`;
+  }
+
+  let stageHtml = '';
+  const picked = state.luckyPlaces[0] || null;
+  if (state.luckyLoading) {
+    stageHtml = `<div class="lucky-spot-card" style="text-align:center;color:var(--muted);">Drawing random ${state.luckyMode === 'poll' ? 'poll spots' : 'spot'}…</div>`;
+  } else if (state.luckyMode === 'pick') {
+    if (picked) {
+      const lv = effectiveLastVisited(picked, todayIso);
+      const gmaps = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(picked.address || picked.name)}`;
+      stageHtml = `
+        <div class="lucky-spot-card">
+          <div class="card-kicker" style="margin-bottom:6px;">
+            <span>🎲 Lucky Pick</span>
+            <div style="display:flex;align-items:center;gap:6px;">
+              ${picked.avg_rating != null ? `<span class="badge badge-star tabular">★ ${Number(picked.avg_rating).toFixed(1)}</span>` : ''}
+              <span class="badge badge-muted tabular">${picked.visit_count}×</span>
+            </div>
+          </div>
+          <div style="font-weight:800;font-size:20px;line-height:1.2;margin-bottom:4px;">${esc(picked.name)}</div>
+          <div style="font-size:13px;color:var(--muted);margin-bottom:8px;">
+            ${lv ? `Last visited ${fmtDate(lv)} · ` : 'Ready for a visit · '}${esc(picked.address || picked.city)}
+          </div>
+          <a href="${esc(gmaps)}" target="_blank" rel="noopener" style="font-size:12px;font-weight:600;">Directions preview ↗</a>
+        </div>
+      `;
+    } else {
+      stageHtml = `<div class="lucky-spot-card" style="color:var(--muted);">No eligible spots found. Try spinning again.</div>`;
+    }
+  } else {
+    const rowsHtml = state.luckyPlaces
+      .map((p) => {
+        const lv = effectiveLastVisited(p, todayIso);
+        const ratingTxt = p.avg_rating != null ? `★ ${Number(p.avg_rating).toFixed(1)} · ` : '';
+        return `
+          <div class="lucky-poll-row">
+            <div style="min-width:0;">
+              <div class="place-name">${esc(p.name)}</div>
+              <div class="place-addr">${ratingTxt}${p.visit_count} visits · ${lv ? `Last ${fmtShortDate(lv)}` : esc(p.address || p.city)}</div>
+            </div>
+            <div class="lucky-row-actions">
+              <button type="button" class="lucky-icon-btn" data-action="lucky-swap-one" data-place-id="${p.id}" title="Swap this spot" aria-label="Swap ${esc(p.name)}">↻</button>
+              <button type="button" class="lucky-icon-btn" data-action="lucky-remove-one" data-place-id="${p.id}" ${state.luckyPlaces.length <= 2 ? 'disabled' : ''} title="Remove from poll" aria-label="Remove ${esc(p.name)}">✕</button>
+            </div>
+          </div>
+        `;
+      })
+      .join('');
+    stageHtml = `
+      <div class="lucky-poll-list">${rowsHtml}</div>
+      <div style="display:flex;justify-content:flex-end;margin-bottom:10px;">
+        <button type="button" class="link-btn" style="font-size:12px;" data-action="lucky-edit-poll" ${state.luckyPlaces.length < 2 ? 'disabled' : ''}>Customize in poll builder →</button>
+      </div>
+    `;
+  }
+
+  let daySelectorHtml = '';
+  if (state.luckyNightOpen) {
+    daySelectorHtml = `
+      <div style="font-size:12px;font-weight:700;color:var(--muted);margin-bottom:6px;">Tue/Wed night vote</div>
+      <div class="day-toggle-group" id="picker-vote-mode-group">
+        <button type="button" class="day-toggle-btn ${state.pickerKeepNightVote ? 'active' : ''}" data-action="set-picker-vote-mode" data-keep="1">Keep Tue/Wed vote open</button>
+        <button type="button" class="day-toggle-btn ${!state.pickerKeepNightVote ? 'active' : ''}" data-action="set-picker-vote-mode" data-keep="0">Skip vote &amp; lock night now</button>
+      </div>
+      <div id="picker-day-wrap" style="display:${state.pickerKeepNightVote ? 'none' : 'block'};">
+        <div style="font-size:12px;font-weight:700;color:var(--muted);margin-bottom:6px;">Which night?</div>
+        <div class="day-toggle-group" id="picker-day-group">
+          <button type="button" class="day-toggle-btn ${state.pickerDay === 'Tuesday' ? 'active' : ''}" data-action="set-picker-day" data-day="Tuesday">Tuesday (Default)</button>
+          <button type="button" class="day-toggle-btn ${state.pickerDay === 'Wednesday' ? 'active' : ''}" data-action="set-picker-day" data-day="Wednesday">Wednesday</button>
+        </div>
+      </div>
+    `;
+  } else {
+    daySelectorHtml = `
+      <div style="font-size:12px;font-weight:700;color:var(--muted);margin-bottom:6px;">Which night?</div>
+      <div class="day-toggle-group" id="picker-day-group">
+        <button type="button" class="day-toggle-btn ${state.pickerDay === 'Tuesday' ? 'active' : ''}" data-action="set-picker-day" data-day="Tuesday">Tuesday (Default)</button>
+        <button type="button" class="day-toggle-btn ${state.pickerDay === 'Wednesday' ? 'active' : ''}" data-action="set-picker-day" data-day="Wednesday">Wednesday</button>
+      </div>
+    `;
+  }
+
+  const confirmBtnHtml =
+    state.luckyMode === 'pick'
+      ? `<button type="button" class="btn btn-primary btn-sm" data-action="lucky-confirm-pick" ${state.luckyLoading || !picked ? 'disabled' : ''}>${picked ? `Use ${esc(picked.name)}` : 'Use spot'}</button>`
+      : `<button type="button" class="btn btn-primary btn-sm" data-action="lucky-confirm-poll" ${state.luckyLoading || state.luckyPlaces.length < 2 ? 'disabled' : ''}>Launch poll (${state.luckyPlaces.length})</button>`;
+
+  container.innerHTML = `
+    <h2 class="hero-title" style="font-size:20px;margin-bottom:4px;">🎲 I’m Feeling Lucky</h2>
+    <p class="hero-sub" style="margin-bottom:10px;font-size:13px;">For ${esc(hostLabel)}${state.luckyDinnerDate ? ` (${fmtShortDate(state.luckyDinnerDate)})` : ''} · Skips spots visited in the last 8 weeks</p>
+    <div class="day-toggle-group">
+      <button type="button" class="day-toggle-btn ${state.luckyMode === 'pick' ? 'active' : ''}" data-action="set-lucky-mode" data-mode="pick">🎯 Pick 1 spot</button>
+      <button type="button" class="day-toggle-btn ${state.luckyMode === 'poll' ? 'active' : ''}" data-action="set-lucky-mode" data-mode="poll">🗳️ Pick for a poll</button>
+    </div>
+    <div class="lucky-pool-row">${poolPillsHtml}</div>
+    ${countPillsHtml}
+    <div style="font-size:12px;color:var(--muted);margin-bottom:10px;">${esc(poolStatusText)}</div>
+    <div id="lucky-draw-stage">${stageHtml}</div>
+    ${daySelectorHtml}
+    <div class="btn-row" style="justify-content:space-between;margin-top:12px;">
+      <button type="button" class="btn btn-secondary btn-sm" data-action="close-modal">Cancel</button>
+      <div class="btn-row">
+        <button type="button" class="btn btn-lucky btn-sm" data-action="lucky-reroll" ${state.luckyLoading ? 'disabled' : ''}>${state.luckyMode === 'poll' ? '🎲 Re-roll all' : '🎲 Spin again'}</button>
+        ${confirmBtnHtml}
+      </div>
+    </div>
+  `;
+}
+
+async function runLuckyDraw() {
+  state.luckyLoading = true;
+  renderLuckyModalContent();
+  try {
+    const res = await api('/api/week/lucky', {
+      method: 'POST',
+      body: JSON.stringify({
+        dinnerId: state.luckyDinnerId,
+        mode: state.luckyMode,
+        count: state.luckyMode === 'poll' ? state.luckyPollCount : 1,
+        pool: state.luckyPool,
+        excludeIds: state.luckySeenIds,
+      }),
+    });
+    state.luckyPlaces = res.places || [];
+    state.luckyPoolUsed = res.poolUsed || state.luckyPool;
+    state.luckyEligibleCount = Number(res.eligibleCount ?? state.luckyPlaces.length);
+    const drawnIds = state.luckyPlaces.map((p) => p.id);
+    const prevSeen = new Set(state.luckySeenIds);
+    const anyFresh = drawnIds.some((id) => !prevSeen.has(id));
+    state.luckySeenIds = anyFresh
+      ? [...new Set([...state.luckySeenIds, ...drawnIds])].slice(-30)
+      : drawnIds;
+  } catch (err) {
+    toast(err.message || 'Could not draw random spots');
+  } finally {
+    state.luckyLoading = false;
+    renderLuckyModalContent();
+  }
+}
+
+async function openLuckyModal(dinnerId, opts = {}) {
+  const activeDinner = state.bootstrap?.thisWeek?.dinner;
+  const target =
+    activeDinner?.id === dinnerId
+      ? activeDinner
+      : (state.bootstrap?.upcoming || []).find((u) => u.id === dinnerId) || activeDinner;
+  state.luckyDinnerId = target?.id ?? dinnerId;
+  state.luckyDinnerDate = opts.dinnerDate || target?.dinner_date || null;
+  state.luckyHostLabel = opts.hostLabel || target?.host_label || '';
+  state.luckyNightOpen =
+    opts.nightOpen !== undefined
+      ? Boolean(opts.nightOpen)
+      : Boolean(target && !target.night_locked_at && (target.status === 'scheduled' || target.status === 'night_poll'));
+  state.luckyMode = opts.mode === 'poll' ? 'poll' : 'pick';
+  state.luckyPool = 'any';
+  state.luckyPollCount = 4;
+  state.luckyPlaces = [];
+  state.luckySeenIds = [];
+  state.luckyPoolUsed = 'any';
+  state.luckyEligibleCount = 0;
+  state.luckyLoading = true;
+  state.pickerDay = (opts.dayOfWeek || target?.day_of_week) === 'Wednesday' ? 'Wednesday' : 'Tuesday';
+  state.pickerAllowKeepNightVote = state.luckyNightOpen;
+  state.pickerKeepNightVote = state.luckyNightOpen;
+
+  openModal('<div id="lucky-modal-body"></div>');
+  renderLuckyModalContent();
+  await runLuckyDraw();
 }
 
 async function refreshRecentIssuesList() {
@@ -2603,6 +2847,98 @@ document.addEventListener('click', async (e) => {
     } else if (action === 'open-poll-builder') {
       const dinnerId = Number(actEl.dataset.dinnerId || state.bootstrap?.thisWeek?.dinner?.id);
       await openPollBuilderModal(dinnerId);
+    } else if (action === 'open-lucky') {
+      const d = state.bootstrap?.thisWeek?.dinner;
+      const dinnerId = Number(actEl.dataset.dinnerId || d?.id);
+      await openLuckyModal(dinnerId, {
+        mode: actEl.dataset.luckyMode === 'poll' ? 'poll' : 'pick',
+        dayOfWeek: actEl.dataset.day || d?.day_of_week,
+        hostLabel: actEl.dataset.host || d?.host_label,
+        dinnerDate: actEl.dataset.date || d?.dinner_date,
+        nightOpen: actEl.dataset.nightOpen === '1',
+      });
+    } else if (action === 'set-lucky-mode') {
+      const nextMode = actEl.dataset.mode === 'poll' ? 'poll' : 'pick';
+      if (state.luckyMode !== nextMode) {
+        state.luckyMode = nextMode;
+        state.luckySeenIds = [];
+        await runLuckyDraw();
+      }
+    } else if (action === 'set-lucky-pool') {
+      const nextPool = actEl.dataset.pool || 'any';
+      if (state.luckyPool !== nextPool) {
+        state.luckyPool = nextPool;
+        state.luckySeenIds = [];
+        await runLuckyDraw();
+      }
+    } else if (action === 'set-lucky-count') {
+      const nextCount = Number(actEl.dataset.count);
+      if (Number.isInteger(nextCount) && nextCount >= 2 && nextCount <= 6 && state.luckyPollCount !== nextCount) {
+        state.luckyPollCount = nextCount;
+        await runLuckyDraw();
+      }
+    } else if (action === 'lucky-reroll') {
+      await runLuckyDraw();
+    } else if (action === 'lucky-swap-one') {
+      const replaceId = Number(actEl.dataset.placeId);
+      const idx = state.luckyPlaces.findIndex((p) => p.id === replaceId);
+      if (idx < 0 || state.luckyLoading) return;
+      const excludeIds = [...new Set([...state.luckySeenIds, ...state.luckyPlaces.map((p) => p.id)])];
+      const res = await api('/api/week/lucky', {
+        method: 'POST',
+        body: JSON.stringify({
+          dinnerId: state.luckyDinnerId,
+          mode: 'pick',
+          pool: state.luckyPool,
+          excludeIds,
+        }),
+      });
+      if (res.place && !state.luckyPlaces.some((p) => p.id === res.place.id)) {
+        const next = [...state.luckyPlaces];
+        next[idx] = res.place;
+        state.luckyPlaces = next;
+        state.luckySeenIds = [...new Set([...state.luckySeenIds, res.place.id])].slice(-30);
+        renderLuckyModalContent();
+      } else {
+        toast('No other matching spots available to swap');
+      }
+    } else if (action === 'lucky-remove-one') {
+      if (state.luckyPlaces.length <= 2) return toast('Poll needs at least 2 places');
+      const removeId = Number(actEl.dataset.placeId);
+      state.luckyPlaces = state.luckyPlaces.filter((p) => p.id !== removeId);
+      renderLuckyModalContent();
+    } else if (action === 'lucky-edit-poll') {
+      if (state.luckyPlaces.length < 2) return toast('Select at least 2 places');
+      await openPollBuilderModal(
+        state.luckyDinnerId,
+        state.luckyPlaces.map((p) => p.id),
+      );
+    } else if (action === 'lucky-confirm-pick') {
+      const picked = state.luckyPlaces[0];
+      if (!picked) return toast('Draw a spot first');
+      const keepNight = state.pickerAllowKeepNightVote && state.pickerKeepNightVote;
+      const body = keepNight
+        ? { dinnerId: state.luckyDinnerId, restaurantId: picked.id, keepNightVote: true }
+        : { dinnerId: state.luckyDinnerId, restaurantId: picked.id, dayOfWeek: state.pickerDay, keepNightVote: false };
+      await api('/api/week/pick-place', { method: 'POST', body: JSON.stringify(body) });
+      closeModal();
+      toast(keepNight ? `Spot set: ${picked.name}! Tue/Wed vote stays open.` : `Locked in ${picked.name} (${state.pickerDay})!`);
+      await refreshBootstrap();
+    } else if (action === 'lucky-confirm-poll') {
+      if (state.luckyPlaces.length < 2) return toast('Poll needs at least 2 places');
+      const keepNight = state.pickerAllowKeepNightVote && state.pickerKeepNightVote;
+      await api('/api/week/create-poll', {
+        method: 'POST',
+        body: JSON.stringify({
+          dinnerId: state.luckyDinnerId,
+          restaurantIds: state.luckyPlaces.map((p) => p.id),
+          keepNightVote: keepNight,
+          dayOfWeek: keepNight ? undefined : state.pickerDay,
+        }),
+      });
+      closeModal();
+      toast('Random place poll live!');
+      await refreshBootstrap();
     } else if (action === 'toggle-poll-place') {
       const placeId = Number(actEl.dataset.placeId);
       const idx = state.pollCandidateIds.indexOf(placeId);
@@ -2618,18 +2954,32 @@ document.addEventListener('click', async (e) => {
       state.pollCandidateIds = state.pollCandidateIds.filter((id) => id !== placeId);
       renderPollBuilderBody();
     } else if (action === 'poll-fill-random') {
-      const todayIso = getTodayCentralIso();
-      const cutoff = new Date(Date.now() - 56 * 86400000).toISOString().slice(0, 10);
-      const pool = state.places.filter((p) => {
-        const lv = effectiveLastVisited(p, todayIso);
-        return !lv || lv < cutoff;
-      });
-      const source = [...(pool.length >= 4 ? pool : state.places)];
-      for (let i = source.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [source[i], source[j]] = [source[j], source[i]];
+      const dinnerId = Number(actEl.dataset.dinnerId || state.bootstrap?.thisWeek?.dinner?.id);
+      try {
+        const res = await api('/api/week/lucky', {
+          method: 'POST',
+          body: JSON.stringify({
+            dinnerId,
+            mode: 'poll',
+            count: 4,
+            excludeIds: state.pollCandidateIds,
+          }),
+        });
+        state.pollCandidateIds = (res.places || []).map((p) => p.id);
+      } catch {
+        const todayIso = getTodayCentralIso();
+        const cutoff = new Date(Date.now() - 56 * 86400000).toISOString().slice(0, 10);
+        const pool = state.places.filter((p) => {
+          const lv = effectiveLastVisited(p, todayIso);
+          return !lv || lv < cutoff;
+        });
+        const source = [...(pool.length >= 4 ? pool : state.places)];
+        for (let i = source.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [source[i], source[j]] = [source[j], source[i]];
+        }
+        state.pollCandidateIds = source.slice(0, 4).map((p) => p.id);
       }
-      state.pollCandidateIds = source.slice(0, 4).map((p) => p.id);
       renderPollBuilderBody();
     } else if (action === 'poll-create-and-add') {
       const nameEl = document.getElementById('poll-new-name');

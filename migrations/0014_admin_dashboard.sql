@@ -15,10 +15,10 @@ CREATE TABLE IF NOT EXISTS admin_logins (
 CREATE TABLE IF NOT EXISTS notification_logs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_slug TEXT NOT NULL,
-  notification_type TEXT NOT NULL, -- 'night_vote' | 'place' | 'reminder' | 'other'
+  notification_type TEXT NOT NULL,
   sent_at TEXT NOT NULL DEFAULT (datetime('now')),
-  delivery_endpoint TEXT, -- push subscription endpoint identifier
-  status TEXT NOT NULL DEFAULT 'sent', -- 'sent' | 'failed' | 'removed'
+  delivery_endpoint TEXT,
+  status TEXT NOT NULL DEFAULT 'sent',
   UNIQUE(user_slug, notification_type, sent_at)
 );
 
@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS notification_logs (
 CREATE TABLE IF NOT EXISTS feature_usage (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_slug TEXT NOT NULL,
-  feature_name TEXT NOT NULL, -- e.g. 'api_health' | 'api_bootstrap' | 'week_vote' | 'places' | 'history' | 'etc'
+  feature_name TEXT NOT NULL,
   called_at TEXT NOT NULL DEFAULT (datetime('now')),
   endpoint_path TEXT,
   request_method TEXT,

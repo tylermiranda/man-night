@@ -6,9 +6,10 @@ import { WHATS_NEW_RELEASES, buildWhatsNewPayload, formatCrewCreditLabel } from 
 import { buildPreEventHeadcountPayload, buildThirtyMinReminderPayload, runWeeklyCronTick } from '../src/cron';
 import { buildDirectionsUrl, formatCalendarSummary } from '../src/gcal';
 import worker from '../src/index';
+import * as pushModule from '../src/push';
 import { createVapidAuthHeader, encryptWebPushPayload } from '../src/push';
 import type { Env, RestaurantRow } from '../src/types';
-import { addDaysToIsoDate, castRsvp, drawFourRandomPlaces } from '../src/workflow';
+import { addDaysToIsoDate, castRsvp, drawFourRandomPlaces, formatShortDate, isFutureDinner } from '../src/workflow';
 import { createTestD1 } from './d1-shim';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -1641,11 +1642,13 @@ describe('Man Night PWA Worker & Seed', () => {
   it('tracks What’s New releases, crew idea/bug credits, per-user seen state, and UI wiring (issue #11)', async () => {
     // 1. Changelog integrity
     const seenIds = new Set<string>();
-    expect(WHATS_NEW_RELEASES.length).toBeGreaterThanOrEqual(11);
-    expect(WHATS_NEW_RELEASES[0].id).toBe('2026-11-15-appetizers');
-    expect(WHATS_NEW_RELEASES[0].issueNumber).toBe(17);
-    expect(WHATS_NEW_RELEASES[1].id).toBe('2026-11-15-beer-cellar');
-    expect(WHATS_NEW_RELEASES[1].issueNumber).toBe(15);
+    expect(WHATS_NEW_RELEASES.length).toBeGreaterThanOrEqual(12);
+    expect(WHATS_NEW_RELEASES[0].id).toBe('2026-11-15-future-pick-notifications');
+    expect(WHATS_NEW_RELEASES[0].issueNumber).toBe(18);
+    expect(WHATS_NEW_RELEASES[1].id).toBe('2026-11-15-appetizers');
+    expect(WHATS_NEW_RELEASES[1].issueNumber).toBe(17);
+    expect(WHATS_NEW_RELEASES[2].id).toBe('2026-11-15-beer-cellar');
+    expect(WHATS_NEW_RELEASES[2].issueNumber).toBe(15);
     expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-15-issue-feature-form' && e.issueNumber === 16)).toBe(true);
     expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-15-favorite-places' && e.issueNumber === 14)).toBe(true);
     expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-15-meal-prices' && e.issueNumber === 13)).toBe(true);
@@ -1731,7 +1734,8 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(bootInit.whatsNew.seenId).toBeNull();
     expect(bootInit.whatsNew.hasUnseen).toBe(true);
     expect(bootInit.whatsNew.unseenCount).toBe(WHATS_NEW_RELEASES.length);
-    expect(bootInit.whatsNew.entries[0].creditLabel).toBe('Idea by Jacob');
+    expect(bootInit.whatsNew.entries[0].creditLabel).toBe('Bug report by Tyler');
+    expect(bootInit.whatsNew.entries[1].creditLabel).toBe('Idea by Jacob');
 
     const getRes = await worker.fetch(makeReq('/api/whats-new'), env);
     expect(getRes.status).toBe(200);
@@ -2558,5 +2562,110 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(entry).toBeDefined();
     expect(entry?.creditSlug).toBe('jacob');
     expect(entry?.creditRole).toBe('idea');
+  });
+
+  it('supports Issue #18: future night location pick notifications explicitly show future date and day', async () => {
+    // 1. Verify formatShortDate
+    expect(formatShortDate('2026-11-24')).toBe('Nov 24');
+    expect(formatShortDate('2026-12-01')).toBe('Dec 1');
+
+    // 2. Query bootstrap to get active dinner vs upcoming future dinner
+    const bootRes = await worker.fetch(makeReq('/api/bootstrap'), env);
+    const boot = (await bootRes.json()) as {
+      thisWeek: { dinner: { id: number; dinner_date: string } };
+      upcoming: Array<{ id: number; dinner_date: string; host_label: string }>;
+    };
+    const activeDinner = boot.thisWeek.dinner;
+    const futureDinner = boot.upcoming[0]; // e.g. 2026-11-24 (Tyler)
+
+    expect(await isFutureDinner(env.DB, activeDinner, env.CLUB_TIMEZONE)).toBe(false);
+    expect(await isFutureDinner(env.DB, futureDinner, env.CLUB_TIMEZONE)).toBe(true);
+
+    const places = (
+      (await (await worker.fetch(makeReq('/api/places'), env)).json()) as { places: RestaurantRow[] }
+    ).places;
+    const testPlace = places[0];
+
+    // Spy on pushModule.sendWebPushToSubscribers
+    const pushSpy = vi.spyOn(pushModule, 'sendWebPushToSubscribers');
+
+    // 3. Picking for a future dinner with keepNightVote = true
+    pushSpy.mockClear();
+    const futurePickRes = await worker.fetch(
+      makeReq('/api/week/pick-place', 'POST', {
+        dinnerId: futureDinner.id,
+        restaurantId: testPlace.id,
+        keepNightVote: true,
+      }),
+      env,
+    );
+    expect(futurePickRes.status).toBe(200);
+    expect(pushSpy).toHaveBeenCalled();
+    const futurePayload = pushSpy.mock.calls[0][1];
+    expect(futurePayload.title).toContain('(' + formatShortDate(futureDinner.dinner_date) + ')');
+    expect(futurePayload.body).toContain(formatShortDate(futureDinner.dinner_date));
+    expect(futurePayload.body).toContain('Spot set in advance');
+    expect(futurePayload.body).not.toContain('before Monday noon');
+
+    // 4. Picking for future dinner with fixed day (no vote)
+    pushSpy.mockClear();
+    const futureLockedRes = await worker.fetch(
+      makeReq('/api/week/pick-place', 'POST', {
+        dinnerId: futureDinner.id,
+        restaurantId: testPlace.id,
+        dayOfWeek: 'Tuesday',
+        keepNightVote: false,
+      }),
+      env,
+    );
+    expect(futureLockedRes.status).toBe(200);
+    expect(pushSpy).toHaveBeenCalled();
+    const futureLockedPayload = pushSpy.mock.calls[0][1];
+    expect(futureLockedPayload.title).toContain('(' + formatShortDate(futureDinner.dinner_date) + ')');
+    expect(futureLockedPayload.body).toContain('in advance');
+    expect(futureLockedPayload.body).toContain(formatShortDate(futureDinner.dinner_date));
+
+    // 5. Creating place poll for future dinner (upcoming[1])
+    const futureDinner2 = boot.upcoming[1]; // Dec 01
+    pushSpy.mockClear();
+    const futurePollRes = await worker.fetch(
+      makeReq('/api/week/create-poll', 'POST', {
+        dinnerId: futureDinner2.id,
+        restaurantIds: [places[0].id, places[1].id],
+        keepNightVote: true,
+      }),
+      env,
+    );
+    expect(futurePollRes.status).toBe(200);
+    expect(pushSpy).toHaveBeenCalled();
+    const futurePollPayload = pushSpy.mock.calls[0][1];
+    expect(futurePollPayload.title).toContain('(' + formatShortDate(futureDinner2.dinner_date) + ')');
+    expect(futurePollPayload.body).toContain('Vote in advance');
+    expect(futurePollPayload.body).toContain(formatShortDate(futureDinner2.dinner_date));
+
+    // 6. Current active dinner pick retains standard current-week wording
+    pushSpy.mockClear();
+    const currentPickRes = await worker.fetch(
+      makeReq('/api/week/pick-place', 'POST', {
+        dinnerId: activeDinner.id,
+        restaurantId: testPlace.id,
+        keepNightVote: true,
+      }),
+      env,
+    );
+    expect(currentPickRes.status).toBe(200);
+    expect(pushSpy).toHaveBeenCalled();
+    const currentPayload = pushSpy.mock.calls[0][1];
+    expect(currentPayload.title).not.toContain('(' + formatShortDate(activeDinner.dinner_date) + ')');
+    expect(currentPayload.body).toBe('Spot is set! Vote Tuesday or Wednesday before Monday noon.');
+
+    // 7. Changelog and CACHE_NAME verification
+    const entry18 = WHATS_NEW_RELEASES.find((e) => e.issueNumber === 18);
+    expect(entry18).toBeDefined();
+    expect(entry18?.creditSlug).toBe('tyler');
+    expect(entry18?.creditRole).toBe('bug_report');
+
+    const swJs = readFileSync(resolve(rootDir, 'public/sw.js'), 'utf8');
+    expect(swJs).toContain("const CACHE_NAME = 'man-night-shell-v16'");
   });
 });

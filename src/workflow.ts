@@ -56,6 +56,26 @@ export function addDaysToIsoDate(isoDate: string, days: number): string {
   return dt.toISOString().slice(0, 10);
 }
 
+export function formatShortDate(isoDate: string): string {
+  if (!isoDate) return '';
+  const [y, m, d] = isoDate.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+}
+
+export async function isFutureDinner(
+  db: D1Database,
+  dinner: { id: number; dinner_date: string },
+  timeZone = 'America/Chicago',
+): Promise<boolean> {
+  const active = await getActiveDinner(db);
+  if (active) {
+    return dinner.id !== active.id && dinner.dinner_date >= active.dinner_date;
+  }
+  const todayStr = getCentralDateStr(new Date(), timeZone);
+  return dinner.dinner_date > todayStr;
+}
+
 export function getCentralDateStr(now = new Date(), timeZone = 'America/Chicago'): string {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone,
@@ -510,11 +530,22 @@ export async function lockPlace(
       .first<RestaurantRow>())!;
     const updated = (await env.DB.prepare('SELECT * FROM dinners WHERE id = ?').bind(dinnerId).first<DinnerRow>())!;
 
+    const isFuture = await isFutureDinner(env.DB, updated, env.CLUB_TIMEZONE);
+    const dateLabel = formatShortDate(updated.dinner_date);
+    const dayDateLabel = `${updated.day_of_week}, ${dateLabel}`;
+
+    const pushTitle = isFuture
+      ? `${updated.host_label} picked ${updatedRestaurant.name} (${dateLabel})`
+      : `${updated.host_label} picked ${updatedRestaurant.name}`;
+    const pushBody = isFuture
+      ? `Spot set in advance for ${dayDateLabel}! Tue/Wed night vote stays open.`
+      : 'Spot is set! Vote Tuesday or Wednesday before Monday noon.';
+
     await sendWebPushToSubscribers(
       env,
       {
-        title: `${updated.host_label} picked ${updatedRestaurant.name}`,
-        body: 'Spot is set! Vote Tuesday or Wednesday before Monday noon.',
+        title: pushTitle,
+        body: pushBody,
         tag: `place-pick-${dinnerId}`,
         url: env.APP_URL,
         dinnerId,
@@ -606,13 +637,26 @@ export async function lockPlace(
       : chosenVia === 'host_poll'
         ? `Picked via ${updated.host_label}'s poll`
         : `Picked by ${updated.host_label}`;
+
+  const isFuture = await isFutureDinner(env.DB, updated, env.CLUB_TIMEZONE);
+  const dateLabel = formatShortDate(updated.dinner_date);
+  const dayDateLabel = `${updated.day_of_week}, ${dateLabel}`;
+
+  const pushTitle = isFuture
+    ? `Place locked: ${updatedRestaurant.name} (${dateLabel})`
+    : `Place locked: ${updatedRestaurant.name}`;
+
+  const pushBody = isFuture
+    ? `${updated.host_label} locked ${updatedRestaurant.name} in advance for ${dayDateLabel} — no vote needed`
+    : wasEarlyAdvanceLock
+      ? `${updated.host_label} picked ${updatedRestaurant.name} for ${updated.day_of_week} (${dateLabel}) — no vote needed`
+      : `${updated.day_of_week} 6:30 PM · ${viaText}`;
+
   await sendWebPushToSubscribers(
     env,
     {
-      title: `Place locked: ${updatedRestaurant.name}`,
-      body: wasEarlyAdvanceLock
-        ? `${updated.host_label} picked ${updatedRestaurant.name} for ${updated.day_of_week} (${updated.dinner_date}) — no vote needed`
-        : `${updated.day_of_week} 6:30 PM · ${viaText}`,
+      title: pushTitle,
+      body: pushBody,
       tag: `place-lock-${dinnerId}`,
       url: mapsUrl,
       actions: [
@@ -730,11 +774,23 @@ export async function createPlacePoll(
     .run();
 
   const updated = (await env.DB.prepare('SELECT * FROM dinners WHERE id = ?').bind(dinnerId).first<DinnerRow>())!;
+  const isFuture = await isFutureDinner(env.DB, updated, env.CLUB_TIMEZONE);
+  const dateLabel = formatShortDate(updated.dinner_date);
+  const dayDateLabel = `${updated.day_of_week}, ${dateLabel}`;
+
+  const pushTitle = isFuture
+    ? `${updated.host_label} opened a place poll (${dateLabel})`
+    : `${updated.host_label} opened a place poll`;
+
+  const pushBody = isFuture
+    ? `${candidates.map((c) => c.name).join(', ')}${shouldKeepNightVote ? ` · Vote in advance for ${dayDateLabel}` : ` · For ${dayDateLabel} (no night vote)`}`
+    : `${candidates.map((c) => c.name).join(', ')}${shouldKeepNightVote ? ' · Vote on place & Tue/Wed' : ` · For ${updated.day_of_week}`}`;
+
   await sendWebPushToSubscribers(
     env,
     {
-      title: `${updated.host_label} opened a place poll`,
-      body: `${candidates.map((c) => c.name).join(', ')}${shouldKeepNightVote ? ' · Vote on place & Tue/Wed' : ` · For ${updated.day_of_week}`}`,
+      title: pushTitle,
+      body: pushBody,
       tag: `host-poll-${dinnerId}`,
       url: env.APP_URL,
       dinnerId,

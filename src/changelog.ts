@@ -11,6 +11,18 @@ import type { WhatsNewEntry, WhatsNewPayload, WhatsNewViewEntry } from './types'
  */
 export const WHATS_NEW_RELEASES: readonly WhatsNewEntry[] = [
   {
+    id: '2026-11-15-future-pick-notifications',
+    date: '2026-11-15',
+    kind: 'fix',
+    title: '📅 Clearer Future Night Notifications',
+    summary:
+      'Push notifications for spots picked or polled in advance now explicitly specify the future date and day, eliminating confusion with current-week dinner voting.',
+    creditSlug: 'tyler',
+    creditName: 'Tyler',
+    creditRole: 'bug_report',
+    issueNumber: 18,
+  },
+  {
     id: '2026-11-15-appetizers',
     date: '2026-11-15',
     kind: 'feature',

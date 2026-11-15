@@ -1,6 +1,17 @@
 import { buildDirectionsUrl, syncLockedPlaceToCalendar } from './gcal';
 import { sendWebPushToSubscribers } from './push';
-import type { DinnerRow, Env, NightVoteViewRow, RatingViewRow, RestaurantRow, UserRow } from './types';
+import type {
+  DinnerRow,
+  Env,
+  HostStatRow,
+  NightVoteViewRow,
+  RatingViewRow,
+  RestaurantRow,
+  SelloutLogRow,
+  SelloutStatRow,
+  TrackableDinnerRow,
+  UserRow,
+} from './types';
 
 async function recalcRestaurantAvgRating(db: D1Database, restaurantId: number | null): Promise<void> {
   if (!restaurantId) return;
@@ -765,18 +776,71 @@ export async function castRsvp(
   db: D1Database,
   dinnerId: number,
   userSlug: string,
-  status: 'in' | 'late' | 'out',
+  status: 'in' | 'late' | 'out' | 'clear',
   etaMinutes: number | null,
-  note: string,
+  note?: string,
+  recordedBy?: string,
 ) {
+  const dinner = await db.prepare('SELECT * FROM dinners WHERE id = ?').bind(dinnerId).first<DinnerRow>();
+  if (!dinner) throw new Error('Dinner not found');
+  if (dinner.is_historical === 1) {
+    throw new Error('Attendance and sellout tracking started with the app and cannot be modified on pre-app historical dinners');
+  }
+  if (dinner.status === 'scheduled') {
+    const active = await getActiveDinner(db);
+    if (dinner.id !== active?.id) {
+      throw new Error('Cannot log attendance or sellouts for future scheduled weeks yet');
+    }
+  }
+
+  const targetUser = await db
+    .prepare("SELECT slug FROM users WHERE slug = ? AND email NOT LIKE '%@history.local'")
+    .bind(userSlug)
+    .first<{ slug: string }>();
+  if (!targetUser) throw new Error('Unknown club member');
+
+  const actor = recordedBy || userSlug;
+
+  if (status === 'clear') {
+    await db.prepare('DELETE FROM rsvps WHERE dinner_id = ? AND user_slug = ?').bind(dinnerId, userSlug).run();
+    return;
+  }
+
+  if (status === 'out') {
+    const hasNote = typeof note === 'string';
+    const cleanNote = hasNote ? note.trim().slice(0, 140) : '';
+    await db
+      .prepare(
+        `INSERT INTO rsvps (dinner_id, user_slug, status, eta_minutes, note, recorded_by, updated_at)
+         VALUES (?, ?, 'out', NULL, ?, ?, datetime('now'))
+         ON CONFLICT(dinner_id, user_slug)
+         DO UPDATE SET
+           status = 'out',
+           eta_minutes = NULL,
+           note = CASE WHEN ? = 1 THEN excluded.note ELSE CASE WHEN rsvps.status = 'out' THEN rsvps.note ELSE '' END END,
+           recorded_by = excluded.recorded_by,
+           updated_at = datetime('now')`,
+      )
+      .bind(dinnerId, userSlug, cleanNote, actor, hasNote ? 1 : 0)
+      .run();
+    return;
+  }
+
+  const cleanNote = typeof note === 'string' ? note.trim().slice(0, 140) : '';
+  const eta = status === 'late' ? etaMinutes : null;
   await db
     .prepare(
-      `INSERT INTO rsvps (dinner_id, user_slug, status, eta_minutes, note, updated_at)
-       VALUES (?, ?, ?, ?, ?, datetime('now'))
+      `INSERT INTO rsvps (dinner_id, user_slug, status, eta_minutes, note, recorded_by, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
        ON CONFLICT(dinner_id, user_slug)
-       DO UPDATE SET status = excluded.status, eta_minutes = excluded.eta_minutes, note = excluded.note, updated_at = datetime('now')`,
+       DO UPDATE SET
+         status = excluded.status,
+         eta_minutes = excluded.eta_minutes,
+         note = excluded.note,
+         recorded_by = excluded.recorded_by,
+         updated_at = datetime('now')`,
     )
-    .bind(dinnerId, userSlug, status, etaMinutes, note.slice(0, 140))
+    .bind(dinnerId, userSlug, status, eta, cleanNote, actor)
     .run();
 }
 
@@ -1199,7 +1263,15 @@ export async function getBootstrapPayload(env: Env, currentUser: UserRow) {
   let nightVotes: NightVoteViewRow[] = [];
   let noonVotes: Array<{ user_slug: string; restaurant_id: number }> = [];
   let noonCandidates: RestaurantRow[] = [];
-  let rsvps: Array<{ user_slug: string; status: string; eta_minutes: number | null; note: string }> = [];
+  let rsvps: Array<{
+    user_slug: string;
+    user_name: string | null;
+    status: string;
+    eta_minutes: number | null;
+    note: string;
+    recorded_by: string | null;
+    updated_at: string;
+  }> = [];
   let ratings: Array<{ user_slug: string; score: number; dish: string; comment: string }> = [];
 
   if (active) {
@@ -1215,7 +1287,17 @@ export async function getBootstrapPayload(env: Env, currentUser: UserRow) {
     }
     nightVotes = await getNightVotesForDinner(env.DB, active.id);
     noonVotes = (await env.DB.prepare('SELECT user_slug, restaurant_id FROM noon_votes WHERE dinner_id = ?').bind(active.id).all()).results as typeof noonVotes;
-    rsvps = (await env.DB.prepare('SELECT user_slug, status, eta_minutes, note FROM rsvps WHERE dinner_id = ?').bind(active.id).all()).results as typeof rsvps;
+    rsvps = (
+      await env.DB.prepare(
+        `SELECT r.user_slug, u.name AS user_name, r.status, r.eta_minutes, r.note, r.recorded_by, r.updated_at
+         FROM rsvps r
+         LEFT JOIN users u ON u.slug = r.user_slug
+         WHERE r.dinner_id = ?
+         ORDER BY r.updated_at ASC, r.id ASC`,
+      )
+        .bind(active.id)
+        .all()
+    ).results as typeof rsvps;
     ratings = (await env.DB.prepare('SELECT user_slug, score, dish, comment FROM ratings WHERE dinner_id = ?').bind(active.id).all()).results as typeof ratings;
 
     const ids = parseIdListJson(active.noon_draw_ids);
@@ -1289,12 +1371,99 @@ export async function getBootstrapPayload(env: Env, currentUser: UserRow) {
 
   const hostStats = (
     await env.DB.prepare(
-      `SELECT host_slug, host_label, COUNT(*) AS hosted_count
-       FROM dinners
-       WHERE status = 'completed' AND host_slug IS NOT NULL
-       GROUP BY host_slug, host_label
-       ORDER BY hosted_count DESC`,
-    ).all()
+      `SELECT d.host_slug,
+              COALESCE(u.name, MAX(d.host_label)) AS host_label,
+              COUNT(*) AS hosted_count,
+              MAX(d.dinner_date) AS last_hosted
+       FROM dinners d
+       LEFT JOIN users u ON u.slug = d.host_slug
+       WHERE d.status = 'completed' AND d.host_slug IS NOT NULL
+       GROUP BY d.host_slug
+       ORDER BY hosted_count DESC, COALESCE(u.rotation_order, 99) ASC, host_label ASC`,
+    ).all<HostStatRow>()
+  ).results ?? [];
+
+  const activeId = active?.id ?? -1;
+
+  const selloutStats = (
+    await env.DB.prepare(
+      `SELECT u.slug AS user_slug,
+              u.name AS user_name,
+              u.avatar_class,
+              u.initials,
+              u.is_rotation,
+              COUNT(CASE WHEN d.id IS NOT NULL AND rv.status = 'out' THEN 1 END) AS sellout_count,
+              COUNT(CASE WHEN d.id IS NOT NULL AND rv.status IN ('in', 'late') THEN 1 END) AS attended_count,
+              MAX(CASE WHEN d.id IS NOT NULL AND rv.status = 'out' THEN d.dinner_date END) AS last_sellout_date,
+              (
+                SELECT rv2.note
+                FROM rsvps rv2
+                JOIN dinners d2 ON d2.id = rv2.dinner_id
+                WHERE rv2.user_slug = u.slug
+                  AND rv2.status = 'out'
+                  AND d2.is_historical = 0
+                  AND (d2.status != 'scheduled' OR d2.id = ?)
+                ORDER BY d2.dinner_date DESC, rv2.updated_at DESC
+                LIMIT 1
+              ) AS last_sellout_note
+       FROM users u
+       LEFT JOIN rsvps rv ON rv.user_slug = u.slug
+       LEFT JOIN dinners d
+         ON d.id = rv.dinner_id
+        AND d.is_historical = 0
+        AND (d.status != 'scheduled' OR d.id = ?)
+       WHERE u.email NOT LIKE '%@history.local'
+         AND (u.is_rotation = 1 OR EXISTS (
+           SELECT 1 FROM rsvps rv3
+           JOIN dinners d3 ON d3.id = rv3.dinner_id
+           WHERE rv3.user_slug = u.slug
+             AND rv3.status = 'out'
+             AND d3.is_historical = 0
+             AND (d3.status != 'scheduled' OR d3.id = ?)
+         ))
+       GROUP BY u.id
+       ORDER BY sellout_count DESC,
+                last_sellout_date DESC,
+                COALESCE(u.rotation_order, 99) ASC,
+                u.id ASC`,
+    )
+      .bind(activeId, activeId, activeId)
+      .all<SelloutStatRow>()
+  ).results ?? [];
+
+  const recentSellouts = (
+    await env.DB.prepare(
+      `SELECT rv.dinner_id, d.week_key, d.dinner_date, d.day_of_week, d.host_label,
+              r.name AS restaurant_name,
+              rv.user_slug, COALESCE(u.name, rv.user_slug) AS user_name,
+              rv.note, rv.recorded_by, rv.updated_at
+       FROM rsvps rv
+       JOIN dinners d ON d.id = rv.dinner_id
+       LEFT JOIN users u ON u.slug = rv.user_slug
+       LEFT JOIN restaurants r ON r.id = d.restaurant_id
+       WHERE rv.status = 'out'
+         AND d.is_historical = 0
+         AND (d.status != 'scheduled' OR d.id = ?)
+       ORDER BY d.dinner_date DESC, rv.updated_at DESC, rv.id DESC
+       LIMIT 60`,
+    )
+      .bind(activeId)
+      .all<SelloutLogRow>()
+  ).results ?? [];
+
+  const trackableDinners = (
+    await env.DB.prepare(
+      `SELECT d.id, d.week_key, d.dinner_date, d.day_of_week, d.host_slug, d.host_label, d.status,
+              r.name AS restaurant_name
+       FROM dinners d
+       LEFT JOIN restaurants r ON r.id = d.restaurant_id
+       WHERE d.is_historical = 0
+         AND (d.status != 'scheduled' OR d.id = ?)
+       ORDER BY d.dinner_date DESC
+       LIMIT 12`,
+    )
+      .bind(activeId)
+      .all<TrackableDinnerRow>()
   ).results ?? [];
 
   const myPushCount = await env.DB.prepare('SELECT COUNT(*) AS cnt FROM push_subscriptions WHERE user_slug = ?')
@@ -1317,6 +1486,9 @@ export async function getBootstrapPayload(env: Env, currentUser: UserRow) {
     },
     stats: counts,
     hostStats,
+    selloutStats,
+    recentSellouts,
+    trackableDinners,
     users,
     thisWeek: active
       ? {

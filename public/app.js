@@ -21,6 +21,9 @@ const state = {
   nightReasonDraft: null,
   nightReasonDinnerId: null,
   focusNightReason: false,
+  rsvpExcuseDraft: null,
+  rsvpExcuseDinnerId: null,
+  selloutModalDinnerId: null,
   pollCandidateIds: [],
   pollSearchQuery: '',
   theme: localStorage.getItem('mn_theme') || 'light',
@@ -395,6 +398,10 @@ function renderWeekView() {
     state.nightReasonDinnerId = d.id;
     state.nightReasonDraft = null;
   }
+  if (state.rsvpExcuseDinnerId !== d.id) {
+    state.rsvpExcuseDinnerId = d.id;
+    state.rsvpExcuseDraft = null;
+  }
   const tueCount = tw.nightVotes.filter((v) => v.choice === 'tuesday').length;
   const wedCount = tw.nightVotes.filter((v) => v.choice === 'wednesday').length;
   const totalNight = tueCount + wedCount;
@@ -402,7 +409,10 @@ function renderWeekView() {
   const myNight = myNightRow?.choice;
   const savedNightReason = (myNightRow?.reason || '').trim();
   const draftNightReason = state.nightReasonDraft !== null ? state.nightReasonDraft : (myNightRow?.reason || '');
-  const myRsvp = tw.rsvps.find((v) => v.user_slug === me.slug)?.status;
+  const myRsvpRow = tw.rsvps.find((v) => v.user_slug === me.slug);
+  const myRsvp = myRsvpRow?.status;
+  const savedRsvpExcuse = (myRsvpRow?.note || '').trim();
+  const draftRsvpExcuse = state.rsvpExcuseDraft !== null ? state.rsvpExcuseDraft : (myRsvpRow?.note || '');
 
   const nightOpen = !d.night_locked_at && (d.status === 'scheduled' || d.status === 'night_poll');
   const hasPlacePoll = !d.restaurant_id && (tw.noonCandidates || []).length >= 2;
@@ -626,20 +636,43 @@ function renderWeekView() {
   // RSVP block
   const rsvpChips = tw.rsvps
     .map((r) => {
+      const u = (b.users || []).find((x) => x.slug === r.user_slug);
+      const displayName = r.user_name || u?.name || r.user_slug;
       const cls = r.status === 'in' ? 'ok' : r.status === 'late' ? 'late' : 'out';
-      const label = r.status === 'in' ? 'In' : r.status === 'late' ? `Late ${r.eta_minutes || 15}m` : 'Out';
-      return `<span class="chip ${cls}">${avatarHtml(r.user_slug, r.user_slug, 'sm')} ${esc(r.user_slug)} · ${label}</span>`;
+      const label = r.status === 'in' ? 'In' : r.status === 'late' ? `Late ${r.eta_minutes || 15}m` : 'Sold out';
+      const tip = r.note ? `${displayName}: ${r.note}` : '';
+      return `<span class="chip ${cls}"${tip ? ` title="${esc(tip)}"` : ''}>${avatarHtml(r.user_slug, displayName, 'sm')} ${esc(displayName)} · ${label}</span>`;
     })
     .join('');
 
+  const rsvpExcuseHtml =
+    myRsvp === 'out'
+      ? `
+        <div class="rsvp-excuse-box">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12px;font-weight:700;margin-bottom:6px;">
+            <span>Sellout excuse <span style="font-weight:500;color:var(--muted);">(optional · counts toward Crown of Shame)</span></span>
+            ${savedRsvpExcuse ? '<span class="badge badge-ok">✓ Saved</span>' : ''}
+          </div>
+          <div class="rsvp-excuse-row">
+            <input id="rsvp-out-note" class="input" type="text" maxlength="140" placeholder="Why are you selling out this week?" value="${esc(draftRsvpExcuse)}" />
+            <button type="button" class="btn btn-outline btn-sm" data-action="save-rsvp-note">Save excuse</button>
+          </div>
+        </div>
+      `
+      : '';
+
   const rsvpCard = `
     <div class="card">
-      <div class="card-kicker"><span>Attendance</span><span class="tabular">${fmtShortDate(d.dinner_date)}</span></div>
+      <div class="card-kicker">
+        <span>Attendance · ${fmtShortDate(d.dinner_date)}</span>
+        <button class="link-btn" style="font-size:12px;" data-action="open-sellout-modal" data-dinner-id="${d.id}">Tag sellout →</button>
+      </div>
       <div class="btn-row">
         <button class="btn btn-sm ${myRsvp === 'in' ? 'btn-primary' : 'btn-outline'}" data-action="rsvp" data-status="in">I’m in</button>
         <button class="btn btn-sm ${myRsvp === 'late' ? 'btn-primary' : 'btn-outline'}" data-action="rsvp" data-status="late">Running 15m late</button>
         <button class="btn btn-sm ${myRsvp === 'out' ? 'btn-primary' : 'btn-outline'}" data-action="rsvp" data-status="out">Can’t make it</button>
       </div>
+      ${rsvpExcuseHtml}
       ${rsvpChips ? `<div class="rsvp-grid">${rsvpChips}</div>` : `<p class="hero-sub" style="margin:10px 0 0;font-size:13px;">No RSVPs yet for ${fmtShortDate(d.dinner_date)}.</p>`}
     </div>
   `;
@@ -1225,18 +1258,95 @@ function renderPlacesView() {
 function renderCrewView() {
   const b = state.bootstrap;
   const me = b.user;
-  const maxHost = Math.max(...(b.hostStats || []).map((h) => h.hosted_count), 1);
+  const hostStats = b.hostStats || [];
+  const maxHost = Math.max(...hostStats.map((h) => h.hosted_count), 1);
+  const topHostCount = Math.max(...hostStats.map((h) => h.hosted_count), 0);
+  const kingsOfHosting = topHostCount > 0 ? hostStats.filter((h) => h.hosted_count === topHostCount) : [];
+  const kingSlugs = new Set(kingsOfHosting.map((h) => h.host_slug));
+  const runnerUpHost = hostStats.find((h) => !kingSlugs.has(h.host_slug));
+
+  const selloutStats = b.selloutStats || [];
+  const maxSellouts = Math.max(...selloutStats.map((s) => s.sellout_count), 0);
+  const shameHolders = maxSellouts > 0 ? selloutStats.filter((s) => s.sellout_count === maxSellouts) : [];
+  const shameSlugs = new Set(shameHolders.map((s) => s.user_slug));
+  const recentSellouts = b.recentSellouts || [];
+
+  const kingLeadTxt =
+    kingsOfHosting.length === 1 && runnerUpHost
+      ? `+${topHostCount - runnerUpHost.hosted_count} ahead of ${runnerUpHost.host_label}`
+      : kingsOfHosting.length > 1
+        ? `Tied at ${topHostCount} dinners hosted`
+        : 'All-time hosting leader';
+  const kingLastTxt = kingsOfHosting[0]?.last_hosted ? `Last hosted ${fmtDate(kingsOfHosting[0].last_hosted)}` : '';
+  const kingCardBody = kingsOfHosting.length
+    ? `
+      <div class="crown-winner-row">
+        <div style="display:flex;align-items:center;gap:6px;">
+          ${kingsOfHosting.map((k) => avatarHtml(k.host_slug, k.host_label, 'lg')).join('')}
+        </div>
+        <div style="min-width:0;">
+          <div class="crown-title">${esc(kingsOfHosting.map((k) => k.host_label).join(' & '))}</div>
+          <div class="crown-meta">${esc(kingLeadTxt)}${kingLastTxt ? ` · ${esc(kingLastTxt)}` : ''}</div>
+        </div>
+      </div>
+      <div class="btn-row">
+        ${kingsOfHosting.length === 1 ? `<button class="btn btn-outline btn-sm" data-action="crew-view-host-history" data-host="${esc(kingsOfHosting[0].host_slug)}">View ${esc(kingsOfHosting[0].host_label)}’s dinners →</button>` : ''}
+      </div>
+    `
+    : `<div class="crown-meta">No completed host records found.</div>`;
+
+  const shameHolderTitle =
+    shameHolders.length > 1
+      ? `Co-Holders: ${shameHolders.map((s) => s.user_name).join(' & ')}`
+      : shameHolders[0]?.user_name || '';
+  const shameMetaParts = [];
+  if (shameHolders[0]?.last_sellout_date) {
+    shameMetaParts.push(`Last sellout ${fmtShortDate(shameHolders[0].last_sellout_date)}`);
+  }
+  if (shameHolders[0]?.last_sellout_note) {
+    shameMetaParts.push(`“${shameHolders[0].last_sellout_note}”`);
+  }
+  const shameCardBody =
+    maxSellouts > 0
+      ? `
+        <div class="crown-winner-row">
+          <div style="display:flex;align-items:center;gap:6px;">
+            ${shameHolders.map((s) => avatarHtml(s.user_slug, s.user_name, 'lg')).join('')}
+          </div>
+          <div style="min-width:0;">
+            <div class="crown-title">${esc(shameHolderTitle)}</div>
+            <div class="crown-meta">${esc(shameMetaParts.join(' · ') || 'Reigning sellout leader since Nov 2026')}</div>
+          </div>
+        </div>
+        <div class="btn-row">
+          <button class="btn btn-outline btn-sm" data-action="open-sellout-modal">Log / edit sellouts</button>
+        </div>
+      `
+      : `
+        <div class="crown-winner-row">
+          <div class="crown-emblem" aria-hidden="true">👑</div>
+          <div style="min-width:0;">
+            <div class="crown-title">Crown Unclaimed</div>
+            <div class="crown-meta">Tracked forward from Nov 2026 — skipping a week (“Can’t make it”) claims the Crown of Shame.</div>
+          </div>
+        </div>
+        <div class="btn-row">
+          <button class="btn btn-outline btn-sm" data-action="open-sellout-modal">Log a sellout</button>
+        </div>
+      `;
 
   const rotHtml = (b.users || [])
     .filter((u) => u.is_rotation)
     .map(
       (u, i) => `
       <div class="row-item">
-        <div style="display:flex;align-items:center;gap:10px;">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
           <span class="tabular" style="width:18px;font-weight:700;color:var(--muted);">${i + 1}</span>
           ${avatarHtml(u.slug, u.name)}
           <span style="font-weight:650;">${esc(u.name)}</span>
           ${b.thisWeek?.dinner?.host_slug === u.slug ? '<span class="badge badge-red">This week</span>' : ''}
+          ${kingSlugs.has(u.slug) ? '<span class="badge badge-gold">👑 King</span>' : ''}
+          ${shameSlugs.has(u.slug) ? '<span class="badge badge-shame">👑 Shame</span>' : ''}
         </div>
         <span style="font-size:12px;color:var(--muted);">Active queue</span>
       </div>
@@ -1244,25 +1354,86 @@ function renderCrewView() {
     )
     .join('');
 
-  const leaderHtml = (b.hostStats || [])
+  const leaderHtml = hostStats
     .map((h) => {
       const pct = Math.round((h.hosted_count / maxHost) * 100);
+      const isKing = kingSlugs.has(h.host_slug);
       return `
         <div style="display:flex;align-items:center;gap:10px;padding:7px 0;">
           ${avatarHtml(h.host_slug, h.host_label, 'sm')}
-          <span style="width:68px;font-weight:600;font-size:13px;">${esc(h.host_label)}</span>
-          <div class="stat-bar-track"><div class="stat-bar-fill" style="width:${pct}%"></div></div>
+          <div style="width:110px;display:flex;align-items:center;gap:5px;flex-shrink:0;">
+            <span style="font-weight:${isKing ? '750' : '600'};font-size:13px;">${esc(h.host_label)}</span>
+            ${isKing ? `<span class="badge badge-gold" style="padding:1px 6px;font-size:10px;">👑 ${kingsOfHosting.length > 1 ? 'Co-King' : 'King'}</span>` : ''}
+          </div>
+          <div class="stat-bar-track"><div class="stat-bar-fill ${isKing ? 'gold' : ''}" style="width:${pct}%"></div></div>
           <span class="tabular" style="width:36px;text-align:right;font-weight:700;font-size:13px;">${h.hosted_count}</span>
         </div>
       `;
     })
     .join('');
 
+  const selloutRowsHtml = selloutStats
+    .map((s) => {
+      const pct = maxSellouts > 0 ? Math.round((s.sellout_count / maxSellouts) * 100) : 0;
+      const isShame = maxSellouts > 0 && shameSlugs.has(s.user_slug);
+      return `
+        <div style="display:flex;align-items:center;gap:10px;padding:7px 0;">
+          ${avatarHtml(s.user_slug, s.user_name, 'sm')}
+          <div style="width:110px;display:flex;align-items:center;gap:5px;flex-shrink:0;">
+            <span style="font-weight:${isShame ? '750' : '600'};font-size:13px;">${esc(s.user_name)}</span>
+            ${isShame ? `<span class="badge badge-shame" style="padding:1px 6px;font-size:10px;">👑 Shame</span>` : ''}
+          </div>
+          <div class="stat-bar-track"><div class="stat-bar-fill shame" style="width:${pct}%"></div></div>
+          <span class="tabular" style="width:36px;text-align:right;font-weight:700;font-size:13px;">${s.sellout_count}</span>
+        </div>
+      `;
+    })
+    .join('');
+
+  const recentSelloutHtml = recentSellouts.length
+    ? `
+      <div class="sellout-log-list">
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.04em;color:var(--muted);">Recent sellouts</div>
+        ${recentSellouts
+          .slice(0, 5)
+          .map(
+            (item) => `
+          <div class="sellout-log-item">
+            <div style="min-width:0;">
+              <strong>${esc(item.user_name)}</strong>
+              <span style="color:var(--muted);"> · ${fmtShortDate(item.dinner_date)} (${esc(item.host_label)}’s week)</span>
+              ${item.note ? `<div style="color:var(--muted);margin-top:2px;">“${esc(item.note)}”</div>` : ''}
+            </div>
+            <span class="badge badge-shame" style="flex-shrink:0;">Sold out</span>
+          </div>
+        `,
+          )
+          .join('')}
+      </div>
+    `
+    : `<div style="font-size:12px;color:var(--muted);margin-top:10px;">No sellouts logged yet. Tapping “Can’t make it” or tagging a no-show starts the leaderboard.</div>`;
+
   const tueRate = b.stats?.recent_weeks
     ? Math.round((b.stats.recent_tuesdays / b.stats.recent_weeks) * 100)
     : 76;
 
   return `
+    <div class="crew-crowns-grid">
+      <section class="crown-card king">
+        <div class="card-kicker" style="margin-bottom:0;">
+          <span>👑 King of Hosting · All-Time</span>
+          <span class="badge badge-gold tabular">${topHostCount}× hosted</span>
+        </div>
+        ${kingCardBody}
+      </section>
+      <section class="crown-card shame">
+        <div class="card-kicker" style="margin-bottom:0;">
+          <span>👑 Crown of Shame · Biggest Sellout</span>
+          <span class="badge ${maxSellouts > 0 ? 'badge-shame' : 'badge-muted'} tabular">${maxSellouts > 0 ? `${maxSellouts} ${maxSellouts === 1 ? 'sellout' : 'sellouts'}` : '0 sellouts'}</span>
+        </div>
+        ${shameCardBody}
+      </section>
+    </div>
     <div class="week-grid">
       <div class="stack">
         <section class="card">
@@ -1273,6 +1444,14 @@ function renderCrewView() {
           <div class="card-kicker"><span>Hosted all-time</span><span>Since 2011 records</span></div>
           ${leaderHtml}
           <div style="font-size:12px;color:var(--muted);margin-top:10px;">Tuesday nights since 2025: <strong class="tabular">${tueRate}%</strong></div>
+        </section>
+        <section class="card">
+          <div class="card-kicker">
+            <span>Sellout tracker · From Nov 2026</span>
+            <button class="link-btn" data-action="open-sellout-modal">Log / edit →</button>
+          </div>
+          ${selloutRowsHtml}
+          ${recentSelloutHtml}
         </section>
       </div>
       <div class="stack">
@@ -1788,6 +1967,108 @@ function openPassSwapModal() {
   `);
 }
 
+function renderSelloutModalBody() {
+  const listEl = document.getElementById('sellout-modal-list');
+  const selEl = document.getElementById('sellout-dinner-select');
+  if (!listEl) return;
+
+  const b = state.bootstrap;
+  const dinners = b?.trackableDinners || [];
+  const dinnerId = Number(selEl?.value || state.selloutModalDinnerId || dinners[0]?.id || 0);
+  state.selloutModalDinnerId = dinnerId;
+
+  const outMap = new Map();
+  for (const row of b?.recentSellouts || []) {
+    if (Number(row.dinner_id) === dinnerId) {
+      outMap.set(row.user_slug, row);
+    }
+  }
+  const weekRsvpMap = new Map();
+  if (Number(b?.thisWeek?.dinner?.id) === dinnerId) {
+    for (const r of b?.thisWeek?.rsvps || []) {
+      weekRsvpMap.set(r.user_slug, r);
+    }
+  }
+
+  const crew = (b?.users || []).filter((u) => u.is_rotation || outMap.has(u.slug));
+  listEl.innerHTML = crew
+    .map((u) => {
+      const outEntry = outMap.get(u.slug);
+      const rsvpEntry = weekRsvpMap.get(u.slug);
+      const isOut = Boolean(outEntry);
+      const subTxt = isOut
+        ? outEntry.note
+          ? `Sold out · “${outEntry.note}”`
+          : 'Marked sold out'
+        : rsvpEntry?.status === 'in'
+          ? 'RSVP’d In'
+          : rsvpEntry?.status === 'late'
+            ? `Running ${rsvpEntry.eta_minutes || 15}m late`
+            : 'No sellout logged';
+      return `
+        <div class="sellout-modal-row">
+          <div style="display:flex;align-items:center;gap:10px;min-width:0;">
+            ${avatarHtml(u.slug, u.name)}
+            <div style="min-width:0;">
+              <div style="font-weight:650;font-size:14px;">${esc(u.name)}</div>
+              <div style="font-size:12px;color:${isOut ? 'var(--accent)' : 'var(--muted)'};">${esc(subTxt)}</div>
+            </div>
+          </div>
+          <button
+            type="button"
+            class="btn btn-sm ${isOut ? 'btn-outline' : 'btn-primary'}"
+            data-action="toggle-member-sellout"
+            data-dinner-id="${dinnerId}"
+            data-user-slug="${esc(u.slug)}"
+            data-next-status="${isOut ? 'clear' : 'out'}"
+          >${isOut ? 'Undo' : 'Mark sellout'}</button>
+        </div>
+      `;
+    })
+    .join('');
+}
+
+function openSelloutModal(dinnerId = null) {
+  const b = state.bootstrap;
+  const dinners = b?.trackableDinners || [];
+  if (!dinners.length) {
+    toast('No active or recent weeks to log sellouts yet');
+    return;
+  }
+  const targetId =
+    Number(dinnerId) && dinners.some((d) => Number(d.id) === Number(dinnerId))
+      ? Number(dinnerId)
+      : Number(b?.thisWeek?.dinner?.id || dinners[0].id);
+  state.selloutModalDinnerId = targetId;
+
+  openModal(`
+    <h2 class="hero-title" style="font-size:20px;margin-bottom:6px;">Log or Edit Sellouts</h2>
+    <p class="hero-sub" style="margin-bottom:12px;font-size:13px;">Tracked forward from Nov 2026 — whoever misses the most dinners wears the Crown of Shame.</p>
+    <div class="stack" style="gap:10px;">
+      <div>
+        <div style="font-size:12px;font-weight:700;color:var(--muted);margin-bottom:4px;">Which week?</div>
+        <select id="sellout-dinner-select" class="select" style="width:100%;">
+          ${dinners
+            .map((d) => {
+              const label = `${fmtShortDate(d.dinner_date)} · ${d.host_label}’s week${d.restaurant_name ? ` (${d.restaurant_name})` : ''}${d.status !== 'completed' ? ' · Current' : ''}`;
+              return `<option value="${d.id}" ${Number(d.id) === targetId ? 'selected' : ''}>${esc(label)}</option>`;
+            })
+            .join('')}
+        </select>
+      </div>
+      <div>
+        <div style="font-size:12px;font-weight:700;color:var(--muted);margin-bottom:4px;">Excuse / note (optional)</div>
+        <input id="sellout-note-input" class="input" style="width:100%;" maxlength="140" placeholder="e.g. work trip, kids soccer, bailed last minute…" />
+      </div>
+      <div id="sellout-modal-list" class="stack" style="gap:8px;max-height:300px;overflow-y:auto;"></div>
+      <div class="btn-row" style="justify-content:flex-end;margin-top:4px;">
+        <button type="button" class="btn btn-secondary btn-sm" data-action="close-modal">Done</button>
+      </div>
+    </div>
+  `);
+  renderSelloutModalBody();
+}
+
 function openNewPlaceModal() {
   openModal(`
     <h2 class="hero-title" style="font-size:20px;margin-bottom:10px;">Add new restaurant</h2>
@@ -2087,16 +2368,62 @@ document.addEventListener('click', async (e) => {
       toast('Noon vote saved');
       await refreshBootstrap();
     } else if (action === 'rsvp') {
+      const payload = {
+        dinnerId: state.bootstrap.thisWeek.dinner.id,
+        status: actEl.dataset.status,
+        etaMinutes: actEl.dataset.status === 'late' ? 15 : null,
+      };
+      if (actEl.dataset.status === 'out' && state.rsvpExcuseDraft !== null) {
+        payload.note = state.rsvpExcuseDraft;
+      }
+      await api('/api/week/rsvp', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      state.rsvpExcuseDraft = null;
+      toast(actEl.dataset.status === 'out' ? 'Marked sold out for this week' : 'RSVP updated');
+      await refreshBootstrap();
+    } else if (action === 'save-rsvp-note') {
+      const tw = state.bootstrap?.thisWeek;
+      if (!tw?.dinner) return;
+      const inputEl = document.getElementById('rsvp-out-note');
+      const noteVal = inputEl ? inputEl.value : (state.rsvpExcuseDraft || '');
       await api('/api/week/rsvp', {
         method: 'POST',
         body: JSON.stringify({
-          dinnerId: state.bootstrap.thisWeek.dinner.id,
-          status: actEl.dataset.status,
-          etaMinutes: actEl.dataset.status === 'late' ? 15 : null,
+          dinnerId: tw.dinner.id,
+          status: 'out',
+          note: noteVal,
         }),
       });
-      toast('RSVP updated');
+      state.rsvpExcuseDraft = null;
+      toast(noteVal.trim() ? 'Sellout excuse saved!' : 'Excuse cleared');
       await refreshBootstrap();
+    } else if (action === 'open-sellout-modal') {
+      openSelloutModal(actEl.dataset.dinnerId ? Number(actEl.dataset.dinnerId) : null);
+    } else if (action === 'toggle-member-sellout') {
+      const dinnerId = Number(actEl.dataset.dinnerId);
+      const userSlug = actEl.dataset.userSlug;
+      const nextStatus = actEl.dataset.nextStatus === 'clear' ? 'clear' : 'out';
+      const noteEl = document.getElementById('sellout-note-input');
+      const noteVal = noteEl ? noteEl.value.trim() : '';
+      const payload = { dinnerId, userSlug, status: nextStatus };
+      if (nextStatus === 'out' && noteVal) {
+        payload.note = noteVal;
+      }
+      await api('/api/week/rsvp', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      if (noteEl && nextStatus === 'out') noteEl.value = '';
+      toast(nextStatus === 'clear' ? 'Sellout removed' : 'Sellout logged');
+      await refreshBootstrap();
+      renderSelloutModalBody();
+    } else if (action === 'crew-view-host-history') {
+      state.historyHost = actEl.dataset.host || '';
+      state.historyPlaceId = null;
+      state.historyQuery = '';
+      setTab('history');
     } else if (action === 'set-star') {
       state.ratingScore = Number(actEl.dataset.score);
       document.querySelectorAll('#last-dinner-stars .star-btn').forEach((btn) => {
@@ -2376,6 +2703,9 @@ document.addEventListener('input', (e) => {
   if (e.target.id === 'night-vote-reason') {
     state.nightReasonDinnerId = state.bootstrap?.thisWeek?.dinner?.id ?? null;
     state.nightReasonDraft = e.target.value;
+  } else if (e.target.id === 'rsvp-out-note') {
+    state.rsvpExcuseDinnerId = state.bootstrap?.thisWeek?.dinner?.id ?? null;
+    state.rsvpExcuseDraft = e.target.value;
   } else if (e.target.id === 'picker-q') {
     const btn = document.querySelector('[data-action="picker-create-and-use"]');
     renderPickerOptions(btn?.dataset.mode || 'pick', btn?.dataset.dinnerId || '', e.target.value);
@@ -2396,6 +2726,9 @@ document.addEventListener('keydown', (e) => {
   if (e.target.id === 'night-vote-reason' && e.key === 'Enter') {
     e.preventDefault();
     document.querySelector('[data-action="save-night-reason"]')?.click();
+  } else if (e.target.id === 'rsvp-out-note' && e.key === 'Enter') {
+    e.preventDefault();
+    document.querySelector('[data-action="save-rsvp-note"]')?.click();
   }
 });
 
@@ -2403,6 +2736,9 @@ document.addEventListener('change', async (e) => {
   if (e.target.id === 'places-sort') {
     state.placesSort = e.target.value;
     render();
+  } else if (e.target.id === 'sellout-dinner-select') {
+    state.selloutModalDinnerId = Number(e.target.value);
+    renderSelloutModalBody();
   } else if (e.target.dataset.pref) {
     const key = e.target.dataset.pref;
     await api('/api/user/prefs', { method: 'PATCH', body: JSON.stringify({ [key]: e.target.checked }) });

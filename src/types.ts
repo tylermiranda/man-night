@@ -103,6 +103,50 @@ export interface DinnerRow {
   is_historical: number;
 }
 
+export interface HostStatRow {
+  host_slug: string;
+  host_label: string;
+  hosted_count: number;
+  last_hosted: string | null;
+}
+
+export interface SelloutStatRow {
+  user_slug: string;
+  user_name: string;
+  avatar_class: string;
+  initials: string;
+  is_rotation: number;
+  sellout_count: number;
+  attended_count: number;
+  last_sellout_date: string | null;
+  last_sellout_note: string | null;
+}
+
+export interface SelloutLogRow {
+  dinner_id: number;
+  week_key: string;
+  dinner_date: string;
+  day_of_week: string;
+  host_label: string;
+  restaurant_name: string | null;
+  user_slug: string;
+  user_name: string;
+  note: string;
+  recorded_by: string | null;
+  updated_at: string;
+}
+
+export interface TrackableDinnerRow {
+  id: number;
+  week_key: string;
+  dinner_date: string;
+  day_of_week: string;
+  host_slug: string | null;
+  host_label: string;
+  status: DinnerStatus;
+  restaurant_name: string | null;
+}
+
 export interface PushPayload {
   title: string;
   body: string;

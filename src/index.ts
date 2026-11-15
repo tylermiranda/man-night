@@ -253,18 +253,20 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
     if (path === '/api/week/rsvp' && method === 'POST') {
       const body = await readJson<{
         dinnerId?: number;
-        status: 'in' | 'late' | 'out';
+        userSlug?: string;
+        status: 'in' | 'late' | 'out' | 'clear';
         etaMinutes?: number | null;
         note?: string;
       }>(request);
-      if (!['in', 'late', 'out'].includes(body.status)) {
+      if (!['in', 'late', 'out', 'clear'].includes(body.status)) {
         return json({ error: 'Invalid RSVP status' }, 400);
       }
       const dinner = body.dinnerId
         ? await env.DB.prepare('SELECT id FROM dinners WHERE id = ?').bind(body.dinnerId).first<{ id: number }>()
         : await getActiveDinner(env.DB);
       if (!dinner) return json({ error: 'No active dinner found' }, 404);
-      await castRsvp(env.DB, dinner.id, user.slug, body.status, body.etaMinutes ?? null, body.note ?? '');
+      const targetSlug = (typeof body.userSlug === 'string' && body.userSlug.trim().toLowerCase()) || user.slug;
+      await castRsvp(env.DB, dinner.id, targetSlug, body.status, body.etaMinutes ?? null, body.note, user.slug);
       return json({ ok: true });
     }
 

@@ -17,6 +17,7 @@ const seedSql = readFileSync(resolve(rootDir, 'migrations/0002_seed_history.sql'
 const migration0003Sql = readFileSync(resolve(rootDir, 'migrations/0003_ratings_indexes.sql'), 'utf8');
 const migration0004Sql = readFileSync(resolve(rootDir, 'migrations/0004_fix_future_visit_dates.sql'), 'utf8');
 const migration0005Sql = readFileSync(resolve(rootDir, 'migrations/0005_night_vote_reasons.sql'), 'utf8');
+const migration0006Sql = readFileSync(resolve(rootDir, 'migrations/0006_sellout_tracking.sql'), 'utf8');
 
 function makeEnv(db: D1Database, overrides: Partial<Env> = {}): Env {
   return {
@@ -50,6 +51,7 @@ describe('Man Night PWA Worker & Seed', () => {
     await db.exec(migration0003Sql);
     await db.exec(migration0004Sql);
     await db.exec(migration0005Sql);
+    await db.exec(migration0006Sql);
     env = makeEnv(db);
   });
 
@@ -850,5 +852,166 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(bootLocked.thisWeek.dinner.status).toBe('awaiting_pick');
     const ericLocked = bootLocked.thisWeek.nightVotes.find((v) => v.user_slug === 'eric');
     expect(ericLocked?.reason).toBe('Out of town Tuesday');
+  });
+
+  it('crowns King of Hosting from all-time history and tracks forward-only sellouts for the Crown of Shame', async () => {
+    const bootInitial = (await (await worker.fetch(makeReq('/api/bootstrap'), env)).json()) as {
+      hostStats: Array<{ host_slug: string; host_label: string; hosted_count: number; last_hosted: string | null }>;
+      selloutStats: Array<{
+        user_slug: string;
+        user_name: string;
+        sellout_count: number;
+        attended_count: number;
+        last_sellout_date: string | null;
+        last_sellout_note: string | null;
+      }>;
+      recentSellouts: Array<{ user_slug: string; note: string }>;
+      trackableDinners: Array<{ id: number; week_key: string }>;
+      thisWeek: { dinner: { id: number; week_key: string } };
+      upcoming: Array<{ id: number; week_key: string }>;
+    };
+
+    // 1. King of Hosting is Chuck with 148 completed dinners hosted
+    expect(bootInitial.hostStats[0].host_slug).toBe('chuck');
+    expect(bootInitial.hostStats[0].host_label).toBe('Chuck');
+    expect(bootInitial.hostStats[0].hosted_count).toBe(148);
+    expect(bootInitial.hostStats[0].last_hosted).toBe('2026-11-03');
+
+    // 2. Forward-only sellout tracker starts at 0 for the 5 active rotation members (excluding 'don')
+    expect(bootInitial.selloutStats.map((s) => s.user_slug)).toEqual(['chuck', 'jacob', 'eric', 'tyler', 'heath']);
+    for (const s of bootInitial.selloutStats) {
+      expect(s.sellout_count).toBe(0);
+    }
+    expect(bootInitial.recentSellouts).toHaveLength(0);
+    expect(bootInitial.trackableDinners.map((d) => d.week_key)).toEqual(['2026-W47']);
+
+    // 3. Self-RSVP 'out' with an excuse increments sellout_count and preserves the note if re-submitted without note
+    const selfOutRes = await worker.fetch(
+      makeReq('/api/week/rsvp', 'POST', { status: 'out', note: 'Out of town for work' }),
+      env,
+    );
+    expect(selfOutRes.status).toBe(200);
+
+    const selfOutAgain = await worker.fetch(
+      makeReq('/api/week/rsvp', 'POST', { status: 'out' }),
+      env,
+    );
+    expect(selfOutAgain.status).toBe(200);
+
+    const bootAfterSelf = (await (await worker.fetch(makeReq('/api/bootstrap'), env)).json()) as {
+      selloutStats: Array<{
+        user_slug: string;
+        sellout_count: number;
+        last_sellout_date: string | null;
+        last_sellout_note: string | null;
+      }>;
+      recentSellouts: Array<{ user_slug: string; note: string; recorded_by: string | null }>;
+    };
+    const tylerStat = bootAfterSelf.selloutStats.find((s) => s.user_slug === 'tyler');
+    expect(tylerStat?.sellout_count).toBe(1);
+    expect(tylerStat?.last_sellout_date).toBe('2026-11-17');
+    expect(tylerStat?.last_sellout_note).toBe('Out of town for work');
+    expect(bootAfterSelf.recentSellouts).toHaveLength(1);
+    expect(bootAfterSelf.recentSellouts[0].recorded_by).toBe('tyler');
+
+    // 4. Crew callout for Heath records recorded_by = 'tyler', and a second week sellout puts Heath alone at #1
+    const heathW47 = await worker.fetch(
+      makeReq('/api/week/rsvp', 'POST', {
+        dinnerId: bootInitial.thisWeek.dinner.id,
+        userSlug: 'heath',
+        status: 'out',
+        note: 'Bailed for bowling',
+      }),
+      env,
+    );
+    expect(heathW47.status).toBe(200);
+
+    // Complete 2026-W47 and advance to 2026-W48
+    await runWeeklyCronTick(env, new Date('2026-11-18T02:00:00Z')); // Tue 8:00 PM CST -> completes W47
+    await runWeeklyCronTick(env, new Date('2026-11-22T16:05:00Z')); // Sun 10:05 AM CST -> opens W48
+
+    const bootW48 = (await (await worker.fetch(makeReq('/api/bootstrap'), env)).json()) as {
+      thisWeek: { dinner: { id: number; week_key: string } };
+      trackableDinners: Array<{ id: number; week_key: string }>;
+    };
+    expect(bootW48.thisWeek.dinner.week_key).toBe('2026-W48');
+    expect(bootW48.trackableDinners.map((d) => d.week_key)).toEqual(['2026-W48', '2026-W47']);
+
+    const heathW48 = await worker.fetch(
+      makeReq('/api/week/rsvp', 'POST', {
+        dinnerId: bootW48.thisWeek.dinner.id,
+        userSlug: 'heath',
+        status: 'out',
+        note: 'Missed two straight',
+      }),
+      env,
+    );
+    expect(heathW48.status).toBe(200);
+
+    const bootCrown = (await (await worker.fetch(makeReq('/api/bootstrap'), env)).json()) as {
+      selloutStats: Array<{ user_slug: string; sellout_count: number; last_sellout_note: string | null }>;
+      recentSellouts: Array<{ user_slug: string; week_key: string; note: string; recorded_by: string | null }>;
+    };
+    expect(bootCrown.selloutStats[0].user_slug).toBe('heath');
+    expect(bootCrown.selloutStats[0].sellout_count).toBe(2);
+    expect(bootCrown.selloutStats[0].last_sellout_note).toBe('Missed two straight');
+    expect(bootCrown.recentSellouts).toHaveLength(3);
+    expect(bootCrown.recentSellouts.find((r) => r.user_slug === 'heath' && r.week_key === '2026-W47')?.recorded_by).toBe(
+      'tyler',
+    );
+
+    // 5. Switching Tyler back to 'in' and clearing Heath's W48 sellout decrements sellout counts cleanly
+    const tylerIn = await worker.fetch(
+      makeReq('/api/week/rsvp', 'POST', {
+        dinnerId: bootInitial.thisWeek.dinner.id,
+        status: 'in',
+      }),
+      env,
+    );
+    expect(tylerIn.status).toBe(200);
+
+    const heathClear = await worker.fetch(
+      makeReq('/api/week/rsvp', 'POST', {
+        dinnerId: bootW48.thisWeek.dinner.id,
+        userSlug: 'heath',
+        status: 'clear',
+      }),
+      env,
+    );
+    expect(heathClear.status).toBe(200);
+
+    const bootCleared = (await (await worker.fetch(makeReq('/api/bootstrap'), env)).json()) as {
+      selloutStats: Array<{ user_slug: string; sellout_count: number; attended_count: number }>;
+      recentSellouts: Array<{ user_slug: string; week_key: string }>;
+    };
+    expect(bootCleared.selloutStats.find((s) => s.user_slug === 'tyler')?.sellout_count).toBe(0);
+    expect(bootCleared.selloutStats.find((s) => s.user_slug === 'tyler')?.attended_count).toBe(1);
+    expect(bootCleared.selloutStats.find((s) => s.user_slug === 'heath')?.sellout_count).toBe(1);
+    expect(bootCleared.recentSellouts).toHaveLength(1);
+
+    // 6. Guards reject historical dinners, far-future scheduled dinners, and retired 'don'
+    const histErr = await worker.fetch(
+      makeReq('/api/week/rsvp', 'POST', { dinnerId: 614, status: 'out' }),
+      env,
+    );
+    expect(histErr.status).toBe(400);
+
+    const futureRow = await env.DB.prepare("SELECT id FROM dinners WHERE week_key = '2026-W50'").first<{ id: number }>();
+    expect(futureRow).toBeTruthy();
+    const futureErr = await worker.fetch(
+      makeReq('/api/week/rsvp', 'POST', { dinnerId: futureRow!.id, status: 'out' }),
+      env,
+    );
+    expect(futureErr.status).toBe(400);
+
+    const donErr = await worker.fetch(
+      makeReq('/api/week/rsvp', 'POST', {
+        dinnerId: bootW48.thisWeek.dinner.id,
+        userSlug: 'don',
+        status: 'out',
+      }),
+      env,
+    );
+    expect(donErr.status).toBe(400);
   });
 });

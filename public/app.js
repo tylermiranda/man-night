@@ -16,10 +16,30 @@ const state = {
   ratingScore: 5,
   modalRatingScore: 5,
   pickerDay: 'Tuesday',
+  theme: localStorage.getItem('mn_theme') || 'light',
   deferredInstallPrompt: null,
   installBannerDismissed: localStorage.getItem('mn_install_dismissed') === '1',
   mapInstances: [],
 };
+
+function resolveEffectiveTheme(pref) {
+  if (pref === 'dark') return 'dark';
+  if (pref === 'system' && window.matchMedia?.('(prefers-color-scheme: dark)').matches) return 'dark';
+  return 'light';
+}
+
+function applyTheme(pref) {
+  const valid = pref === 'dark' || pref === 'system' ? pref : 'light';
+  state.theme = valid;
+  localStorage.setItem('mn_theme', valid);
+  document.documentElement.dataset.theme = resolveEffectiveTheme(valid);
+}
+
+applyTheme(state.theme);
+
+window.matchMedia?.('(prefers-color-scheme: dark)').addEventListener?.('change', () => {
+  if (state.theme === 'system') applyTheme('system');
+});
 
 window.addEventListener('beforeinstallprompt', (e) => {
   e.preventDefault();
@@ -196,6 +216,10 @@ async function refreshBootstrap() {
   document.getElementById('user-avatar').className = `av ${user.avatar_class}`;
   document.getElementById('user-avatar').textContent = user.initials;
   document.getElementById('user-name').textContent = user.name;
+  const menuName = document.getElementById('user-menu-name');
+  const menuEmail = document.getElementById('user-menu-email');
+  if (menuName) menuName.textContent = user.name;
+  if (menuEmail) menuEmail.textContent = user.email;
   render();
 }
 
@@ -1003,7 +1027,7 @@ function renderCrewView() {
             <button class="btn btn-primary btn-sm" data-action="enable-push">${me.push_enabled ? 'Re-sync push' : 'Enable push notifications'}</button>
             <button class="btn btn-outline btn-sm" data-action="test-push">Send test alert</button>
             <button class="btn btn-outline btn-sm" data-action="open-install-guide">Install app (iOS / Android)</button>
-            <a class="btn btn-secondary btn-sm" href="/api/logout">Log out</a>
+            <button class="btn btn-outline btn-sm" data-action="open-settings">Settings</button>
           </div>
           <label style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-top:1px solid var(--line);font-size:14px;">
             <span>Sunday night vote open</span>
@@ -1433,8 +1457,126 @@ async function openReviewModal(dinnerId) {
   }
 }
 
+function closeUserMenu() {
+  const menu = document.getElementById('user-menu');
+  const pill = document.getElementById('user-pill');
+  if (menu) menu.classList.add('hidden');
+  if (pill) pill.setAttribute('aria-expanded', 'false');
+}
+
+function toggleUserMenu() {
+  const menu = document.getElementById('user-menu');
+  const pill = document.getElementById('user-pill');
+  if (!menu) return;
+  const open = menu.classList.toggle('hidden') === false;
+  if (pill) pill.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+
+function openSettingsModal(feedbackHtml = '') {
+  const me = state.bootstrap?.user || {};
+  const perm = 'Notification' in window ? Notification.permission : 'unsupported';
+  openModal(`
+    <h2 class="hero-title" style="font-size:20px;margin-bottom:4px;">Settings</h2>
+    <p class="hero-sub" style="margin-bottom:14px;">Signed in as <strong>${esc(me.name || '')}</strong> (${esc(me.email || '')})</p>
+
+    <div class="settings-block">
+      <div class="settings-block-title">
+        <span>Appearance · Light / Dark Mode</span>
+        <span class="badge badge-muted">${esc(resolveEffectiveTheme(state.theme))}</span>
+      </div>
+      <div class="theme-switch-group">
+        <button type="button" class="theme-switch-btn ${state.theme === 'light' ? 'active' : ''}" data-action="set-theme" data-theme="light">☀️ Light</button>
+        <button type="button" class="theme-switch-btn ${state.theme === 'dark' ? 'active' : ''}" data-action="set-theme" data-theme="dark">🌙 Dark</button>
+        <button type="button" class="theme-switch-btn ${state.theme === 'system' ? 'active' : ''}" data-action="set-theme" data-theme="system">💻 Auto</button>
+      </div>
+    </div>
+
+    <div class="settings-block">
+      <div class="settings-block-title">
+        <span>Test &amp; Push Notifications</span>
+        <span class="badge ${me.push_enabled ? 'badge-ok' : 'badge-muted'}">${me.push_enabled ? 'Push active' : 'Not enabled'}</span>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin:0 0 10px;">
+        Permission: <strong>${esc(perm)}</strong>. Test sending an alert to your subscribed devices (and preview locally if allowed).
+      </p>
+      <div class="btn-row" style="margin-bottom:10px;">
+        <button class="btn btn-primary btn-sm" data-action="test-push">Send test notification</button>
+        <button class="btn btn-outline btn-sm" data-action="enable-push">${me.push_enabled ? 'Re-sync push' : 'Enable push'}</button>
+      </div>
+      <div id="settings-push-feedback">${feedbackHtml}</div>
+      <label style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-top:1px solid var(--line);font-size:13px;">
+        <span>Sunday night vote open</span>
+        <input type="checkbox" data-pref="notify_night_vote" ${me.notify_night_vote ? 'checked' : ''} />
+      </label>
+      <label style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-top:1px solid var(--line);font-size:13px;">
+        <span>Place locked / Noon rule alert</span>
+        <input type="checkbox" data-pref="notify_place" ${me.notify_place ? 'checked' : ''} />
+      </label>
+      <label style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-top:1px solid var(--line);font-size:13px;">
+        <span>30-min dinner reminder</span>
+        <input type="checkbox" data-pref="notify_reminder" ${me.notify_reminder ? 'checked' : ''} />
+      </label>
+    </div>
+
+    <div class="btn-row" style="justify-content:space-between;margin-top:12px;">
+      <div class="btn-row">
+        <button class="btn btn-outline btn-sm" data-action="open-install-guide">Install App Guide</button>
+        <button class="btn btn-outline btn-sm" data-action="open-walkthrough">How it works</button>
+      </div>
+      <button class="btn btn-secondary btn-sm" data-action="close-modal">Done</button>
+    </div>
+  `);
+}
+
+async function runTestNotification() {
+  const res = await api('/api/push/test', { method: 'POST', body: '{}' });
+  let localShown = false;
+  if ('Notification' in window && Notification.permission === 'granted') {
+    try {
+      const reg = 'serviceWorker' in navigator ? await navigator.serviceWorker.ready : null;
+      if (reg?.showNotification) {
+        await reg.showNotification('Man Night test notification', {
+          body: 'Notifications are working! Dinner reminders open Google Maps directions.',
+          icon: '/icons/icon-192.png',
+          badge: '/icons/icon-192.png',
+          tag: 'man-night-test-local',
+        });
+        localShown = true;
+      }
+    } catch {
+      // Ignore if local SW preview is blocked in current context
+    }
+  }
+
+  let msg = '';
+  if (res.sent > 0) {
+    msg = `Sent Web Push test alert to ${res.sent} subscribed device(s).`;
+    toast('Test notification sent!');
+  } else if (localShown) {
+    msg = 'Preview notification displayed locally! Tap "Enable push" to register for background Web Push alerts.';
+    toast('Local test notification displayed!');
+  } else {
+    msg = 'No active push subscription yet. Tap "Enable push" first (on iPhone, install via Safari Add to Home Screen first).';
+    toast('No active subscription yet.');
+  }
+
+  const fb = document.getElementById('settings-push-feedback');
+  if (fb) {
+    fb.innerHTML = `<div class="badge ${res.sent > 0 || localShown ? 'badge-ok' : 'badge-muted'}" style="padding:8px 10px;border-radius:10px;width:100%;margin-bottom:8px;white-space:normal;line-height:1.35;">${esc(msg)}</div>`;
+  }
+}
+
 // Event delegation
 document.addEventListener('click', async (e) => {
+  if (!e.target.closest('#user-menu-wrap')) {
+    closeUserMenu();
+  }
+
+  if (e.target.closest('#user-pill')) {
+    toggleUserMenu();
+    return;
+  }
+
   const tabBtn = e.target.closest('[data-tab]');
   if (tabBtn) {
     setTab(tabBtn.dataset.tab);
@@ -1466,6 +1608,17 @@ document.addEventListener('click', async (e) => {
   try {
     if (action === 'close-modal') {
       closeModal();
+    } else if (action === 'open-settings') {
+      closeUserMenu();
+      openSettingsModal();
+    } else if (action === 'set-theme') {
+      applyTheme(actEl.dataset.theme);
+      toast(`Theme set to ${actEl.dataset.theme}`);
+      if (document.getElementById('settings-push-feedback')) {
+        openSettingsModal(document.getElementById('settings-push-feedback').innerHTML);
+      } else {
+        render();
+      }
     } else if (action === 'open-install-guide') {
       openInstallGuideModal();
     } else if (action === 'dismiss-install-banner') {
@@ -1668,10 +1821,11 @@ document.addEventListener('click', async (e) => {
       toast(`Saved ${res.place.name}`);
       render();
     } else if (action === 'enable-push' || action === 'walk-enable-push') {
+      const inSettings = Boolean(document.getElementById('settings-push-feedback'));
       await enableWebPush();
+      if (inSettings) openSettingsModal();
     } else if (action === 'test-push') {
-      const res = await api('/api/push/test', { method: 'POST', body: '{}' });
-      toast(res.sent > 0 ? 'Test alert sent!' : 'No active device subscription found yet.');
+      await runTestNotification();
     } else if (action === 'open-walkthrough') {
       showWalkthrough(0);
     } else if (action === 'walk-prev') {

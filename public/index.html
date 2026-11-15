@@ -35,11 +35,27 @@
           <button id="btn-install-top" class="icon-pill" title="Install Man Night on iPhone or Android">Install</button>
           <button id="btn-help" class="icon-pill" title="How Man Night works" aria-label="How Man Night works">?</button>
           <button id="btn-report-top" class="icon-pill" title="Report an issue">Report issue</button>
-          <div id="user-pill" class="user-pill" title="Signed in via Cloudflare Access">
-            <span id="user-avatar" class="av avt">T</span>
-            <span id="user-name" class="user-name-label">Tyler</span>
+          <div class="user-menu-wrap" id="user-menu-wrap">
+            <button id="user-pill" class="user-pill" type="button" aria-haspopup="true" aria-expanded="false" title="Account &amp; Settings">
+              <span id="user-avatar" class="av avt">T</span>
+              <span id="user-name" class="user-name-label">Tyler</span>
+              <span class="user-caret" aria-hidden="true">▾</span>
+            </button>
+            <div id="user-menu" class="user-dropdown hidden" role="menu">
+              <div class="user-dropdown-head">
+                <div id="user-menu-name" class="user-dropdown-name">Tyler</div>
+                <div id="user-menu-email" class="user-dropdown-email">Signed in</div>
+              </div>
+              <button type="button" class="user-dropdown-item" data-action="open-settings">
+                <span>Settings</span>
+                <span class="user-dropdown-hint">Theme &amp; Alerts</span>
+              </button>
+              <div class="user-dropdown-sep"></div>
+              <a href="/api/logout" class="user-dropdown-item danger">
+                <span>Log out</span>
+              </a>
+            </div>
           </div>
-          <a id="btn-logout-top" href="/api/logout" class="icon-pill" title="Log out of Man Night">Log out</a>
         </div>
       </div>
     </header>

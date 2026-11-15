@@ -42,6 +42,9 @@ const state = {
   luckyPoolUsed: 'any',
   luckyEligibleCount: 0,
   luckyLoading: false,
+  whatsNewOpen: false,
+  whatsNewShowAll: false,
+  lastBootstrapAt: 0,
   theme: localStorage.getItem('mn_theme') || 'light',
   deferredInstallPrompt: null,
   installBannerDismissed: localStorage.getItem('mn_install_dismissed') === '1',
@@ -276,6 +279,7 @@ async function enableWebPush() {
 
 async function refreshBootstrap() {
   state.bootstrap = await api('/api/bootstrap');
+  state.lastBootstrapAt = Date.now();
   const { user, stats } = state.bootstrap;
   const myLast = (state.bootstrap.lastDinnerRatings || []).find((r) => r.user_slug === user.slug);
   state.ratingScore = myLast ? Number(myLast.score) : 5;
@@ -287,6 +291,7 @@ async function refreshBootstrap() {
   const menuEmail = document.getElementById('user-menu-email');
   if (menuName) menuName.textContent = user.name;
   if (menuEmail) menuEmail.textContent = user.email;
+  syncWhatsNewHeaderBadge();
   render();
 }
 
@@ -326,7 +331,175 @@ function setTab(tab) {
   }
 }
 
+function whatsNewStorageKey() {
+  const slug = state.bootstrap?.user?.slug || 'anon';
+  return `mn_whats_new_seen_${slug}`;
+}
+
+function hasUnseenWhatsNew() {
+  const wn = state.bootstrap?.whatsNew;
+  if (!wn?.latestId) return false;
+  if (!wn.hasUnseen) {
+    if (wn.seenId) {
+      try {
+        localStorage.setItem(whatsNewStorageKey(), wn.seenId);
+      } catch {}
+    }
+    return false;
+  }
+  try {
+    if (localStorage.getItem(whatsNewStorageKey()) === wn.latestId) {
+      return false;
+    }
+  } catch {}
+  return true;
+}
+
+function syncWhatsNewHeaderBadge() {
+  const wn = state.bootstrap?.whatsNew;
+  const pill = document.getElementById('btn-whats-new');
+  const badge = document.getElementById('whats-new-badge');
+  const menuHint = document.getElementById('menu-whats-new-hint');
+  const unseen = hasUnseenWhatsNew() ? Math.max(1, Number(wn?.unseenCount) || 1) : 0;
+  if (pill) pill.classList.toggle('has-unseen', unseen > 0);
+  if (badge) {
+    if (unseen > 0) {
+      badge.textContent = unseen > 9 ? '9+' : String(unseen);
+      badge.classList.remove('hidden');
+    } else {
+      badge.textContent = '';
+      badge.classList.add('hidden');
+    }
+  }
+  if (menuHint) {
+    menuHint.textContent = unseen > 0 ? `${unseen} new` : 'Updates & credits';
+  }
+}
+
+function acknowledgeWhatsNew() {
+  const wn = state.bootstrap?.whatsNew;
+  const latestId = wn?.latestId;
+  if (!latestId) return;
+  try {
+    localStorage.setItem(whatsNewStorageKey(), latestId);
+  } catch {}
+  wn.seenId = latestId;
+  wn.hasUnseen = false;
+  wn.unseenCount = 0;
+  if (Array.isArray(wn.entries)) {
+    wn.entries = wn.entries.map((entry) => ({ ...entry, isNew: false }));
+  }
+  if (state.bootstrap?.user) {
+    state.bootstrap.user.whats_new_seen_id = latestId;
+  }
+  syncWhatsNewHeaderBadge();
+  api('/api/user/whats-new', {
+    method: 'POST',
+    body: JSON.stringify({ seenId: latestId }),
+  }).catch(() => {});
+}
+
+function renderWhatsNewModalContent() {
+  const container = document.getElementById('whats-new-modal-body');
+  if (!container) return;
+  const wn = state.bootstrap?.whatsNew;
+  const entries = wn?.entries || [];
+  const unseenEntries = entries.filter((e) => e.isNew);
+  const seenEntries = entries.filter((e) => !e.isNew);
+  const visibleEntries =
+    state.whatsNewShowAll || unseenEntries.length === 0 ? entries : unseenEntries;
+  const repo = state.bootstrap?.githubRepo || 'tylermiranda/man-night';
+
+  const headerBadge =
+    unseenEntries.length > 0
+      ? `<span class="badge badge-red tabular">${unseenEntries.length} new</span>`
+      : `<span class="badge badge-muted tabular">${entries.length} update${entries.length === 1 ? '' : 's'}</span>`;
+
+  const cardsHtml = visibleEntries.length
+    ? visibleEntries
+        .map((entry) => {
+          const kindBadge =
+            entry.kind === 'fix'
+              ? '<span class="badge badge-ok">🔧 Bug fix</span>'
+              : '<span class="badge badge-red">✨ New feature</span>';
+          const newPill =
+            entry.isNew && seenEntries.length > 0
+              ? '<span class="badge badge-gold">New</span>'
+              : '';
+          const issueHref =
+            entry.issueNumber && repo
+              ? `https://github.com/${esc(repo)}/issues/${Number(entry.issueNumber)}`
+              : null;
+          const creditHtml = entry.creditLabel
+            ? `
+              <div class="whats-new-credit">
+                <div class="whats-new-credit-who">
+                  ${entry.creditSlug ? avatarHtml(entry.creditSlug, entry.creditName || entry.creditSlug, 'sm') : ''}
+                  <span aria-hidden="true">${entry.creditRole === 'bug_report' ? '🐛' : '💡'}</span>
+                  <strong>${esc(entry.creditLabel)}</strong>
+                </div>
+                ${issueHref ? `<a class="whats-new-issue-link" href="${issueHref}" target="_blank" rel="noopener">#${Number(entry.issueNumber)} ↗</a>` : ''}
+              </div>
+            `
+            : '';
+          return `
+            <article class="whats-new-card ${entry.isNew ? 'is-new' : ''}">
+              <div class="whats-new-card-top">
+                <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+                  ${kindBadge}
+                  ${newPill}
+                </div>
+                <span class="tabular" style="font-size:11px;color:var(--muted);">${fmtShortDate(entry.date)}</span>
+              </div>
+              <h3 class="whats-new-title">${esc(entry.title)}</h3>
+              <p class="whats-new-summary">${esc(entry.summary)}</p>
+              ${creditHtml}
+            </article>
+          `;
+        })
+        .join('')
+    : '<div class="whats-new-card"><p class="whats-new-summary">No changelog updates yet.</p></div>';
+
+  const showEarlierHtml =
+    !state.whatsNewShowAll && seenEntries.length > 0
+      ? `<button type="button" class="whats-new-more-btn" data-action="whats-new-show-all">Show ${seenEntries.length} earlier update${seenEntries.length === 1 ? '' : 's'} ▾</button>`
+      : '';
+
+  container.innerHTML = `
+    <div class="card-kicker" style="margin-bottom:6px;">
+      <span>✨ Club Changelog</span>
+      ${headerBadge}
+    </div>
+    <h2 class="hero-title" style="font-size:22px;margin-bottom:4px;">What’s New in Man Night</h2>
+    <p class="hero-sub" style="margin-bottom:14px;font-size:13px;">Fresh features and fixes — with credit whenever a crew member called it out.</p>
+    <div class="whats-new-list">${cardsHtml}</div>
+    ${showEarlierHtml}
+    <div class="btn-row" style="justify-content:space-between;margin-top:14px;">
+      <button type="button" class="btn btn-outline btn-sm" data-action="whats-new-report">💡 Pitch an idea / bug</button>
+      <button type="button" class="btn btn-primary btn-sm" data-action="whats-new-close">Got it</button>
+    </div>
+  `;
+}
+
+function openWhatsNewModal({ auto = false } = {}) {
+  const entries = state.bootstrap?.whatsNew?.entries || [];
+  if (!entries.length) {
+    if (!auto) toast('No updates recorded yet');
+    return;
+  }
+  const unseenEntries = entries.filter((e) => e.isNew);
+  const seenEntries = entries.filter((e) => !e.isNew);
+  state.whatsNewOpen = true;
+  state.whatsNewShowAll = !(auto && unseenEntries.length > 0 && seenEntries.length > 0);
+  openModal('<div id="whats-new-modal-body"></div>');
+  renderWhatsNewModalContent();
+}
+
 function openModal(html) {
+  if (state.whatsNewOpen && !String(html).includes('id="whats-new-modal-body"')) {
+    state.whatsNewOpen = false;
+    acknowledgeWhatsNew();
+  }
   const backdrop = document.getElementById('modal-backdrop');
   const panel = document.getElementById('modal-panel');
   panel.innerHTML = html;
@@ -334,6 +507,10 @@ function openModal(html) {
 }
 
 function closeModal() {
+  if (state.whatsNewOpen) {
+    state.whatsNewOpen = false;
+    acknowledgeWhatsNew();
+  }
   document.getElementById('modal-backdrop').classList.add('hidden');
   document.getElementById('modal-panel').innerHTML = '';
 }
@@ -2520,6 +2697,7 @@ function openSettingsModal(feedbackHtml = '') {
       <div class="btn-row">
         <button class="btn btn-outline btn-sm" data-action="open-install-guide">Install App Guide</button>
         <button class="btn btn-outline btn-sm" data-action="open-walkthrough">How it works</button>
+        <button class="btn btn-outline btn-sm" data-action="open-whats-new">What’s new</button>
       </div>
       <button class="btn btn-secondary btn-sm" data-action="close-modal">Done</button>
     </div>
@@ -2590,6 +2768,10 @@ document.addEventListener('click', async (e) => {
     openInstallGuideModal();
     return;
   }
+  if (e.target.closest('#btn-whats-new')) {
+    openWhatsNewModal({ auto: false });
+    return;
+  }
   if (e.target.id === 'btn-help') {
     showWalkthrough(0);
     return;
@@ -2606,6 +2788,17 @@ document.addEventListener('click', async (e) => {
   try {
     if (action === 'close-modal') {
       closeModal();
+    } else if (action === 'open-whats-new') {
+      closeUserMenu();
+      openWhatsNewModal({ auto: false });
+    } else if (action === 'whats-new-show-all') {
+      state.whatsNewShowAll = true;
+      renderWhatsNewModalContent();
+    } else if (action === 'whats-new-close') {
+      closeModal();
+    } else if (action === 'whats-new-report') {
+      closeModal();
+      openReportIssueModal();
     } else if (action === 'open-settings') {
       closeUserMenu();
       openSettingsModal();
@@ -3205,6 +3398,13 @@ document.addEventListener('input', (e) => {
 });
 
 document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    const backdrop = document.getElementById('modal-backdrop');
+    if (backdrop && !backdrop.classList.contains('hidden')) {
+      closeModal();
+      return;
+    }
+  }
   if (e.target.id === 'night-vote-reason' && e.key === 'Enter') {
     e.preventDefault();
     document.querySelector('[data-action="save-night-reason"]')?.click();
@@ -3230,6 +3430,22 @@ document.addEventListener('change', async (e) => {
   }
 });
 
+document.addEventListener('visibilitychange', async () => {
+  if (document.visibilityState !== 'visible') return;
+  if (!state.bootstrap || Date.now() - (state.lastBootstrapAt || 0) < 60000) return;
+  try {
+    await refreshBootstrap();
+    const backdrop = document.getElementById('modal-backdrop');
+    if (
+      backdrop?.classList.contains('hidden') &&
+      state.bootstrap?.user?.walkthrough_seen &&
+      hasUnseenWhatsNew()
+    ) {
+      openWhatsNewModal({ auto: true });
+    }
+  } catch {}
+});
+
 async function boot() {
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/sw.js').catch(() => {});
@@ -3238,6 +3454,8 @@ async function boot() {
     await refreshBootstrap();
     if (state.bootstrap?.user && !state.bootstrap.user.walkthrough_seen) {
       showWalkthrough(0);
+    } else if (hasUnseenWhatsNew()) {
+      openWhatsNewModal({ auto: true });
     }
   } catch (err) {
     document.getElementById('main-content').innerHTML = `

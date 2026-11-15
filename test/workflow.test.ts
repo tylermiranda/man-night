@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { WHATS_NEW_RELEASES, buildWhatsNewPayload, formatCrewCreditLabel } from '../src/changelog';
 import { buildPreEventHeadcountPayload, buildThirtyMinReminderPayload, runWeeklyCronTick } from '../src/cron';
 import { buildDirectionsUrl, formatCalendarSummary } from '../src/gcal';
 import worker from '../src/index';
@@ -19,6 +20,7 @@ const migration0004Sql = readFileSync(resolve(rootDir, 'migrations/0004_fix_futu
 const migration0005Sql = readFileSync(resolve(rootDir, 'migrations/0005_night_vote_reasons.sql'), 'utf8');
 const migration0006Sql = readFileSync(resolve(rootDir, 'migrations/0006_sellout_tracking.sql'), 'utf8');
 const migration0007Sql = readFileSync(resolve(rootDir, 'migrations/0007_extra_guests.sql'), 'utf8');
+const migration0008Sql = readFileSync(resolve(rootDir, 'migrations/0008_whats_new.sql'), 'utf8');
 
 function makeEnv(db: D1Database, overrides: Partial<Env> = {}): Env {
   return {
@@ -54,6 +56,7 @@ describe('Man Night PWA Worker & Seed', () => {
     await db.exec(migration0005Sql);
     await db.exec(migration0006Sql);
     await db.exec(migration0007Sql);
+    await db.exec(migration0008Sql);
     env = makeEnv(db);
   });
 
@@ -1077,7 +1080,7 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(appJs).not.toContain('Notifications &amp; Phone App');
     expect(indexHtml).toContain('id="btn-report-top"');
     expect(indexHtml).toContain('data-action="open-settings"');
-    expect(swJs).toContain("CACHE_NAME = 'man-night-shell-v9'");
+    expect(swJs).toMatch(/CACHE_NAME = 'man-night-shell-v\d+'/);
   });
 
   it('tracks optional extra guests on RSVPs, updates live headcount, validates bounds, and resets on sellout (issue #9)', async () => {
@@ -1330,7 +1333,7 @@ describe('Man Night PWA Worker & Seed', () => {
     const swJs = readFileSync(resolve(rootDir, 'public/sw.js'), 'utf8');
     expect(appJs).toContain('set-extra-guests');
     expect(appJs).toContain('5-min headcount');
-    expect(swJs).toContain("CACHE_NAME = 'man-night-shell-v9'");
+    expect(swJs).toMatch(/CACHE_NAME = 'man-night-shell-v\d+'/);
     expect(swJs).toContain("event.action === 'directions'");
     expect(swJs).toContain('directionsUrl');
   });
@@ -1622,6 +1625,164 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(appJs).toContain('I’m Feeling Lucky');
     expect(stylesCss).toContain('.btn-lucky');
     expect(stylesCss).toContain('.lucky-spot-card');
-    expect(swJs).toContain("CACHE_NAME = 'man-night-shell-v9'");
+    expect(swJs).toContain("CACHE_NAME = 'man-night-shell-v10'");
+  });
+
+  it('tracks What’s New releases, crew idea/bug credits, per-user seen state, and UI wiring (issue #11)', async () => {
+    // 1. Changelog integrity
+    const seenIds = new Set<string>();
+    expect(WHATS_NEW_RELEASES.length).toBeGreaterThanOrEqual(10);
+    expect(WHATS_NEW_RELEASES[0].id).toBe('2026-11-15-whats-new');
+    expect(WHATS_NEW_RELEASES[0].issueNumber).toBe(11);
+    for (const entry of WHATS_NEW_RELEASES) {
+      expect(seenIds.has(entry.id)).toBe(false);
+      seenIds.add(entry.id);
+      expect(entry.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(entry.title.trim().length).toBeGreaterThan(0);
+      expect(entry.summary.trim().length).toBeGreaterThan(0);
+    }
+
+    // 2. Credit formatting for crew idea, crew bug report, non-crew update, and partial unseen window
+    expect(formatCrewCreditLabel({ kind: 'feature', creditName: 'Eric', creditRole: 'idea' })).toBe('Idea by Eric');
+    expect(formatCrewCreditLabel({ kind: 'fix', creditName: 'Chuck', creditRole: 'bug_report' })).toBe(
+      'Bug report by Chuck',
+    );
+    expect(formatCrewCreditLabel({ kind: 'feature', creditName: null, creditRole: null })).toBeNull();
+
+    const syntheticPayload = buildWhatsNewPayload(
+      'rel-1',
+      [
+        { slug: 'eric', name: 'Eric' },
+        { slug: 'chuck', name: 'Chuck' },
+      ],
+      [
+        {
+          id: 'rel-3',
+          date: '2026-11-16',
+          kind: 'feature',
+          title: 'Crew Idea',
+          summary: 'From Eric',
+          creditSlug: 'eric',
+          creditRole: 'idea',
+          issueNumber: 99,
+        },
+        {
+          id: 'rel-2',
+          date: '2026-11-15',
+          kind: 'fix',
+          title: 'Internal Polish',
+          summary: 'No reporter',
+          creditSlug: null,
+          creditName: null,
+          creditRole: null,
+        },
+        {
+          id: 'rel-1',
+          date: '2026-11-14',
+          kind: 'fix',
+          title: 'Crew Bug',
+          summary: 'From Chuck',
+          creditSlug: 'chuck',
+          creditRole: 'bug_report',
+          issueNumber: 98,
+        },
+      ],
+    );
+    expect(syntheticPayload.latestId).toBe('rel-3');
+    expect(syntheticPayload.hasUnseen).toBe(true);
+    expect(syntheticPayload.unseenCount).toBe(2);
+    expect(syntheticPayload.entries.map((e) => e.isNew)).toEqual([true, true, false]);
+    expect(syntheticPayload.entries[0].creditLabel).toBe('Idea by Eric');
+    expect(syntheticPayload.entries[1].creditLabel).toBeNull();
+    expect(syntheticPayload.entries[2].creditLabel).toBe('Bug report by Chuck');
+
+    // 3. /api/bootstrap and GET /api/whats-new report unseen updates initially for Tyler
+    const bootInit = (await (await worker.fetch(makeReq('/api/bootstrap'), env)).json()) as {
+      user: { whats_new_seen_id: string | null };
+      whatsNew: {
+        latestId: string;
+        seenId: string | null;
+        hasUnseen: boolean;
+        unseenCount: number;
+        entries: Array<{ id: string; isNew: boolean; creditLabel: string | null }>;
+      };
+    };
+    expect(bootInit.user.whats_new_seen_id).toBeNull();
+    expect(bootInit.whatsNew.latestId).toBe('2026-11-15-whats-new');
+    expect(bootInit.whatsNew.seenId).toBeNull();
+    expect(bootInit.whatsNew.hasUnseen).toBe(true);
+    expect(bootInit.whatsNew.unseenCount).toBe(WHATS_NEW_RELEASES.length);
+    expect(bootInit.whatsNew.entries[0].creditLabel).toBe('Idea by Tyler');
+
+    const getRes = await worker.fetch(makeReq('/api/whats-new'), env);
+    expect(getRes.status).toBe(200);
+    const getBody = (await getRes.json()) as typeof bootInit.whatsNew;
+    expect(getBody.hasUnseen).toBe(true);
+    expect(getBody.unseenCount).toBe(WHATS_NEW_RELEASES.length);
+
+    // 4. Partial seenId ('2026-11-15-feeling-lucky') leaves exactly 1 unseen release (#11)
+    const partialRes = await worker.fetch(
+      makeReq('/api/user/whats-new', 'POST', { seenId: '2026-11-15-feeling-lucky' }),
+      env,
+    );
+    expect(partialRes.status).toBe(200);
+    const afterPartial = (await (await worker.fetch(makeReq('/api/whats-new'), env)).json()) as typeof bootInit.whatsNew;
+    expect(afterPartial.seenId).toBe('2026-11-15-feeling-lucky');
+    expect(afterPartial.hasUnseen).toBe(true);
+    expect(afterPartial.unseenCount).toBe(1);
+    expect(afterPartial.entries[0].isNew).toBe(true);
+    expect(afterPartial.entries[1].isNew).toBe(false);
+
+    // 5. Empty POST marks latest seen for Tyler while Eric stays unseen
+    const ackRes = await worker.fetch(makeReq('/api/user/whats-new', 'POST'), env);
+    expect(ackRes.status).toBe(200);
+    const ackData = (await ackRes.json()) as { ok: boolean; seenId: string };
+    expect(ackData.ok).toBe(true);
+    expect(ackData.seenId).toBe('2026-11-15-whats-new');
+
+    const tylerBootAfter = (await (await worker.fetch(makeReq('/api/bootstrap'), env)).json()) as typeof bootInit;
+    expect(tylerBootAfter.user.whats_new_seen_id).toBe('2026-11-15-whats-new');
+    expect(tylerBootAfter.whatsNew.hasUnseen).toBe(false);
+    expect(tylerBootAfter.whatsNew.unseenCount).toBe(0);
+    expect(tylerBootAfter.whatsNew.entries.every((e) => !e.isNew)).toBe(true);
+
+    const ericBoot = (await (
+      await worker.fetch(
+        makeReq('/api/bootstrap', 'GET', undefined, { 'Cf-Access-Authenticated-User-Email': 'storme2@gmail.com' }),
+        env,
+      )
+    ).json()) as typeof bootInit;
+    expect(ericBoot.whatsNew.hasUnseen).toBe(true);
+    expect(ericBoot.whatsNew.unseenCount).toBe(WHATS_NEW_RELEASES.length);
+
+    // 6. Validation rejects invalid seenId or malformed JSON
+    const badIdRes = await worker.fetch(makeReq('/api/user/whats-new', 'POST', { seenId: 'does-not-exist' }), env);
+    expect(badIdRes.status).toBe(400);
+    const badJsonRes = await worker.fetch(
+      new Request('https://dinner.tylermiranda.com/api/user/whats-new', {
+        method: 'POST',
+        headers: {
+          'Cf-Access-Authenticated-User-Email': 'tyler.miranda@gmail.com',
+          'Content-Type': 'application/json',
+        },
+        body: '{invalid-json',
+      }),
+      env,
+    );
+    expect(badJsonRes.status).toBe(400);
+
+    // 7. Static asset checks
+    const indexHtml = readFileSync(resolve(rootDir, 'public/index.html'), 'utf8');
+    const appJs = readFileSync(resolve(rootDir, 'public/app.js'), 'utf8');
+    const stylesCss = readFileSync(resolve(rootDir, 'public/styles.css'), 'utf8');
+    const swJs = readFileSync(resolve(rootDir, 'public/sw.js'), 'utf8');
+    expect(indexHtml).toContain('id="btn-whats-new"');
+    expect(indexHtml).toContain('data-action="open-whats-new"');
+    expect(appJs).toContain('openWhatsNewModal');
+    expect(appJs).toContain("api('/api/user/whats-new'");
+    expect(appJs).toContain('whatsNewOpen');
+    expect(stylesCss).toContain('.whats-new-card');
+    expect(stylesCss).toContain('.whats-new-credit');
+    expect(swJs).toContain("CACHE_NAME = 'man-night-shell-v10'");
   });
 });

@@ -30,6 +30,8 @@ export interface UserRow {
   notify_place: number;
   notify_reminder: number;
   walkthrough_seen_at: string | null;
+  whats_new_seen_id: string | null;
+  whats_new_seen_at: string | null;
 }
 
 export interface RestaurantRow {
@@ -159,6 +161,33 @@ export interface DinnerHeadcount {
 }
 
 export type LuckyPool = 'any' | 'regulars' | 'comeback' | 'top_rated';
+
+export type WhatsNewCreditRole = 'idea' | 'bug_report';
+
+export interface WhatsNewEntry {
+  id: string;
+  date: string;
+  title: string;
+  summary: string;
+  kind: 'feature' | 'fix';
+  creditSlug?: string | null;
+  creditName?: string | null;
+  creditRole?: WhatsNewCreditRole | null;
+  issueNumber?: number | null;
+}
+
+export interface WhatsNewViewEntry extends WhatsNewEntry {
+  isNew: boolean;
+  creditLabel: string | null;
+}
+
+export interface WhatsNewPayload {
+  latestId: string | null;
+  seenId: string | null;
+  hasUnseen: boolean;
+  unseenCount: number;
+  entries: WhatsNewViewEntry[];
+}
 
 export interface PushPayload {
   title: string;

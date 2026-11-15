@@ -1,3 +1,4 @@
+import { buildWhatsNewPayload } from './changelog';
 import { buildDirectionsUrl, syncLockedPlaceToCalendar } from './gcal';
 import { sendWebPushToSubscribers } from './push';
 import type {
@@ -1677,8 +1678,10 @@ export async function getBootstrapPayload(env: Env, currentUser: UserRow) {
       notify_place: currentUser.notify_place === 1,
       notify_reminder: currentUser.notify_reminder === 1,
       walkthrough_seen: Boolean(currentUser.walkthrough_seen_at),
+      whats_new_seen_id: currentUser.whats_new_seen_id ?? null,
       push_enabled: Number(myPushCount?.cnt ?? 0) > 0,
     },
+    whatsNew: buildWhatsNewPayload(currentUser.whats_new_seen_id ?? null, users),
     stats: counts,
     hostStats,
     selloutStats,

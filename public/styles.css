@@ -911,6 +911,7 @@ a:hover {
 @media (max-width: 820px) {
   .nav-desktop { display: none; }
   .user-name-label { display: none; }
+  .whats-new-pill-label { display: none; }
   .topbar-actions { gap: 6px; }
   .topbar-actions .icon-pill { height: 30px; padding: 0 9px; font-size: 11px; }
   .week-grid { grid-template-columns: 1fr; }
@@ -1775,4 +1776,129 @@ html[data-theme="dark"] .btn-lucky:hover {
 .lucky-icon-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+/* What's New & Crew Credits */
+.whats-new-pill {
+  gap: 5px;
+  position: relative;
+}
+
+.whats-new-pill.has-unseen {
+  border-color: #f7c7c9;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+html[data-theme="dark"] .whats-new-pill.has-unseen {
+  border-color: #6b2528;
+}
+
+.whats-new-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.whats-new-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 54dvh;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.whats-new-card {
+  background: var(--surf);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 13px 14px;
+}
+
+.whats-new-card.is-new {
+  border-color: #f5b4b7;
+  background: linear-gradient(135deg, #fff5f5 0%, var(--surf) 100%);
+}
+
+html[data-theme="dark"] .whats-new-card.is-new {
+  border-color: #6b2528;
+  background: linear-gradient(135deg, #2a181a 0%, var(--surf) 100%);
+}
+
+.whats-new-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 7px;
+}
+
+.whats-new-title {
+  margin: 0 0 5px;
+  font-size: 16px;
+  font-weight: 750;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+  color: var(--ink);
+}
+
+.whats-new-summary {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.48;
+  color: var(--muted);
+}
+
+.whats-new-credit {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px dashed var(--line);
+  font-size: 12px;
+}
+
+.whats-new-credit-who {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink);
+}
+
+.whats-new-issue-link {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.whats-new-more-btn {
+  width: 100%;
+  margin-top: 10px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px dashed var(--line);
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.whats-new-more-btn:hover {
+  border-color: var(--accent);
+  color: var(--ink);
 }

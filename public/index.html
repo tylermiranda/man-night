@@ -33,6 +33,11 @@
         </nav>
         <div class="topbar-actions">
           <button id="btn-install-top" class="icon-pill" title="Install Man Night on iPhone or Android">Install</button>
+          <button id="btn-whats-new" class="icon-pill whats-new-pill" title="What’s new &amp; crew credits" aria-label="What’s new">
+            <span aria-hidden="true">✨</span>
+            <span class="whats-new-pill-label">What’s new</span>
+            <span id="whats-new-badge" class="whats-new-count hidden"></span>
+          </button>
           <button id="btn-help" class="icon-pill" title="How Man Night works" aria-label="How Man Night works">?</button>
           <button id="btn-report-top" class="icon-pill" title="Report an issue">Report issue</button>
           <div class="user-menu-wrap" id="user-menu-wrap">
@@ -46,6 +51,10 @@
                 <div id="user-menu-name" class="user-dropdown-name">Tyler</div>
                 <div id="user-menu-email" class="user-dropdown-email">Signed in</div>
               </div>
+              <button type="button" class="user-dropdown-item" data-action="open-whats-new">
+                <span>What’s new</span>
+                <span id="menu-whats-new-hint" class="user-dropdown-hint">Updates &amp; credits</span>
+              </button>
               <button type="button" class="user-dropdown-item" data-action="open-settings">
                 <span>Settings</span>
                 <span class="user-dropdown-hint">Theme &amp; Alerts</span>

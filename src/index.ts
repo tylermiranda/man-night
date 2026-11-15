@@ -1,4 +1,5 @@
 import { resolveAuthUser } from './auth';
+import { WHATS_NEW_RELEASES, buildWhatsNewPayload, isValidWhatsNewId } from './changelog';
 import { runWeeklyCronTick } from './cron';
 import { sendWebPushToSubscribers } from './push';
 import type { Env, LuckyPool, RestaurantRow } from './types';
@@ -96,6 +97,41 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
         .bind(user.slug)
         .run();
       return json({ ok: true });
+    }
+
+    if (path === '/api/whats-new' && method === 'GET') {
+      const users =
+        (await env.DB.prepare('SELECT slug, name FROM users').all<{ slug: string; name: string }>()).results ?? [];
+      return json(buildWhatsNewPayload(user.whats_new_seen_id ?? null, users));
+    }
+
+    if (path === '/api/user/whats-new' && method === 'POST') {
+      const rawText = (await request.text()).trim();
+      let body: { seenId?: unknown } = {};
+      if (rawText.length > 0) {
+        try {
+          const parsed = JSON.parse(rawText);
+          if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            body = parsed as { seenId?: unknown };
+          } else {
+            return json({ error: 'Invalid JSON request body' }, 400);
+          }
+        } catch {
+          return json({ error: 'Invalid JSON request body' }, 400);
+        }
+      }
+      let targetId: string | null = null;
+      if (body.seenId === undefined || body.seenId === null || body.seenId === '') {
+        targetId = WHATS_NEW_RELEASES[0]?.id ?? null;
+      } else if (typeof body.seenId === 'string' && isValidWhatsNewId(body.seenId.trim())) {
+        targetId = body.seenId.trim();
+      } else {
+        return json({ error: 'Invalid What’s New release id' }, 400);
+      }
+      await env.DB.prepare("UPDATE users SET whats_new_seen_id = ?, whats_new_seen_at = datetime('now') WHERE slug = ?")
+        .bind(targetId, user.slug)
+        .run();
+      return json({ ok: true, seenId: targetId });
     }
 
     if (path === '/api/user/prefs' && method === 'PATCH') {

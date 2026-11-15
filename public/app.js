@@ -668,23 +668,41 @@ function renderWeekView() {
     })
     .join('');
 
-  const installBannerHtml =
-    !isStandalonePwa() && !state.installBannerDismissed
-      ? `<div class="install-banner">
-           <div style="font-size:13px;line-height:1.4;">
-             <strong>Get push alerts &amp; 1-tap access on your phone</strong>
-             <div style="color:var(--muted);font-size:12px;">Install Man Night to your Home Screen (iPhone Safari &amp; Android Chrome)</div>
-           </div>
-           <div style="display:flex;align-items:center;gap:8px;">
-             ${state.deferredInstallPrompt ? `<button class="btn btn-primary btn-sm" data-action="trigger-native-install">Install App</button>` : ''}
-             <button class="btn ${state.deferredInstallPrompt ? 'btn-outline' : 'btn-primary'} btn-sm" data-action="open-install-guide">${state.deferredInstallPrompt ? 'Steps' : 'iPhone / Android guide'}</button>
-             <button class="icon-pill" style="height:28px;padding:0 9px;" data-action="dismiss-install-banner" title="Dismiss" aria-label="Dismiss">✕</button>
-           </div>
-         </div>`
-      : '';
+  const hasNotificationSupport = 'Notification' in window && 'serviceWorker' in navigator && 'PushManager' in window;
+  const currentPerm = hasNotificationSupport ? Notification.permission : 'unsupported';
+  const needsPushPrompt = hasNotificationSupport && currentPerm !== 'granted';
+
+  let alertBannerHtml = '';
+  if (isStandalonePwa() && needsPushPrompt) {
+    alertBannerHtml = `
+      <div class="install-banner" style="background:var(--accent-soft);border-color:#f7c7c9;">
+        <div style="font-size:13px;line-height:1.4;">
+          <strong>🔔 Turn on notifications on this device</strong>
+          <div style="color:var(--muted);font-size:12px;">Get pinged when votes open, when a spot locks in, and 30 min before dinner.</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <button class="btn btn-primary btn-sm" data-action="enable-push">Enable notifications</button>
+        </div>
+      </div>
+    `;
+  } else if (!isStandalonePwa() && !state.installBannerDismissed) {
+    alertBannerHtml = `
+      <div class="install-banner">
+        <div style="font-size:13px;line-height:1.4;">
+          <strong>Get push alerts &amp; 1-tap access on your phone</strong>
+          <div style="color:var(--muted);font-size:12px;">${isIosSafari() ? 'On iPhone: Tap Share ⎋ → Add to Home Screen to enable notifications.' : 'Install Man Night to your Home Screen for instant access &amp; reminders.'}</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          ${state.deferredInstallPrompt ? `<button class="btn btn-primary btn-sm" data-action="trigger-native-install">Install App</button>` : ''}
+          <button class="btn ${state.deferredInstallPrompt ? 'btn-outline' : 'btn-primary'} btn-sm" data-action="open-install-guide">${isIosSafari() ? 'How to install' : state.deferredInstallPrompt ? 'Steps' : 'iPhone / Android guide'}</button>
+          <button class="icon-pill" style="height:28px;padding:0 9px;" data-action="dismiss-install-banner" title="Dismiss" aria-label="Dismiss">✕</button>
+        </div>
+      </div>
+    `;
+  }
 
   return `
-    ${installBannerHtml}
+    ${alertBannerHtml}
     <div class="week-grid">
       <div class="stack">
         <section class="card">

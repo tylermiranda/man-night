@@ -47,6 +47,29 @@ export interface RestaurantRow {
   last_visited: string | null;
   avg_rating: number | null;
   rating_count?: number;
+  photo_count?: number;
+}
+
+export type AllowedPhotoMime = 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif';
+
+export interface MealPhotoViewRow {
+  id: number;
+  dinner_id: number;
+  restaurant_id: number | null;
+  user_slug: string;
+  user_name: string | null;
+  dish: string;
+  caption: string;
+  mime_type: AllowedPhotoMime;
+  width: number | null;
+  height: number | null;
+  byte_size: number;
+  created_at: string;
+  image_url: string;
+  dinner_date?: string;
+  day_of_week?: string;
+  host_label?: string;
+  restaurant_name?: string | null;
 }
 
 export interface RatingViewRow {

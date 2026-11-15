@@ -44,6 +44,11 @@ const state = {
   luckyLoading: false,
   whatsNewOpen: false,
   whatsNewShowAll: false,
+  photosById: {},
+  pendingPhotoUpload: null,
+  pendingModalPhoto: null,
+  photoUploadExtraDinners: [],
+  lightboxConfirmDeleteId: null,
   lastBootstrapAt: 0,
   theme: localStorage.getItem('mn_theme') || 'light',
   deferredInstallPrompt: null,
@@ -197,6 +202,137 @@ function renderReviewItem(r, showDate = false) {
       ${!hasDetails ? `<div style="margin-top:3px;font-size:12px;color:var(--muted);">Rated ${r.score}/5</div>` : ''}
     </div>
   `;
+}
+
+function registerPhotos(list) {
+  for (const p of list || []) {
+    if (p && p.id != null) {
+      state.photosById[Number(p.id)] = p;
+    }
+  }
+}
+
+function parsePhotoIdCsv(csv) {
+  if (!csv) return [];
+  return String(csv)
+    .split(',')
+    .map((s) => Number(s.trim()))
+    .filter((n) => Number.isInteger(n) && n > 0);
+}
+
+function renderPhotoGallery(photos, opts = {}) {
+  if (!photos || !photos.length) return '';
+  registerPhotos(photos);
+  const idsCsv = photos.map((p) => Number(p.id)).join(',');
+  const returnAttr = opts.returnDinnerId ? ` data-return-dinner="${Number(opts.returnDinnerId)}"` : '';
+  return `
+    <div class="meal-photo-grid">
+      ${photos
+        .map((p) => {
+          const who = p.user_name || p.user_slug;
+          const titleLine = p.dish || p.caption || '';
+          const dateBit =
+            opts.showDate && (p.dinner_date || p.created_at)
+              ? ` · ${fmtShortDate(p.dinner_date || String(p.created_at).slice(0, 10))}`
+              : '';
+          return `
+            <button type="button" class="meal-photo-tile" data-action="view-meal-photo" data-photo-id="${Number(p.id)}" data-gallery-ids="${esc(idsCsv)}"${returnAttr}>
+              <img src="${esc(p.image_url)}" alt="${esc(titleLine || `${who}'s meal photo`)}" loading="lazy" />
+              <div class="meal-photo-tile-meta">
+                ${titleLine ? `<span class="meal-photo-tile-dish">${esc(titleLine)}</span>` : ''}
+                <span class="meal-photo-tile-by">${esc(who)}${dateBit}</span>
+              </div>
+            </button>
+          `;
+        })
+        .join('')}
+    </div>
+  `;
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(new Error('Could not read photo file'));
+    reader.readAsDataURL(file);
+  });
+}
+
+function loadImageElement(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('Could not decode photo — try JPEG, PNG, WebP, or GIF'));
+    img.src = src;
+  });
+}
+
+function approxDataUrlBytes(dataUrl) {
+  const commaIdx = dataUrl.indexOf(',');
+  const b64 = commaIdx >= 0 ? dataUrl.slice(commaIdx + 1) : dataUrl;
+  return Math.floor((b64.length * 3) / 4);
+}
+
+async function prepareMealPhotoUpload(file) {
+  if (!file) throw new Error('Choose a photo first');
+  const mime = String(file.type || '').toLowerCase();
+  if ((mime && !mime.startsWith('image/')) || mime === 'image/svg+xml') {
+    throw new Error('Please choose a JPEG, PNG, WebP, or GIF photo.');
+  }
+  const rawDataUrl = await readFileAsDataUrl(file);
+  const img = await loadImageElement(rawDataUrl);
+  const srcW = Number(img.naturalWidth || img.width || 0) || null;
+  const srcH = Number(img.naturalHeight || img.height || 0) || null;
+
+  if (mime === 'image/gif' && file.size <= 520 * 1024) {
+    return {
+      dataUrl: rawDataUrl,
+      mimeType: 'image/gif',
+      width: srcW,
+      height: srcH,
+      byteSize: file.size,
+      fileName: file.name || 'meal.gif',
+    };
+  }
+
+  const steps = [
+    [1280, 0.82],
+    [1024, 0.74],
+    [800, 0.66],
+    [640, 0.58],
+    [480, 0.52],
+  ];
+  const baseW = srcW || 1024;
+  const baseH = srcH || 768;
+
+  for (const [maxDim, quality] of steps) {
+    const scale = Math.min(1, maxDim / Math.max(baseW, baseH));
+    const width = Math.max(1, Math.round(baseW * scale));
+    const height = Math.max(1, Math.round(baseH * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('Browser canvas unavailable for image resize');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, width, height);
+    ctx.drawImage(img, 0, 0, width, height);
+    const compressedUrl = canvas.toDataURL('image/jpeg', quality);
+    const byteSize = approxDataUrlBytes(compressedUrl);
+    if (byteSize <= 540 * 1024) {
+      return {
+        dataUrl: compressedUrl,
+        mimeType: 'image/jpeg',
+        width,
+        height,
+        byteSize,
+        fileName: file.name || 'meal.jpg',
+      };
+    }
+  }
+
+  throw new Error('Photo could not be compressed under 600 KB. Try cropping or picking another photo.');
 }
 
 function toast(msg) {
@@ -908,9 +1044,25 @@ function renderWeekView() {
     </div>
   `;
 
+  const thisWeekPhotos = tw.photos || [];
+  const weekPhotosCard = `
+    <div class="card">
+      <div class="card-kicker">
+        <span>Meal photos${thisWeekPhotos.length ? ` (${thisWeekPhotos.length})` : ''}</span>
+        <button class="btn btn-outline btn-sm" style="min-height:28px;padding:3px 10px;font-size:12px;" data-action="open-photo-upload" data-dinner-id="${d.id}">📷 Post meal photo</button>
+      </div>
+      ${
+        thisWeekPhotos.length
+          ? renderPhotoGallery(thisWeekPhotos, { returnDinnerId: d.id })
+          : `<p class="hero-sub" style="margin:0;font-size:13px;">No meal pictures for this week yet — snap your plate or upload from your camera roll.</p>`
+      }
+    </div>
+  `;
+
   // Last completed dinner rating prompt + memory refresher
   const lastCompleted = b.recentDinners?.[0];
   const lastRatings = b.lastDinnerRatings || [];
+  const lastPhotos = b.lastDinnerPhotos || [];
   const myLastRating = lastRatings.find((r) => r.user_slug === me.slug);
   const lastPlaceTitle = lastCompleted
     ? lastCompleted.restaurant_name || lastCompleted.raw_location?.split(',')[0] || 'Place not set'
@@ -937,6 +1089,13 @@ function renderWeekView() {
       `;
     })
     .join('');
+
+  const lastPhotosHtml = lastPhotos.length
+    ? `<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line);">
+         <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.04em;color:var(--muted);margin-bottom:6px;">Meal photos (${lastPhotos.length})</div>
+         ${renderPhotoGallery(lastPhotos, { returnDinnerId: lastCompleted?.id })}
+       </div>`
+    : '';
 
   const lastReviewsHtml = lastRatings.length
     ? `<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line);">
@@ -971,10 +1130,12 @@ function renderWeekView() {
         <div class="stack" style="gap:8px;">
           <input id="rate-dish-input" class="input" style="min-height:36px;" placeholder="Standout dish (optional)" value="${esc(myLastRating?.dish || '')}" />
           <textarea id="rate-comment-input" class="textarea" style="min-height:60px;" placeholder="Review note — food, vibe, would go back? (optional)">${esc(myLastRating?.comment || '')}</textarea>
-          <div style="display:flex;justify-content:flex-end;">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
+            <button type="button" class="btn btn-sm btn-outline" data-action="open-photo-upload" data-dinner-id="${lastCompleted.id}" data-prefill-source="rate-dish-input">📷 Post meal photo</button>
             <button class="btn btn-sm btn-primary" data-action="submit-rate" data-dinner-id="${lastCompleted.id}">${myLastRating ? 'Update review' : 'Post review'}</button>
           </div>
         </div>
+        ${lastPhotosHtml}
         ${lastReviewsHtml}
         ${
           priorSpotsHtml
@@ -1080,6 +1241,7 @@ function renderWeekView() {
         </section>
         ${locationCardHtml}
         ${rsvpCard}
+        ${weekPhotosCard}
       </div>
       <aside class="stack">
         <section class="card">
@@ -1119,12 +1281,15 @@ function renderHistoryView() {
       const ratingPill = d.rating_count > 0 && d.dinner_avg_rating != null
         ? `<button class="badge badge-star tabular" style="border:0;cursor:pointer;margin-left:6px;" data-action="open-review-modal" data-dinner-id="${d.id}">★ ${Number(d.dinner_avg_rating).toFixed(1)} (${d.rating_count})</button>`
         : '';
+      const photoPill = d.photo_count > 0
+        ? `<button class="badge badge-photo tabular" style="border:0;cursor:pointer;margin-left:6px;" data-action="open-review-modal" data-dinner-id="${d.id}">📷 ${d.photo_count}</button>`
+        : '';
       const placeCell = d.restaurant_id
         ? `<button class="link-btn" style="color:var(--ink);font-size:14px;text-align:left;" data-action="focus-place" data-place-id="${d.restaurant_id}">${esc(d.restaurant_name)}</button>
            ${d.restaurant_visits ? `<span style="font-size:12px;color:var(--muted);margin-left:6px;">(${d.restaurant_visits}×)</span>` : ''}
-           ${ratingPill}`
+           ${ratingPill}${photoPill}`
         : `<button class="link-btn" data-action="open-backfill" data-dinner-id="${d.id}" data-date="${esc(d.dinner_date)}">+ Add the place</button>
-           ${ratingPill}`;
+           ${ratingPill}${photoPill}`;
       listHtml += `
         <div class="history-row">
           <div class="tabular" style="font-size:13px;color:var(--muted);">${fmtDate(d.dinner_date)}</div>
@@ -1133,6 +1298,7 @@ function renderHistoryView() {
           <div style="display:flex;align-items:center;gap:8px;justify-content:flex-end;">
             ${avatarHtml(d.host_slug, d.host_label, 'sm')}
             <span style="font-size:13px;font-weight:600;">${esc(d.host_label)}</span>
+            <button class="btn btn-outline btn-sm" style="min-height:26px;padding:2px 8px;font-size:11px;" data-action="open-photo-upload" data-dinner-id="${d.id}" title="Add meal photo" aria-label="Add meal photo">📷</button>
             <button class="btn btn-outline btn-sm" style="min-height:26px;padding:2px 8px;font-size:11px;" data-action="open-review-modal" data-dinner-id="${d.id}">${d.my_score != null ? `★ ${d.my_score} · Edit` : 'Rate'}</button>
           </div>
         </div>
@@ -1183,6 +1349,8 @@ function getFilteredPlaces() {
     list = list.filter((p) => (p.visit_count || 0) === 1);
   } else if (state.placesFilter === 'reviewed') {
     list = list.filter((p) => (p.rating_count || 0) > 0 || p.avg_rating != null);
+  } else if (state.placesFilter === 'photos') {
+    list = list.filter((p) => (p.photo_count || 0) > 0);
   }
 
   if (q) {
@@ -1210,6 +1378,24 @@ function getFilteredPlaces() {
   return list;
 }
 
+function renderSelectedPlacePhotosHtml(place, cached) {
+  const photos = cached?.photos || [];
+  if (!cached) return '';
+  if (!photos.length) return '';
+  return `
+    <div style="margin-bottom:12px;">
+      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.04em;color:var(--muted);margin-bottom:6px;">Meal photos (${photos.length})</div>
+      ${renderPhotoGallery(photos, { showDate: true })}
+    </div>
+  `;
+}
+
+function canUploadPhotoForPlace(place, cached) {
+  const hasVisits = (cached?.visits || []).length > 0;
+  const activeMatches = Number(state.bootstrap?.thisWeek?.dinner?.restaurant_id || 0) === Number(place?.id || 0);
+  return hasVisits || activeMatches;
+}
+
 function renderSelectedPlaceCard(selected) {
   if (!selected) return '';
   const cached = state.placeReviews[selected.id];
@@ -1226,11 +1412,15 @@ function renderSelectedPlaceCard(selected) {
   const rateBtnHtml = targetVisit
     ? `<button id="selected-place-rate-btn" class="btn btn-sm btn-outline" data-action="open-review-modal" data-dinner-id="${targetVisit.id}">${targetVisit.my_score != null ? 'Edit review' : '+ Write review'}</button>`
     : '';
+  const photoBtnHtml = canUploadPhotoForPlace(place, cached)
+    ? `<button class="btn btn-sm btn-outline" data-action="open-place-photo-upload" data-place-id="${place.id}">📷 Add photo</button>`
+    : '';
+  const photosBody = renderSelectedPlacePhotosHtml(place, cached);
   const reviewsBody = cached
     ? cached.reviews?.length
       ? `<div class="review-list">${cached.reviews.map((r) => renderReviewItem(r, true)).join('')}</div>`
       : `<div style="font-size:13px;color:var(--muted);">No crew reviews yet for this spot.</div>`
-    : `<div style="font-size:13px;color:var(--muted);">Loading reviews…</div>`;
+    : `<div style="font-size:13px;color:var(--muted);">Loading reviews &amp; photos…</div>`;
 
   return `
     <section class="card">
@@ -1246,8 +1436,9 @@ function renderSelectedPlaceCard(selected) {
       <div class="btn-row" style="margin-bottom:12px;">
         <a class="btn btn-sm btn-primary" href="${esc(gmaps)}" target="_blank" rel="noopener">Directions ↗</a>
         <button class="btn btn-sm btn-outline" data-action="filter-place-history" data-place-id="${place.id}">Visit history →</button>
-        <span id="selected-place-rate-wrap">${rateBtnHtml}</span>
+        <span id="selected-place-rate-wrap">${rateBtnHtml}${photoBtnHtml}</span>
       </div>
+      <div id="selected-place-photos">${photosBody}</div>
       <div id="selected-place-reviews">${reviewsBody}</div>
     </section>
   `;
@@ -1263,9 +1454,13 @@ async function loadPlaceReviews(placeId) {
       state.places[idx] = { ...state.places[idx], ...data.place };
     }
     if (state.tab === 'places' && state.selectedPlaceId === placeId) {
+      const photosEl = document.getElementById('selected-place-photos');
       const reviewsEl = document.getElementById('selected-place-reviews');
       const badgeEl = document.getElementById('selected-place-rating-badge');
       const rateWrapEl = document.getElementById('selected-place-rate-wrap');
+      if (photosEl) {
+        photosEl.innerHTML = renderSelectedPlacePhotosHtml(data.place, data);
+      }
       if (reviewsEl) {
         reviewsEl.innerHTML = data.reviews?.length
           ? `<div class="review-list">${data.reviews.map((r) => renderReviewItem(r, true)).join('')}</div>`
@@ -1281,9 +1476,13 @@ async function loadPlaceReviews(placeId) {
       if (rateWrapEl) {
         const visits = data.visits || [];
         const targetVisit = visits.find((v) => v.my_score != null) || visits[0] || null;
-        rateWrapEl.innerHTML = targetVisit
+        const rateBtn = targetVisit
           ? `<button id="selected-place-rate-btn" class="btn btn-sm btn-outline" data-action="open-review-modal" data-dinner-id="${targetVisit.id}">${targetVisit.my_score != null ? 'Edit review' : '+ Write review'}</button>`
           : '';
+        const photoBtn = canUploadPhotoForPlace(data.place, data)
+          ? `<button class="btn btn-sm btn-outline" data-action="open-place-photo-upload" data-place-id="${data.place.id}">📷 Add photo</button>`
+          : '';
+        rateWrapEl.innerHTML = `${rateBtn}${photoBtn}`;
       }
     }
   } catch {
@@ -1302,6 +1501,7 @@ function renderPlacesView() {
   const regulars = all.filter((p) => (p.visit_count || 0) >= 5);
   const oneHits = all.filter((p) => (p.visit_count || 0) === 1);
   const reviewedPlaces = all.filter((p) => (p.rating_count || 0) > 0 || p.avg_rating != null);
+  const placesWithPhotos = all.filter((p) => (p.photo_count || 0) > 0);
   const byVisits = [...all].sort((a, b) => (b.visit_count - a.visit_count) || a.name.localeCompare(b.name));
   const byRecent = [...all]
     .filter((p) => (p.visit_count || 0) > 0 && effectiveLastVisited(p, todayIso))
@@ -1425,6 +1625,7 @@ function renderPlacesView() {
 
   const filterDefs = [
     { id: 'all', label: `All (${all.length})` },
+    { id: 'photos', label: `📷 Photos (${placesWithPhotos.length})` },
     { id: 'reviewed', label: `⭐ Reviewed (${reviewedPlaces.length})` },
     { id: 'ten_plus', label: `🏆 10+ Club (${tenPlus.length})` },
     { id: 'regulars', label: `🔥 Regulars 5+ (${regulars.length})` },
@@ -1449,6 +1650,7 @@ function renderPlacesView() {
           <div class="place-addr">${esc(p.address || p.city)}${lv ? ` · Last ${fmtShortDate(lv)}` : ''}</div>
         </div>
         <div style="display:flex;align-items:center;gap:6px;flex-shrink:0;">
+          ${(p.photo_count || 0) > 0 ? `<span class="badge badge-photo tabular">📷 ${p.photo_count}</span>` : ''}
           ${p.avg_rating != null ? `<span class="badge badge-star tabular">★ ${Number(p.avg_rating).toFixed(1)}</span>` : ''}
           <span class="badge badge-muted tabular">${p.visit_count}×</span>
         </div>
@@ -2590,16 +2792,198 @@ function openNewPlaceModal() {
   `);
 }
 
+function collectSelectableDinners(preferredDinnerId = null, extraDinners = []) {
+  const b = state.bootstrap;
+  const seen = new Set();
+  const options = [];
+  const addOpt = (d, tag = '') => {
+    if (!d || !d.id || seen.has(Number(d.id))) return;
+    seen.add(Number(d.id));
+    const placePart = d.restaurant_name || (d.raw_location ? String(d.raw_location).split(',')[0] : '');
+    const prefix = tag ? `${tag} · ` : '';
+    const placeTxt = placePart ? ` · ${placePart}` : '';
+    options.push({
+      id: Number(d.id),
+      label: `${prefix}${fmtShortDate(d.dinner_date)} (${d.host_label}'s week${placeTxt})`,
+    });
+  };
+
+  for (const d of extraDinners || []) {
+    addOpt(d);
+  }
+  if (b?.thisWeek?.dinner) {
+    const tw = b.thisWeek;
+    addOpt(
+      { ...tw.dinner, restaurant_name: tw.place?.name || tw.dinner.restaurant_name },
+      'This week',
+    );
+  }
+  for (const d of b?.recentDinners || []) {
+    addOpt(d);
+  }
+  if (preferredDinnerId && !seen.has(Number(preferredDinnerId))) {
+    const fromHist = (state.history || []).find((h) => Number(h.id) === Number(preferredDinnerId));
+    if (fromHist) {
+      addOpt(fromHist);
+    } else {
+      addOpt({ id: Number(preferredDinnerId), dinner_date: '', host_label: 'Man Night' });
+    }
+  }
+  return options;
+}
+
+function renderPhotoPreviewBox(previewElId, prepared) {
+  const el = document.getElementById(previewElId);
+  if (!el) return;
+  if (!prepared) {
+    el.innerHTML = `
+      <div style="font-size:24px;">📷</div>
+      <div style="font-weight:700;font-size:14px;">Choose or take a meal photo</div>
+      <div style="font-size:12px;color:var(--muted);">JPEG, PNG, WebP, or GIF · automatically resized for fast upload</div>
+    `;
+    return;
+  }
+  const kb = Math.max(1, Math.round((prepared.byteSize || 0) / 1024));
+  const dims = prepared.width && prepared.height ? `${prepared.width}×${prepared.height} · ` : '';
+  el.innerHTML = `
+    <div class="meal-photo-preview">
+      <img src="${esc(prepared.dataUrl)}" alt="Selected meal preview" />
+      <div style="font-size:12px;color:var(--muted);">✓ ${esc(prepared.fileName)} (${dims}${kb} KB) · Tap to change</div>
+    </div>
+  `;
+}
+
+function openMealPhotoModal(dinnerId = null, opts = {}) {
+  const b = state.bootstrap;
+  state.pendingPhotoUpload = null;
+  state.photoUploadExtraDinners = opts.extraDinners || [];
+  const defaultId = Number(dinnerId || b?.recentDinners?.[0]?.id || b?.thisWeek?.dinner?.id || 0);
+  const dinnerOptions = collectSelectableDinners(defaultId, state.photoUploadExtraDinners);
+  if (!dinnerOptions.length) {
+    toast('No dinners available to attach a photo to');
+    return;
+  }
+
+  openModal(`
+    <h2 class="hero-title" style="font-size:20px;margin-bottom:4px;">📷 Post meal picture</h2>
+    <p class="hero-sub" style="margin-bottom:12px;font-size:13px;">${opts.placeName ? `For <strong>${esc(opts.placeName)}</strong> — visible on this dinner and its restaurant page.` : 'Visible on this dinner’s card, review sheet, and restaurant page.'}</p>
+    <div class="stack" style="gap:10px;">
+      <div>
+        <div style="font-size:12px;font-weight:700;color:var(--muted);margin-bottom:4px;">Dinner</div>
+        <select id="photo-dinner-select" class="select" style="width:100%;">
+          ${dinnerOptions
+            .map((opt) => `<option value="${opt.id}" ${opt.id === defaultId ? 'selected' : ''}>${esc(opt.label)}</option>`)
+            .join('')}
+        </select>
+      </div>
+      <div>
+        <input id="photo-file-input" class="sr-only-file" type="file" accept="image/jpeg,image/png,image/webp,image/gif,image/*" />
+        <label for="photo-file-input" id="photo-preview-wrap" class="meal-photo-dropzone"></label>
+      </div>
+      <input id="photo-dish-input" class="input" maxlength="140" placeholder="What’d you get? (optional, e.g. Birria tacos)" value="${esc(opts.prefillDish || '')}" />
+      <input id="photo-caption-input" class="input" maxlength="300" placeholder="Caption / note (optional)" />
+      <div class="btn-row" style="justify-content:flex-end;margin-top:4px;">
+        <button type="button" class="btn btn-secondary btn-sm" data-action="close-modal">Cancel</button>
+        <button type="button" id="photo-submit-btn" class="btn btn-primary btn-sm" data-action="submit-meal-photo" disabled>Post photo</button>
+      </div>
+    </div>
+  `);
+  renderPhotoPreviewBox('photo-preview-wrap', null);
+}
+
+function openPhotoLightboxModal(photoId, galleryIds = [], returnDinnerModalId = null) {
+  const photo = state.photosById[Number(photoId)];
+  if (!photo) {
+    toast('Photo details unavailable');
+    return;
+  }
+  const ids = galleryIds.length ? galleryIds : [Number(photo.id)];
+  const idx = Math.max(0, ids.indexOf(Number(photo.id)));
+  const prevId = idx > 0 ? ids[idx - 1] : null;
+  const nextId = idx >= 0 && idx < ids.length - 1 ? ids[idx + 1] : null;
+  const idsCsv = ids.join(',');
+  const who = photo.user_name || photo.user_slug;
+  const me = state.bootstrap?.user;
+  const isOwner = Boolean(me && me.slug === photo.user_slug);
+  const isConfirming = Number(state.lightboxConfirmDeleteId) === Number(photo.id);
+  const dateStr = photo.dinner_date ? fmtDate(photo.dinner_date) : fmtDate(String(photo.created_at || '').slice(0, 10));
+  const titleTxt = photo.dish || photo.restaurant_name || `${who}'s meal photo`;
+  const returnVal = returnDinnerModalId ? Number(returnDinnerModalId) : '';
+
+  const deleteHtml = isOwner
+    ? isConfirming
+      ? `<div class="btn-row">
+           <button type="button" class="btn btn-primary btn-sm" data-action="confirm-delete-photo" data-photo-id="${photo.id}" data-gallery-ids="${esc(idsCsv)}" data-return-dinner="${returnVal}">Confirm delete</button>
+           <button type="button" class="btn btn-secondary btn-sm" data-action="cancel-delete-photo" data-photo-id="${photo.id}" data-gallery-ids="${esc(idsCsv)}" data-return-dinner="${returnVal}">Keep</button>
+         </div>`
+      : `<button type="button" class="btn btn-outline btn-sm" data-action="arm-delete-photo" data-photo-id="${photo.id}" data-gallery-ids="${esc(idsCsv)}" data-return-dinner="${returnVal}">Delete photo</button>`
+    : '';
+
+  const navHtml =
+    ids.length > 1
+      ? `<div class="meal-lightbox-nav">
+           <button type="button" class="btn btn-outline btn-sm" ${prevId ? `data-action="view-meal-photo" data-photo-id="${prevId}" data-gallery-ids="${esc(idsCsv)}" data-return-dinner="${returnVal}"` : 'disabled'}>← Prev</button>
+           <span class="tabular" style="font-size:12px;color:var(--muted);">${idx + 1} of ${ids.length}</span>
+           <button type="button" class="btn btn-outline btn-sm" ${nextId ? `data-action="view-meal-photo" data-photo-id="${nextId}" data-gallery-ids="${esc(idsCsv)}" data-return-dinner="${returnVal}"` : 'disabled'}>Next →</button>
+         </div>`
+      : '';
+
+  openModal(`
+    <div class="meal-lightbox">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+        <div style="display:flex;align-items:center;gap:8px;min-width:0;">
+          ${avatarHtml(photo.user_slug, who, 'sm')}
+          <div style="min-width:0;">
+            <div style="font-weight:700;font-size:14px;">${esc(who)}</div>
+            <div style="font-size:12px;color:var(--muted);">${esc(dateStr)}${photo.restaurant_name ? ` · ${esc(photo.restaurant_name)}` : ''}</div>
+          </div>
+        </div>
+        ${returnVal ? `<button type="button" class="btn btn-outline btn-sm" data-action="back-to-dinner-modal" data-dinner-id="${returnVal}">← Dinner</button>` : ''}
+      </div>
+      <div class="meal-lightbox-img-wrap">
+        <img class="meal-lightbox-img" src="${esc(photo.image_url)}" alt="${esc(titleTxt)}" />
+      </div>
+      ${photo.dish ? `<div style="font-weight:750;font-size:16px;">🍽️ ${esc(photo.dish)}</div>` : ''}
+      ${photo.caption ? `<div style="font-size:13px;color:var(--ink);line-height:1.45;">${esc(photo.caption)}</div>` : ''}
+      ${navHtml}
+      <div class="btn-row" style="justify-content:space-between;margin-top:4px;">
+        <div>${deleteHtml}</div>
+        <button type="button" class="btn btn-secondary btn-sm" data-action="close-modal">Close</button>
+      </div>
+    </div>
+  `);
+}
+
 async function openReviewModal(dinnerId) {
-  openModal(`<div style="padding:12px 0;font-size:14px;color:var(--muted);">Loading dinner reviews…</div>`);
+  state.pendingModalPhoto = null;
+  openModal(`<div style="padding:12px 0;font-size:14px;color:var(--muted);">Loading dinner details…</div>`);
   try {
     const data = await api(`/api/dinners/${dinnerId}/reviews`);
     const d = data.dinner;
     const reviews = data.reviews || [];
+    const photos = data.photos || [];
     const me = state.bootstrap?.user;
     const myReview = reviews.find((r) => r.user_slug === me?.slug);
     state.modalRatingScore = myReview ? Number(myReview.score) : 5;
     const title = d.restaurant_name || d.raw_location?.split(',')[0] || 'Dinner review';
+    const photosHtml = `
+      <div style="margin-bottom:14px;">
+        <div class="card-kicker" style="margin-bottom:6px;">
+          <span>Meal photos (${photos.length})</span>
+        </div>
+        ${photos.length ? renderPhotoGallery(photos, { returnDinnerId: dinnerId }) : `<p class="hero-sub" style="margin:0 0 8px;font-size:12px;">No meal photos posted for this night yet.</p>`}
+        <div style="margin-top:8px;">
+          <input id="modal-photo-input" class="sr-only-file" type="file" accept="image/jpeg,image/png,image/webp,image/gif,image/*" />
+          <label for="modal-photo-input" id="modal-photo-preview" class="meal-photo-dropzone" style="padding:10px 12px;"></label>
+          <div id="modal-photo-extra" class="stack hidden" style="margin-top:8px;gap:8px;">
+            <input id="modal-photo-caption" class="input" maxlength="300" placeholder="Photo caption (optional)" style="width:100%;" />
+            <div style="display:flex;justify-content:flex-end;">
+              <button type="button" class="btn btn-outline btn-sm" data-action="upload-modal-photo" data-dinner-id="${dinnerId}">Upload photo now</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
     const reviewsHtml = reviews.length
       ? `<div style="margin-bottom:12px;">
            <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.04em;color:var(--muted);margin-bottom:6px;">Crew reviews (${reviews.length})</div>
@@ -2610,6 +2994,7 @@ async function openReviewModal(dinnerId) {
     openModal(`
       <h2 class="hero-title" style="font-size:20px;margin-bottom:4px;">${esc(title)}</h2>
       <p class="hero-sub" style="margin-bottom:12px;">${esc(d.day_of_week || 'Tuesday')}, ${fmtDate(d.dinner_date)} · Hosted by ${esc(d.host_label)}</p>
+      ${photosHtml}
       ${reviewsHtml}
       <div style="border-top:1px solid var(--line);padding-top:12px;">
         <div style="font-size:12px;font-weight:700;color:var(--muted);margin-bottom:6px;">${myReview ? 'Your review' : 'Add your review'}</div>
@@ -2626,9 +3011,10 @@ async function openReviewModal(dinnerId) {
         </div>
       </div>
     `);
+    renderPhotoPreviewBox('modal-photo-preview', null);
   } catch (err) {
     closeModal();
-    toast(err.message || 'Could not load reviews');
+    toast(err.message || 'Could not load dinner details');
   }
 }
 
@@ -2993,6 +3379,132 @@ document.addEventListener('click', async (e) => {
       await refreshBootstrap();
     } else if (action === 'open-review-modal') {
       await openReviewModal(Number(actEl.dataset.dinnerId));
+    } else if (action === 'open-photo-upload') {
+      const dinnerId = Number(actEl.dataset.dinnerId || state.bootstrap?.recentDinners?.[0]?.id || state.bootstrap?.thisWeek?.dinner?.id);
+      const srcElId = actEl.dataset.prefillSource;
+      const prefillDish = srcElId ? (document.getElementById(srcElId)?.value || '') : '';
+      openMealPhotoModal(dinnerId, { prefillDish });
+    } else if (action === 'open-place-photo-upload') {
+      const placeId = Number(actEl.dataset.placeId || state.selectedPlaceId);
+      const cached = state.placeReviews[placeId];
+      const placeName = cached?.place?.name || state.places.find((p) => Number(p.id) === placeId)?.name || '';
+      const visits = cached?.visits || [];
+      const activeMatches =
+        Number(state.bootstrap?.thisWeek?.dinner?.restaurant_id || 0) === placeId
+          ? state.bootstrap.thisWeek.dinner
+          : null;
+      const defaultId = Number(activeMatches?.id || visits[0]?.id || 0);
+      openMealPhotoModal(defaultId, {
+        placeName,
+        extraDinners: visits.map((v) => ({ ...v, restaurant_name: placeName })),
+      });
+    } else if (action === 'submit-meal-photo') {
+      if (!state.pendingPhotoUpload?.dataUrl) return toast('Choose a photo first');
+      const dinnerId = Number(document.getElementById('photo-dinner-select')?.value || 0);
+      if (!dinnerId) return toast('Pick a dinner first');
+      const dish = document.getElementById('photo-dish-input')?.value || '';
+      const caption = document.getElementById('photo-caption-input')?.value || '';
+      actEl.disabled = true;
+      try {
+        await api('/api/photos', {
+          method: 'POST',
+          body: JSON.stringify({
+            dinnerId,
+            imageData: state.pendingPhotoUpload.dataUrl,
+            mimeType: state.pendingPhotoUpload.mimeType,
+            width: state.pendingPhotoUpload.width,
+            height: state.pendingPhotoUpload.height,
+            dish,
+            caption,
+          }),
+        });
+        state.pendingPhotoUpload = null;
+        state.places = [];
+        state.placeReviews = {};
+        closeModal();
+        toast('Meal photo posted!');
+        await refreshBootstrap();
+        if (state.tab === 'places') {
+          await loadPlacesIfNeeded();
+          render();
+        } else if (state.tab === 'history') {
+          await loadHistory(false);
+        }
+      } finally {
+        if (document.body.contains(actEl)) actEl.disabled = false;
+      }
+    } else if (action === 'upload-modal-photo') {
+      if (!state.pendingModalPhoto?.dataUrl) return toast('Choose a photo first');
+      const dinnerId = Number(actEl.dataset.dinnerId);
+      const dish = document.getElementById('modal-rate-dish')?.value || '';
+      const caption = document.getElementById('modal-photo-caption')?.value || '';
+      actEl.disabled = true;
+      await api('/api/photos', {
+        method: 'POST',
+        body: JSON.stringify({
+          dinnerId,
+          imageData: state.pendingModalPhoto.dataUrl,
+          mimeType: state.pendingModalPhoto.mimeType,
+          width: state.pendingModalPhoto.width,
+          height: state.pendingModalPhoto.height,
+          dish,
+          caption,
+        }),
+      });
+      state.pendingModalPhoto = null;
+      state.places = [];
+      state.placeReviews = {};
+      toast('Meal photo uploaded!');
+      await refreshBootstrap();
+      if (state.tab === 'history') await loadHistory(false);
+      await openReviewModal(dinnerId);
+    } else if (action === 'view-meal-photo') {
+      state.lightboxConfirmDeleteId = null;
+      const photoId = Number(actEl.dataset.photoId);
+      const galleryIds = parsePhotoIdCsv(actEl.dataset.galleryIds);
+      const returnDinner = actEl.dataset.returnDinner ? Number(actEl.dataset.returnDinner) : null;
+      openPhotoLightboxModal(photoId, galleryIds, returnDinner);
+    } else if (action === 'back-to-dinner-modal') {
+      state.lightboxConfirmDeleteId = null;
+      await openReviewModal(Number(actEl.dataset.dinnerId));
+    } else if (action === 'arm-delete-photo') {
+      state.lightboxConfirmDeleteId = Number(actEl.dataset.photoId);
+      openPhotoLightboxModal(
+        Number(actEl.dataset.photoId),
+        parsePhotoIdCsv(actEl.dataset.galleryIds),
+        actEl.dataset.returnDinner ? Number(actEl.dataset.returnDinner) : null,
+      );
+    } else if (action === 'cancel-delete-photo') {
+      state.lightboxConfirmDeleteId = null;
+      openPhotoLightboxModal(
+        Number(actEl.dataset.photoId),
+        parsePhotoIdCsv(actEl.dataset.galleryIds),
+        actEl.dataset.returnDinner ? Number(actEl.dataset.returnDinner) : null,
+      );
+    } else if (action === 'confirm-delete-photo') {
+      const photoId = Number(actEl.dataset.photoId);
+      const galleryIds = parsePhotoIdCsv(actEl.dataset.galleryIds).filter((id) => id !== photoId);
+      const returnDinner = actEl.dataset.returnDinner ? Number(actEl.dataset.returnDinner) : null;
+      await api(`/api/photos/${photoId}`, { method: 'DELETE' });
+      delete state.photosById[photoId];
+      state.lightboxConfirmDeleteId = null;
+      state.places = [];
+      state.placeReviews = {};
+      toast('Photo deleted');
+      await refreshBootstrap();
+      if (state.tab === 'places') {
+        await loadPlacesIfNeeded();
+        render();
+      } else if (state.tab === 'history') {
+        await loadHistory(false);
+      }
+      if (returnDinner) {
+        await openReviewModal(returnDinner);
+      } else if (galleryIds.length > 0 && state.photosById[galleryIds[0]]) {
+        openPhotoLightboxModal(galleryIds[0], galleryIds, null);
+      } else {
+        closeModal();
+      }
     } else if (action === 'set-modal-star') {
       state.modalRatingScore = Number(actEl.dataset.score);
       document.querySelectorAll('#modal-review-stars .star-btn').forEach((btn) => {
@@ -3002,10 +3514,26 @@ document.addEventListener('click', async (e) => {
       const dinnerId = Number(actEl.dataset.dinnerId);
       const dish = document.getElementById('modal-rate-dish')?.value || '';
       const comment = document.getElementById('modal-rate-comment')?.value || '';
+      const caption = document.getElementById('modal-photo-caption')?.value || '';
       await api('/api/week/rate', {
         method: 'POST',
         body: JSON.stringify({ dinnerId, score: state.modalRatingScore, dish, comment }),
       });
+      if (state.pendingModalPhoto?.dataUrl) {
+        await api('/api/photos', {
+          method: 'POST',
+          body: JSON.stringify({
+            dinnerId,
+            imageData: state.pendingModalPhoto.dataUrl,
+            mimeType: state.pendingModalPhoto.mimeType,
+            width: state.pendingModalPhoto.width,
+            height: state.pendingModalPhoto.height,
+            dish,
+            caption,
+          }),
+        });
+        state.pendingModalPhoto = null;
+      }
       state.places = [];
       state.placeReviews = {};
       closeModal();
@@ -3422,6 +3950,44 @@ document.addEventListener('change', async (e) => {
   } else if (e.target.id === 'sellout-dinner-select') {
     state.selloutModalDinnerId = Number(e.target.value);
     renderSelloutModalBody();
+  } else if (e.target.id === 'photo-file-input') {
+    const file = e.target.files?.[0];
+    const submitBtn = document.getElementById('photo-submit-btn');
+    const previewEl = document.getElementById('photo-preview-wrap');
+    if (!file) return;
+    if (submitBtn) submitBtn.disabled = true;
+    if (previewEl) {
+      previewEl.innerHTML = '<div style="font-size:13px;color:var(--muted);">Preparing photo…</div>';
+    }
+    try {
+      const prepared = await prepareMealPhotoUpload(file);
+      state.pendingPhotoUpload = prepared;
+      renderPhotoPreviewBox('photo-preview-wrap', prepared);
+      if (submitBtn) submitBtn.disabled = false;
+    } catch (err) {
+      state.pendingPhotoUpload = null;
+      renderPhotoPreviewBox('photo-preview-wrap', null);
+      toast(err.message || 'Could not process image');
+    }
+  } else if (e.target.id === 'modal-photo-input') {
+    const file = e.target.files?.[0];
+    const previewEl = document.getElementById('modal-photo-preview');
+    const extraEl = document.getElementById('modal-photo-extra');
+    if (!file) return;
+    if (previewEl) {
+      previewEl.innerHTML = '<div style="font-size:12px;color:var(--muted);">Preparing photo…</div>';
+    }
+    try {
+      const prepared = await prepareMealPhotoUpload(file);
+      state.pendingModalPhoto = prepared;
+      renderPhotoPreviewBox('modal-photo-preview', prepared);
+      if (extraEl) extraEl.classList.remove('hidden');
+    } catch (err) {
+      state.pendingModalPhoto = null;
+      renderPhotoPreviewBox('modal-photo-preview', null);
+      if (extraEl) extraEl.classList.add('hidden');
+      toast(err.message || 'Could not process image');
+    }
   } else if (e.target.dataset.pref) {
     const key = e.target.dataset.pref;
     await api('/api/user/prefs', { method: 'PATCH', body: JSON.stringify({ [key]: e.target.checked }) });

@@ -13,17 +13,21 @@ import {
   createIssueReport,
   createPlacePoll,
   createRestaurant,
+  deleteMealPhoto,
   drawLuckyPlaces,
   getActiveDinner,
   getBootstrapPayload,
   getCentralDateStr,
   getDinnerReviews,
+  getMealPhotoBinary,
   getPlaceReviews,
+  listMealPhotos,
   lockNight,
   lockPlace,
   openNoonDraw,
   safeRestaurantSelectSql,
   submitRating,
+  uploadMealPhoto,
 } from './workflow';
 
 function json(data: unknown, status = 200): Response {
@@ -504,7 +508,8 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
       const rows = (
         await env.DB.prepare(
           `SELECT ${safeRestaurantSelectSql('r')},
-                  (SELECT COUNT(*) FROM ratings rt WHERE rt.restaurant_id = r.id) AS rating_count
+                  (SELECT COUNT(*) FROM ratings rt WHERE rt.restaurant_id = r.id) AS rating_count,
+                  (SELECT COUNT(*) FROM meal_photos mp WHERE mp.restaurant_id = r.id) AS photo_count
            FROM restaurants r
            ORDER BY visit_count DESC, r.name ASC`,
         )
@@ -563,6 +568,123 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
       return json(await getDinnerReviews(env.DB, Number(dinnerReviewsMatch[1])));
     }
 
+    const photoImageMatch = path.match(/^\/api\/photos\/(\d+)\/image$/);
+    if (photoImageMatch && method === 'GET') {
+      const photoId = Number(photoImageMatch[1]);
+      const etag = `"meal-photo-${photoId}"`;
+      if (request.headers.get('If-None-Match') === etag) {
+        const exists = await env.DB.prepare('SELECT id FROM meal_photos WHERE id = ?')
+          .bind(photoId)
+          .first<{ id: number }>();
+        if (!exists) return json({ error: 'Photo not found' }, 404);
+        return new Response(null, {
+          status: 304,
+          headers: {
+            ETag: etag,
+            'Cache-Control': 'private, max-age=604800, immutable',
+          },
+        });
+      }
+      const photo = await getMealPhotoBinary(env.DB, photoId);
+      if (!photo) return json({ error: 'Photo not found' }, 404);
+      return new Response(photo.bytes, {
+        status: 200,
+        headers: {
+          'Content-Type': photo.mimeType,
+          'Content-Length': String(photo.bytes.byteLength),
+          'Cache-Control': 'private, max-age=604800, immutable',
+          ETag: etag,
+          'X-Content-Type-Options': 'nosniff',
+          'Content-Security-Policy': "default-src 'none'",
+        },
+      });
+    }
+
+    if (path === '/api/photos' && method === 'GET') {
+      const dinnerIdRaw = url.searchParams.get('dinnerId');
+      const placeIdRaw = url.searchParams.get('placeId');
+      const limitRaw = url.searchParams.get('limit');
+      let dinnerId: number | undefined;
+      let placeId: number | undefined;
+      let limit: number | undefined;
+      if (dinnerIdRaw !== null && dinnerIdRaw !== '') {
+        const parsed = Number(dinnerIdRaw);
+        if (!Number.isInteger(parsed) || parsed <= 0) {
+          return json({ error: 'Valid dinnerId is required' }, 400);
+        }
+        dinnerId = parsed;
+      }
+      if (placeIdRaw !== null && placeIdRaw !== '') {
+        const parsed = Number(placeIdRaw);
+        if (!Number.isInteger(parsed) || parsed <= 0) {
+          return json({ error: 'Valid placeId is required' }, 400);
+        }
+        placeId = parsed;
+      }
+      if (limitRaw !== null && limitRaw !== '') {
+        const parsed = Number(limitRaw);
+        if (!Number.isInteger(parsed) || parsed <= 0) {
+          return json({ error: 'Valid limit is required' }, 400);
+        }
+        limit = parsed;
+      }
+      return json({ photos: await listMealPhotos(env.DB, { dinnerId, placeId, limit }) });
+    }
+
+    if (path === '/api/photos' && method === 'POST') {
+      const body = await readJson<{
+        dinnerId?: unknown;
+        imageData?: unknown;
+        mimeType?: string;
+        dish?: string;
+        caption?: string;
+        width?: number | null;
+        height?: number | null;
+      }>(request);
+      if (typeof body.imageData !== 'string' || body.imageData.trim().length === 0) {
+        return json({ error: 'imageData is required' }, 400);
+      }
+      let targetDinnerId: number | undefined;
+      if (body.dinnerId !== undefined && body.dinnerId !== null && body.dinnerId !== '') {
+        const parsedId = Number(body.dinnerId);
+        if (!Number.isInteger(parsedId) || parsedId <= 0) {
+          return json({ error: 'Valid dinnerId is required' }, 400);
+        }
+        const found = await env.DB.prepare('SELECT id FROM dinners WHERE id = ?')
+          .bind(parsedId)
+          .first<{ id: number }>();
+        if (!found) return json({ error: 'Dinner not found' }, 404);
+        targetDinnerId = found.id;
+      } else {
+        const active = await getActiveDinner(env.DB);
+        if (!active) return json({ error: 'No active dinner found' }, 404);
+        targetDinnerId = active.id;
+      }
+      const photo = await uploadMealPhoto(env.DB, user.slug, {
+        dinnerId: targetDinnerId,
+        imageData: body.imageData,
+        mimeType: body.mimeType,
+        dish: body.dish,
+        caption: body.caption,
+        width: body.width ?? null,
+        height: body.height ?? null,
+      });
+      return json({ ok: true, photo }, 201);
+    }
+
+    const photoDeleteMatch = path.match(/^\/api\/photos\/(\d+)$/);
+    if (photoDeleteMatch && method === 'DELETE') {
+      try {
+        const res = await deleteMealPhoto(env.DB, Number(photoDeleteMatch[1]), user.slug);
+        return json({ ok: true, ...res });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Server error';
+        if (message === 'Photo not found') return json({ error: message }, 404);
+        if (message.startsWith('Forbidden:')) return json({ error: message }, 403);
+        return json({ error: message }, 400);
+      }
+    }
+
     if (path === '/api/places' && method === 'POST') {
       const body = await readJson<{ name: string; address?: string; city?: string; lat?: number; lng?: number }>(request);
       const place = await createRestaurant(env.DB, body);
@@ -598,7 +720,8 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
                r.name AS restaurant_name, r.address AS restaurant_address, r.visit_count AS restaurant_visits, r.avg_rating AS restaurant_avg_rating,
                (SELECT COUNT(*) FROM ratings rt WHERE rt.dinner_id = d.id) AS rating_count,
                (SELECT ROUND(AVG(rt.score), 2) FROM ratings rt WHERE rt.dinner_id = d.id) AS dinner_avg_rating,
-               (SELECT rt.score FROM ratings rt WHERE rt.dinner_id = d.id AND rt.user_slug = ?) AS my_score
+               (SELECT rt.score FROM ratings rt WHERE rt.dinner_id = d.id AND rt.user_slug = ?) AS my_score,
+               (SELECT COUNT(*) FROM meal_photos mp WHERE mp.dinner_id = d.id) AS photo_count
         FROM dinners d
         LEFT JOIN restaurants r ON r.id = d.restaurant_id
         WHERE ${where.join(' AND ')}

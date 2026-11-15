@@ -2,10 +2,12 @@ import { buildWhatsNewPayload } from './changelog';
 import { buildDirectionsUrl, syncLockedPlaceToCalendar } from './gcal';
 import { sendWebPushToSubscribers } from './push';
 import type {
+  AllowedPhotoMime,
   DinnerRow,
   Env,
   HostStatRow,
   LuckyPool,
+  MealPhotoViewRow,
   NightVoteViewRow,
   RatingViewRow,
   RestaurantRow,
@@ -344,6 +346,9 @@ async function syncRatingsForDinnerPlace(
   prevRestaurantId: number | null,
 ): Promise<void> {
   await db.prepare('UPDATE ratings SET restaurant_id = ? WHERE dinner_id = ?')
+    .bind(newRestaurantId, dinnerId)
+    .run();
+  await db.prepare('UPDATE meal_photos SET restaurant_id = ? WHERE dinner_id = ?')
     .bind(newRestaurantId, dinnerId)
     .run();
   await recalcRestaurantAvgRating(db, newRestaurantId);
@@ -709,6 +714,8 @@ export async function createPlacePoll(
       .bind(targetDay, newDate, isoWeekKey(newDate), drawIdsJson, dinnerId)
       .run();
   }
+
+  await env.DB.prepare('UPDATE meal_photos SET restaurant_id = NULL WHERE dinner_id = ?').bind(dinnerId).run();
 
   await env.DB.prepare(
     `DELETE FROM noon_votes WHERE dinner_id = ? AND restaurant_id NOT IN (${candIds.map(() => '?').join(',')})`,
@@ -1224,6 +1231,9 @@ export async function backfillDinnerPlace(
   await db.prepare('UPDATE ratings SET restaurant_id = ? WHERE dinner_id = ?')
     .bind(restaurant.id, dinnerId)
     .run();
+  await db.prepare('UPDATE meal_photos SET restaurant_id = ? WHERE dinner_id = ?')
+    .bind(restaurant.id, dinnerId)
+    .run();
   await recalcRestaurantAvgRating(db, restaurant.id);
   if (prevRestaurantId && prevRestaurantId !== restaurant.id) {
     await recalcRestaurantAvgRating(db, prevRestaurantId);
@@ -1232,6 +1242,376 @@ export async function backfillDinnerPlace(
   return {
     dinner: (await db.prepare('SELECT * FROM dinners WHERE id = ?').bind(dinnerId).first<DinnerRow>())!,
     restaurant: (await db.prepare('SELECT * FROM restaurants WHERE id = ?').bind(restaurant.id).first<RestaurantRow>())!,
+  };
+}
+
+export const MAX_MEAL_PHOTO_BYTES = 600 * 1024;
+export const MAX_PHOTOS_PER_USER_DINNER = 12;
+
+export const ALLOWED_PHOTO_MIMES = new Set<AllowedPhotoMime>([
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/gif',
+]);
+
+export function base64ToUint8(b64: string): Uint8Array {
+  const cleaned = b64.replace(/\s+/g, '').replace(/-/g, '+').replace(/_/g, '/');
+  if (!cleaned || !/^[A-Za-z0-9+/]*={0,2}$/.test(cleaned)) {
+    throw new Error('Invalid base64 image data');
+  }
+  const padded = cleaned.length % 4 === 0 ? cleaned : cleaned + '='.repeat(4 - (cleaned.length % 4));
+  let binary = '';
+  try {
+    binary = atob(padded);
+  } catch {
+    throw new Error('Invalid base64 image data');
+  }
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+export function uint8ToBase64(bytes: Uint8Array): string {
+  const chunkSize = 8192;
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const end = Math.min(bytes.length, i + chunkSize);
+    let chunk = '';
+    for (let j = i; j < end; j++) {
+      chunk += String.fromCharCode(bytes[j]);
+    }
+    binary += chunk;
+  }
+  return btoa(binary);
+}
+
+export function detectImageMime(bytes: Uint8Array): AllowedPhotoMime | null {
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return 'image/jpeg';
+  }
+  if (
+    bytes.length >= 8 &&
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47 &&
+    bytes[4] === 0x0d &&
+    bytes[5] === 0x0a &&
+    bytes[6] === 0x1a &&
+    bytes[7] === 0x0a
+  ) {
+    return 'image/png';
+  }
+  if (
+    bytes.length >= 6 &&
+    bytes[0] === 0x47 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x38 &&
+    (bytes[4] === 0x37 || bytes[4] === 0x39) &&
+    bytes[5] === 0x61
+  ) {
+    return 'image/gif';
+  }
+  if (
+    bytes.length >= 12 &&
+    bytes[0] === 0x52 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x46 &&
+    bytes[8] === 0x57 &&
+    bytes[9] === 0x45 &&
+    bytes[10] === 0x42 &&
+    bytes[11] === 0x50
+  ) {
+    return 'image/webp';
+  }
+  return null;
+}
+
+export function parsePhotoDataInput(imageData: string): {
+  mimeType: AllowedPhotoMime;
+  bytes: Uint8Array;
+  canonicalBase64: string;
+  byteSize: number;
+} {
+  const trimmed = imageData.trim();
+  if (!trimmed) {
+    throw new Error('Image data is required');
+  }
+  let rawB64 = trimmed;
+  if (trimmed.startsWith('data:')) {
+    const commaIdx = trimmed.indexOf(',');
+    if (commaIdx < 0) {
+      throw new Error('Invalid image data URL');
+    }
+    const header = trimmed.slice(5, commaIdx).toLowerCase();
+    if (!header.includes(';base64')) {
+      throw new Error('Image data URL must be base64 encoded');
+    }
+    rawB64 = trimmed.slice(commaIdx + 1).trim();
+  }
+  const maxB64Len = Math.ceil((MAX_MEAL_PHOTO_BYTES * 4) / 3) + 64;
+  if (rawB64.replace(/\s+/g, '').length > maxB64Len) {
+    throw new Error('Photo is too large (max 600 KB). Try choosing a smaller photo.');
+  }
+  const bytes = base64ToUint8(rawB64);
+  if (bytes.byteLength === 0) {
+    throw new Error('Uploaded photo is empty');
+  }
+  if (bytes.byteLength > MAX_MEAL_PHOTO_BYTES) {
+    throw new Error('Photo is too large (max 600 KB). Try choosing a smaller photo.');
+  }
+  const mimeType = detectImageMime(bytes);
+  if (!mimeType || !ALLOWED_PHOTO_MIMES.has(mimeType)) {
+    throw new Error('Unsupported image format. Please upload a JPEG, PNG, WebP, or GIF photo.');
+  }
+  return {
+    mimeType,
+    bytes,
+    canonicalBase64: uint8ToBase64(bytes),
+    byteSize: bytes.byteLength,
+  };
+}
+
+interface RawMealPhotoSelect {
+  id: number;
+  dinner_id: number;
+  restaurant_id: number | null;
+  user_slug: string;
+  user_name: string | null;
+  dish: string;
+  caption: string;
+  mime_type: string;
+  width: number | null;
+  height: number | null;
+  byte_size: number;
+  created_at: string;
+  dinner_date?: string;
+  day_of_week?: string;
+  host_label?: string;
+  restaurant_name?: string | null;
+}
+
+function mapMealPhotoRow(row: RawMealPhotoSelect): MealPhotoViewRow {
+  const id = Number(row.id);
+  const mimeType = ALLOWED_PHOTO_MIMES.has(row.mime_type as AllowedPhotoMime)
+    ? (row.mime_type as AllowedPhotoMime)
+    : 'image/jpeg';
+  return {
+    id,
+    dinner_id: Number(row.dinner_id),
+    restaurant_id: row.restaurant_id !== null && row.restaurant_id !== undefined ? Number(row.restaurant_id) : null,
+    user_slug: row.user_slug,
+    user_name: row.user_name ?? null,
+    dish: row.dish || '',
+    caption: row.caption || '',
+    mime_type: mimeType,
+    width: row.width !== null && row.width !== undefined ? Number(row.width) : null,
+    height: row.height !== null && row.height !== undefined ? Number(row.height) : null,
+    byte_size: Number(row.byte_size),
+    created_at: row.created_at,
+    image_url: `/api/photos/${id}/image`,
+    dinner_date: row.dinner_date,
+    day_of_week: row.day_of_week,
+    host_label: row.host_label,
+    restaurant_name: row.restaurant_name,
+  };
+}
+
+const MEAL_PHOTO_SELECT_SQL = `
+  SELECT mp.id, mp.dinner_id, mp.restaurant_id, mp.user_slug, u.name AS user_name,
+         mp.dish, mp.caption, mp.mime_type, mp.width, mp.height, mp.byte_size, mp.created_at,
+         d.dinner_date, d.day_of_week, d.host_label, r.name AS restaurant_name
+  FROM meal_photos mp
+  LEFT JOIN users u ON u.slug = mp.user_slug
+  LEFT JOIN dinners d ON d.id = mp.dinner_id
+  LEFT JOIN restaurants r ON r.id = COALESCE(mp.restaurant_id, d.restaurant_id)
+`;
+
+export async function getDinnerPhotos(db: D1Database, dinnerId: number): Promise<MealPhotoViewRow[]> {
+  const rows =
+    (
+      await db
+        .prepare(`${MEAL_PHOTO_SELECT_SQL} WHERE mp.dinner_id = ? ORDER BY mp.created_at DESC, mp.id DESC`)
+        .bind(dinnerId)
+        .all<RawMealPhotoSelect>()
+    ).results ?? [];
+  return rows.map(mapMealPhotoRow);
+}
+
+export async function getPlacePhotos(db: D1Database, placeId: number, limit = 40): Promise<MealPhotoViewRow[]> {
+  const safeLimit = Math.max(1, Math.min(60, Math.trunc(limit)));
+  const rows =
+    (
+      await db
+        .prepare(
+          `${MEAL_PHOTO_SELECT_SQL}
+           WHERE mp.restaurant_id = ?
+           ORDER BY COALESCE(d.dinner_date, mp.created_at) DESC, mp.created_at DESC, mp.id DESC
+           LIMIT ?`,
+        )
+        .bind(placeId, safeLimit)
+        .all<RawMealPhotoSelect>()
+    ).results ?? [];
+  return rows.map(mapMealPhotoRow);
+}
+
+export async function listMealPhotos(
+  db: D1Database,
+  opts: { dinnerId?: number; placeId?: number; limit?: number } = {},
+): Promise<MealPhotoViewRow[]> {
+  if (opts.dinnerId !== undefined) {
+    return getDinnerPhotos(db, opts.dinnerId);
+  }
+  if (opts.placeId !== undefined) {
+    return getPlacePhotos(db, opts.placeId, opts.limit ?? 40);
+  }
+  const safeLimit = Math.max(1, Math.min(60, Math.trunc(opts.limit ?? 24)));
+  const rows =
+    (
+      await db
+        .prepare(`${MEAL_PHOTO_SELECT_SQL} ORDER BY mp.created_at DESC, mp.id DESC LIMIT ?`)
+        .bind(safeLimit)
+        .all<RawMealPhotoSelect>()
+    ).results ?? [];
+  return rows.map(mapMealPhotoRow);
+}
+
+export async function uploadMealPhoto(
+  db: D1Database,
+  userSlug: string,
+  input: {
+    dinnerId: number;
+    imageData: string;
+    mimeType?: string;
+    dish?: string;
+    caption?: string;
+    width?: number | null;
+    height?: number | null;
+  },
+): Promise<MealPhotoViewRow> {
+  const dinner = await db
+    .prepare('SELECT id, restaurant_id FROM dinners WHERE id = ?')
+    .bind(input.dinnerId)
+    .first<{ id: number; restaurant_id: number | null }>();
+  if (!dinner) throw new Error('Dinner not found');
+
+  const countRow = await db
+    .prepare('SELECT COUNT(*) AS cnt FROM meal_photos WHERE dinner_id = ? AND user_slug = ?')
+    .bind(input.dinnerId, userSlug)
+    .first<{ cnt: number }>();
+  if (Number(countRow?.cnt ?? 0) >= MAX_PHOTOS_PER_USER_DINNER) {
+    throw new Error('Maximum of 12 photos per member for a single dinner');
+  }
+
+  const parsed = parsePhotoDataInput(input.imageData);
+  const cleanDish = (input.dish ?? '').trim().slice(0, 140);
+  const cleanCaption = (input.caption ?? '').trim().slice(0, 300);
+  const cleanWidth =
+    typeof input.width === 'number' && Number.isInteger(input.width) && input.width > 0 && input.width <= 12000
+      ? input.width
+      : null;
+  const cleanHeight =
+    typeof input.height === 'number' && Number.isInteger(input.height) && input.height > 0 && input.height <= 12000
+      ? input.height
+      : null;
+
+  const ins = await db
+    .prepare(
+      `INSERT INTO meal_photos (dinner_id, restaurant_id, user_slug, dish, caption, mime_type, width, height, byte_size, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+    )
+    .bind(
+      input.dinnerId,
+      dinner.restaurant_id ?? null,
+      userSlug,
+      cleanDish,
+      cleanCaption,
+      parsed.mimeType,
+      cleanWidth,
+      cleanHeight,
+      parsed.byteSize,
+    )
+    .run();
+
+  const photoId = Number(ins.meta.last_row_id);
+  try {
+    await db
+      .prepare('INSERT INTO meal_photo_blobs (photo_id, image_base64) VALUES (?, ?)')
+      .bind(photoId, parsed.canonicalBase64)
+      .run();
+  } catch (err) {
+    await db.prepare('DELETE FROM meal_photos WHERE id = ?').bind(photoId).run().catch(() => {});
+    throw err;
+  }
+
+  const created = await db
+    .prepare(`${MEAL_PHOTO_SELECT_SQL} WHERE mp.id = ?`)
+    .bind(photoId)
+    .first<RawMealPhotoSelect>();
+  if (!created) throw new Error('Failed to load uploaded meal photo');
+  return mapMealPhotoRow(created);
+}
+
+export async function getMealPhotoBinary(
+  db: D1Database,
+  photoId: number,
+): Promise<{ id: number; mimeType: AllowedPhotoMime; bytes: Uint8Array; byteSize: number; createdAt: string } | null> {
+  const row = await db
+    .prepare(
+      `SELECT mp.id, mp.mime_type, mp.byte_size, mp.created_at, b.image_base64
+       FROM meal_photos mp
+       JOIN meal_photo_blobs b ON b.photo_id = mp.id
+       WHERE mp.id = ?`,
+    )
+    .bind(photoId)
+    .first<{
+      id: number;
+      mime_type: string;
+      byte_size: number;
+      created_at: string;
+      image_base64: string;
+    }>();
+  if (!row) return null;
+
+  const mimeType = ALLOWED_PHOTO_MIMES.has(row.mime_type as AllowedPhotoMime)
+    ? (row.mime_type as AllowedPhotoMime)
+    : 'image/jpeg';
+  const bytes = base64ToUint8(row.image_base64);
+  return {
+    id: Number(row.id),
+    mimeType,
+    bytes,
+    byteSize: Number(row.byte_size),
+    createdAt: row.created_at,
+  };
+}
+
+export async function deleteMealPhoto(
+  db: D1Database,
+  photoId: number,
+  actorSlug: string,
+): Promise<{ deletedId: number; dinnerId: number; restaurantId: number | null }> {
+  const row = await db
+    .prepare('SELECT id, dinner_id, restaurant_id, user_slug FROM meal_photos WHERE id = ?')
+    .bind(photoId)
+    .first<{ id: number; dinner_id: number; restaurant_id: number | null; user_slug: string }>();
+  if (!row) throw new Error('Photo not found');
+  if (row.user_slug !== actorSlug) {
+    throw new Error('Forbidden: you can only delete your own meal photos');
+  }
+
+  await db.prepare('DELETE FROM meal_photo_blobs WHERE photo_id = ?').bind(photoId).run();
+  await db.prepare('DELETE FROM meal_photos WHERE id = ?').bind(photoId).run();
+
+  return {
+    deletedId: Number(row.id),
+    dinnerId: Number(row.dinner_id),
+    restaurantId: row.restaurant_id !== null && row.restaurant_id !== undefined ? Number(row.restaurant_id) : null,
   };
 }
 
@@ -1245,7 +1625,8 @@ export async function getPlaceReviews(
   const place = await db
     .prepare(
       `SELECT ${safeRestaurantSelectSql('r')},
-              (SELECT COUNT(*) FROM ratings rt WHERE rt.restaurant_id = r.id) AS rating_count
+              (SELECT COUNT(*) FROM ratings rt WHERE rt.restaurant_id = r.id) AS rating_count,
+              (SELECT COUNT(*) FROM meal_photos mp WHERE mp.restaurant_id = r.id) AS photo_count
        FROM restaurants r
        WHERE r.id = ?`,
     )
@@ -1275,7 +1656,8 @@ export async function getPlaceReviews(
         `SELECT d.id, d.week_key, d.dinner_date, d.day_of_week, d.host_slug, d.host_label,
                 (SELECT rt.score FROM ratings rt WHERE rt.dinner_id = d.id AND rt.user_slug = ?) AS my_score,
                 (SELECT COUNT(*) FROM ratings rt WHERE rt.dinner_id = d.id) AS rating_count,
-                (SELECT ROUND(AVG(rt.score), 2) FROM ratings rt WHERE rt.dinner_id = d.id) AS dinner_avg_rating
+                (SELECT ROUND(AVG(rt.score), 2) FROM ratings rt WHERE rt.dinner_id = d.id) AS dinner_avg_rating,
+                (SELECT COUNT(*) FROM meal_photos mp WHERE mp.dinner_id = d.id) AS photo_count
          FROM dinners d
          WHERE d.restaurant_id = ? AND d.status = 'completed' AND d.dinner_date <= ?
          ORDER BY d.dinner_date DESC
@@ -1285,7 +1667,9 @@ export async function getPlaceReviews(
       .all()
   ).results ?? [];
 
-  return { place, reviews, visits };
+  const photos = await getPlacePhotos(db, placeId, 40);
+
+  return { place, reviews, visits, photos };
 }
 
 export async function getDinnerReviews(db: D1Database, dinnerId: number) {
@@ -1316,7 +1700,9 @@ export async function getDinnerReviews(db: D1Database, dinnerId: number) {
       .all<RatingViewRow>()
   ).results ?? [];
 
-  return { dinner, reviews };
+  const photos = await getDinnerPhotos(db, dinnerId);
+
+  return { dinner, reviews, photos };
 }
 
 async function signStandardWebhook(secret: string, msgId: string, timestamp: string, payload: string): Promise<string> {
@@ -1468,12 +1854,14 @@ export async function getBootstrapPayload(env: Env, currentUser: UserRow) {
   }> = [];
   let headcount: Awaited<ReturnType<typeof computeDinnerHeadcount>> | null = null;
   let ratings: Array<{ user_slug: string; score: number; dish: string; comment: string }> = [];
+  let activePhotos: MealPhotoViewRow[] = [];
 
   if (active) {
     if (active.restaurant_id) {
       activePlace = await env.DB.prepare(
         `SELECT ${safeRestaurantSelectSql('r')},
-                (SELECT COUNT(*) FROM ratings rt WHERE rt.restaurant_id = r.id) AS rating_count
+                (SELECT COUNT(*) FROM ratings rt WHERE rt.restaurant_id = r.id) AS rating_count,
+                (SELECT COUNT(*) FROM meal_photos mp WHERE mp.restaurant_id = r.id) AS photo_count
          FROM restaurants r
          WHERE r.id = ?`,
       )
@@ -1495,13 +1883,15 @@ export async function getBootstrapPayload(env: Env, currentUser: UserRow) {
     ).results as typeof rsvps;
     headcount = await computeDinnerHeadcount(env.DB, active.id);
     ratings = (await env.DB.prepare('SELECT user_slug, score, dish, comment FROM ratings WHERE dinner_id = ?').bind(active.id).all()).results as typeof ratings;
+    activePhotos = await getDinnerPhotos(env.DB, active.id);
 
     const ids = parseIdListJson(active.noon_draw_ids);
     if (ids.length > 0) {
       const candRows = (
         await env.DB.prepare(
           `SELECT ${safeRestaurantSelectSql('r')},
-                  (SELECT COUNT(*) FROM ratings rt WHERE rt.restaurant_id = r.id) AS rating_count
+                  (SELECT COUNT(*) FROM ratings rt WHERE rt.restaurant_id = r.id) AS rating_count,
+                  (SELECT COUNT(*) FROM meal_photos mp WHERE mp.restaurant_id = r.id) AS photo_count
            FROM restaurants r
            WHERE r.id IN (${ids.map(() => '?').join(',')})`,
         )
@@ -1533,7 +1923,8 @@ export async function getBootstrapPayload(env: Env, currentUser: UserRow) {
               r.visit_count AS restaurant_visits,
               r.avg_rating AS restaurant_avg_rating,
               (SELECT COUNT(*) FROM ratings rt WHERE rt.dinner_id = d.id) AS rating_count,
-              (SELECT ROUND(AVG(rt.score), 2) FROM ratings rt WHERE rt.dinner_id = d.id) AS dinner_avg_rating
+              (SELECT ROUND(AVG(rt.score), 2) FROM ratings rt WHERE rt.dinner_id = d.id) AS dinner_avg_rating,
+              (SELECT COUNT(*) FROM meal_photos mp WHERE mp.dinner_id = d.id) AS photo_count
        FROM dinners d
        LEFT JOIN restaurants r ON r.id = d.restaurant_id
        WHERE d.status = 'completed'
@@ -1556,6 +1947,7 @@ export async function getBootstrapPayload(env: Env, currentUser: UserRow) {
           .all<RatingViewRow>()
       ).results ?? []
     : [];
+  const lastDinnerPhotos: MealPhotoViewRow[] = lastDinnerId ? await getDinnerPhotos(env.DB, lastDinnerId) : [];
 
   const counts = await env.DB.prepare(
     `SELECT
@@ -1699,11 +2091,13 @@ export async function getBootstrapPayload(env: Env, currentUser: UserRow) {
           rsvps,
           headcount,
           ratings,
+          photos: activePhotos,
         }
       : null,
     upcoming,
     recentDinners,
     lastDinnerRatings,
+    lastDinnerPhotos,
     today: todayStr,
     vapidPublicKey: env.VAPID_PUBLIC_KEY ?? null,
     appUrl: env.APP_URL,

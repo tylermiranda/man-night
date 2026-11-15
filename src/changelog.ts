@@ -11,6 +11,18 @@ import type { WhatsNewEntry, WhatsNewPayload, WhatsNewViewEntry } from './types'
  */
 export const WHATS_NEW_RELEASES: readonly WhatsNewEntry[] = [
   {
+    id: '2026-11-15-meal-pictures',
+    date: '2026-11-15',
+    kind: 'feature',
+    title: '📷 Meal Pictures & Photo Galleries',
+    summary:
+      'Snap or upload pictures of what you ordered right from This Week, Last Dinner, Places, or History—with dish captions, full-screen photo galleries, and restaurant photo feeds.',
+    creditSlug: 'jacob',
+    creditName: 'Jacob',
+    creditRole: 'idea',
+    issueNumber: 12,
+  },
+  {
     id: '2026-11-15-whats-new',
     date: '2026-11-15',
     kind: 'feature',

@@ -21,6 +21,7 @@ const migration0005Sql = readFileSync(resolve(rootDir, 'migrations/0005_night_vo
 const migration0006Sql = readFileSync(resolve(rootDir, 'migrations/0006_sellout_tracking.sql'), 'utf8');
 const migration0007Sql = readFileSync(resolve(rootDir, 'migrations/0007_extra_guests.sql'), 'utf8');
 const migration0008Sql = readFileSync(resolve(rootDir, 'migrations/0008_whats_new.sql'), 'utf8');
+const migration0009Sql = readFileSync(resolve(rootDir, 'migrations/0009_meal_photos.sql'), 'utf8');
 
 function makeEnv(db: D1Database, overrides: Partial<Env> = {}): Env {
   return {
@@ -57,6 +58,7 @@ describe('Man Night PWA Worker & Seed', () => {
     await db.exec(migration0006Sql);
     await db.exec(migration0007Sql);
     await db.exec(migration0008Sql);
+    await db.exec(migration0009Sql);
     env = makeEnv(db);
   });
 
@@ -1625,15 +1627,16 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(appJs).toContain('I’m Feeling Lucky');
     expect(stylesCss).toContain('.btn-lucky');
     expect(stylesCss).toContain('.lucky-spot-card');
-    expect(swJs).toContain("CACHE_NAME = 'man-night-shell-v10'");
+    expect(swJs).toContain("CACHE_NAME = 'man-night-shell-v11'");
   });
 
   it('tracks What’s New releases, crew idea/bug credits, per-user seen state, and UI wiring (issue #11)', async () => {
     // 1. Changelog integrity
     const seenIds = new Set<string>();
-    expect(WHATS_NEW_RELEASES.length).toBeGreaterThanOrEqual(10);
-    expect(WHATS_NEW_RELEASES[0].id).toBe('2026-11-15-whats-new');
-    expect(WHATS_NEW_RELEASES[0].issueNumber).toBe(11);
+    expect(WHATS_NEW_RELEASES.length).toBeGreaterThanOrEqual(11);
+    expect(WHATS_NEW_RELEASES[0].id).toBe('2026-11-15-meal-pictures');
+    expect(WHATS_NEW_RELEASES[0].issueNumber).toBe(12);
+    expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-15-whats-new' && e.issueNumber === 11)).toBe(true);
     for (const entry of WHATS_NEW_RELEASES) {
       expect(seenIds.has(entry.id)).toBe(false);
       seenIds.add(entry.id);
@@ -1707,12 +1710,14 @@ describe('Man Night PWA Worker & Seed', () => {
         entries: Array<{ id: string; isNew: boolean; creditLabel: string | null }>;
       };
     };
+    const latestReleaseId = WHATS_NEW_RELEASES[0].id;
+    const previousReleaseId = WHATS_NEW_RELEASES[1].id;
     expect(bootInit.user.whats_new_seen_id).toBeNull();
-    expect(bootInit.whatsNew.latestId).toBe('2026-11-15-whats-new');
+    expect(bootInit.whatsNew.latestId).toBe(latestReleaseId);
     expect(bootInit.whatsNew.seenId).toBeNull();
     expect(bootInit.whatsNew.hasUnseen).toBe(true);
     expect(bootInit.whatsNew.unseenCount).toBe(WHATS_NEW_RELEASES.length);
-    expect(bootInit.whatsNew.entries[0].creditLabel).toBe('Idea by Tyler');
+    expect(bootInit.whatsNew.entries[0].creditLabel).toBe('Idea by Jacob');
 
     const getRes = await worker.fetch(makeReq('/api/whats-new'), env);
     expect(getRes.status).toBe(200);
@@ -1720,14 +1725,14 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(getBody.hasUnseen).toBe(true);
     expect(getBody.unseenCount).toBe(WHATS_NEW_RELEASES.length);
 
-    // 4. Partial seenId ('2026-11-15-feeling-lucky') leaves exactly 1 unseen release (#11)
+    // 4. Partial seenId leaves exactly 1 unseen release (latest)
     const partialRes = await worker.fetch(
-      makeReq('/api/user/whats-new', 'POST', { seenId: '2026-11-15-feeling-lucky' }),
+      makeReq('/api/user/whats-new', 'POST', { seenId: previousReleaseId }),
       env,
     );
     expect(partialRes.status).toBe(200);
     const afterPartial = (await (await worker.fetch(makeReq('/api/whats-new'), env)).json()) as typeof bootInit.whatsNew;
-    expect(afterPartial.seenId).toBe('2026-11-15-feeling-lucky');
+    expect(afterPartial.seenId).toBe(previousReleaseId);
     expect(afterPartial.hasUnseen).toBe(true);
     expect(afterPartial.unseenCount).toBe(1);
     expect(afterPartial.entries[0].isNew).toBe(true);
@@ -1738,10 +1743,10 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(ackRes.status).toBe(200);
     const ackData = (await ackRes.json()) as { ok: boolean; seenId: string };
     expect(ackData.ok).toBe(true);
-    expect(ackData.seenId).toBe('2026-11-15-whats-new');
+    expect(ackData.seenId).toBe(latestReleaseId);
 
     const tylerBootAfter = (await (await worker.fetch(makeReq('/api/bootstrap'), env)).json()) as typeof bootInit;
-    expect(tylerBootAfter.user.whats_new_seen_id).toBe('2026-11-15-whats-new');
+    expect(tylerBootAfter.user.whats_new_seen_id).toBe(latestReleaseId);
     expect(tylerBootAfter.whatsNew.hasUnseen).toBe(false);
     expect(tylerBootAfter.whatsNew.unseenCount).toBe(0);
     expect(tylerBootAfter.whatsNew.entries.every((e) => !e.isNew)).toBe(true);
@@ -1783,6 +1788,251 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(appJs).toContain('whatsNewOpen');
     expect(stylesCss).toContain('.whats-new-card');
     expect(stylesCss).toContain('.whats-new-credit');
-    expect(swJs).toContain("CACHE_NAME = 'man-night-shell-v10'");
+    expect(swJs).toContain("CACHE_NAME = 'man-night-shell-v11'");
+  });
+
+  it('uploads, serves, syncs, lists, and deletes meal photos across dinners and places (issue #12)', async () => {
+    const toB64 = (bytes: Uint8Array) => Buffer.from(bytes).toString('base64');
+    const sampleJpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01, 0xff, 0xd9]);
+    const samplePng = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d]);
+    const sampleWebp = new Uint8Array([0x52, 0x49, 0x46, 0x46, 0x24, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50, 0x56, 0x50]);
+    const sampleGif = new Uint8Array([0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00, 0x80, 0x00, 0x3b]);
+
+    // 1. Jacob uploads a JPEG photo to Last Dinner (id: 614, El Mexico Cafe)
+    const uploadRes = await worker.fetch(
+      makeReq(
+        '/api/photos',
+        'POST',
+        {
+          dinnerId: 614,
+          imageData: `data:image/jpeg;base64,${toB64(sampleJpeg)}`,
+          dish: 'Enchiladas Suizas',
+          caption: 'Extra green sauce',
+          width: 1200,
+          height: 900,
+        },
+        { 'Cf-Access-Authenticated-User-Email': 'werth6of7@gmail.com' },
+      ),
+      env,
+    );
+    expect(uploadRes.status).toBe(201);
+    const uploadData = (await uploadRes.json()) as {
+      ok: boolean;
+      photo: {
+        id: number;
+        dinner_id: number;
+        restaurant_id: number | null;
+        user_slug: string;
+        user_name: string;
+        dish: string;
+        caption: string;
+        mime_type: string;
+        byte_size: number;
+        image_url: string;
+        restaurant_name: string | null;
+      };
+    };
+    expect(uploadData.ok).toBe(true);
+    expect(uploadData.photo.dinner_id).toBe(614);
+    expect(uploadData.photo.user_slug).toBe('jacob');
+    expect(uploadData.photo.user_name).toBe('Jacob');
+    expect(uploadData.photo.dish).toBe('Enchiladas Suizas');
+    expect(uploadData.photo.caption).toBe('Extra green sauce');
+    expect(uploadData.photo.mime_type).toBe('image/jpeg');
+    expect(uploadData.photo.byte_size).toBe(sampleJpeg.length);
+    expect(uploadData.photo.restaurant_id).toBeTruthy();
+    expect(uploadData.photo.restaurant_name).toBe('El Mexico Cafe');
+    expect(uploadData.photo.image_url).toBe(`/api/photos/${uploadData.photo.id}/image`);
+
+    const jacobPhotoId = uploadData.photo.id;
+    const elMexicoPlaceId = uploadData.photo.restaurant_id!;
+
+    // 2. Binary image endpoint enforces auth and serves bytes + ETag/304 + nosniff
+    const unauthImgRes = await worker.fetch(
+      new Request(`https://dinner.tylermiranda.com/api/photos/${jacobPhotoId}/image`),
+      env,
+    );
+    expect(unauthImgRes.status).toBe(403);
+
+    const imgRes = await worker.fetch(makeReq(`/api/photos/${jacobPhotoId}/image`), env);
+    expect(imgRes.status).toBe(200);
+    expect(imgRes.headers.get('Content-Type')).toBe('image/jpeg');
+    expect(imgRes.headers.get('X-Content-Type-Options')).toBe('nosniff');
+    expect(imgRes.headers.get('Content-Security-Policy')).toBe("default-src 'none'");
+    const etag = imgRes.headers.get('ETag');
+    expect(etag).toBe(`"meal-photo-${jacobPhotoId}"`);
+    const fetchedBytes = new Uint8Array(await imgRes.arrayBuffer());
+    expect(Array.from(fetchedBytes)).toEqual(Array.from(sampleJpeg));
+
+    const notModRes = await worker.fetch(
+      makeReq(`/api/photos/${jacobPhotoId}/image`, 'GET', undefined, { 'If-None-Match': etag! }),
+      env,
+    );
+    expect(notModRes.status).toBe(304);
+
+    // 3. Surfacing across /api/bootstrap, /api/dinners/:id/reviews, /api/places, /api/places/:id/reviews, /api/history, /api/photos
+    const boot = (await (await worker.fetch(makeReq('/api/bootstrap'), env)).json()) as {
+      lastDinnerPhotos: Array<{ id: number; user_name: string; dish: string }>;
+      recentDinners: Array<{ id: number; photo_count: number }>;
+    };
+    expect(boot.lastDinnerPhotos.length).toBe(1);
+    expect(boot.lastDinnerPhotos[0].id).toBe(jacobPhotoId);
+    expect(boot.lastDinnerPhotos[0].user_name).toBe('Jacob');
+    expect(boot.lastDinnerPhotos[0].dish).toBe('Enchiladas Suizas');
+    expect(boot.recentDinners[0].id).toBe(614);
+    expect(boot.recentDinners[0].photo_count).toBe(1);
+
+    const dinnerRevData = (await (await worker.fetch(makeReq('/api/dinners/614/reviews'), env)).json()) as {
+      photos: Array<{ id: number }>;
+    };
+    expect(dinnerRevData.photos.map((p) => p.id)).toEqual([jacobPhotoId]);
+
+    const placesData = (await (await worker.fetch(makeReq('/api/places'), env)).json()) as {
+      places: Array<{ id: number; photo_count: number }>;
+    };
+    const elMexicoRow = placesData.places.find((p) => p.id === elMexicoPlaceId)!;
+    expect(elMexicoRow.photo_count).toBe(1);
+
+    const placeRevData = (await (await worker.fetch(makeReq(`/api/places/${elMexicoPlaceId}/reviews`), env)).json()) as {
+      place: { photo_count: number };
+      photos: Array<{ id: number }>;
+      visits: Array<{ id: number; photo_count: number }>;
+    };
+    expect(placeRevData.place.photo_count).toBe(1);
+    expect(placeRevData.photos.map((p) => p.id)).toEqual([jacobPhotoId]);
+    expect(placeRevData.visits[0].id).toBe(614);
+    expect(placeRevData.visits[0].photo_count).toBe(1);
+
+    const histData = (await (await worker.fetch(makeReq('/api/history?limit=10'), env)).json()) as {
+      items: Array<{ id: number; photo_count: number }>;
+    };
+    expect(histData.items.find((i) => i.id === 614)?.photo_count).toBe(1);
+
+    const listPhotosRes = (await (await worker.fetch(makeReq(`/api/photos?placeId=${elMexicoPlaceId}`), env)).json()) as {
+      photos: Array<{ id: number }>;
+    };
+    expect(listPhotosRes.photos.map((p) => p.id)).toEqual([jacobPhotoId]);
+
+    // 4. WebP & GIF uploads also detect magic bytes accurately
+    const webpRes = await worker.fetch(
+      makeReq('/api/photos', 'POST', { dinnerId: 614, imageData: toB64(sampleWebp), caption: 'WebP raw' }),
+      env,
+    );
+    expect(webpRes.status).toBe(201);
+    expect(((await webpRes.json()) as { photo: { mime_type: string } }).photo.mime_type).toBe('image/webp');
+
+    const gifRes = await worker.fetch(
+      makeReq('/api/photos', 'POST', { dinnerId: 614, imageData: `data:image/gif;base64,${toB64(sampleGif)}` }),
+      env,
+    );
+    expect(gifRes.status).toBe(201);
+    expect(((await gifRes.json()) as { photo: { mime_type: string } }).photo.mime_type).toBe('image/gif');
+
+    // 5. Restaurant ID syncing on active week (pick-place + create-poll) and historical backfill
+    const weekUploadRes = await worker.fetch(
+      makeReq('/api/photos', 'POST', { imageData: `data:image/png;base64,${toB64(samplePng)}`, dish: 'PNG Plate' }),
+      env,
+    );
+    expect(weekUploadRes.status).toBe(201);
+    const weekPhoto = ((await weekUploadRes.json()) as { photo: { id: number; dinner_id: number; restaurant_id: number | null; mime_type: string } }).photo;
+    expect(weekPhoto.mime_type).toBe('image/png');
+    expect(weekPhoto.restaurant_id).toBeNull();
+
+    const anotherPlaceId = placesData.places.find((p) => p.id !== elMexicoPlaceId)!.id;
+    const thirdPlaceId = placesData.places.find((p) => p.id !== elMexicoPlaceId && p.id !== anotherPlaceId)!.id;
+    expect((await worker.fetch(makeReq('/api/week/pick-place', 'POST', { dinnerId: weekPhoto.dinner_id, restaurantId: anotherPlaceId }), env)).status).toBe(200);
+
+    const syncedRow = await env.DB.prepare('SELECT restaurant_id FROM meal_photos WHERE id = ?')
+      .bind(weekPhoto.id)
+      .first<{ restaurant_id: number | null }>();
+    expect(syncedRow?.restaurant_id).toBe(anotherPlaceId);
+
+    // Re-opening a place poll clears restaurant_id on week's meal_photos
+    expect(
+      (
+        await worker.fetch(
+          makeReq('/api/week/create-poll', 'POST', { dinnerId: weekPhoto.dinner_id, restaurantIds: [anotherPlaceId, thirdPlaceId] }),
+          env,
+        )
+      ).status,
+    ).toBe(200);
+    const clearedRow = await env.DB.prepare('SELECT restaurant_id FROM meal_photos WHERE id = ?')
+      .bind(weekPhoto.id)
+      .first<{ restaurant_id: number | null }>();
+    expect(clearedRow?.restaurant_id).toBeNull();
+
+    // Backfilling an unplaced historical dinner updates meal_photos.restaurant_id
+    const unplacedDinner = await env.DB.prepare("SELECT id FROM dinners WHERE status = 'completed' AND restaurant_id IS NULL LIMIT 1").first<{ id: number }>();
+    expect(unplacedDinner?.id).toBeTruthy();
+    const unplacedPhotoRes = await worker.fetch(
+      makeReq('/api/photos', 'POST', { dinnerId: unplacedDinner!.id, imageData: `data:image/jpeg;base64,${toB64(sampleJpeg)}` }),
+      env,
+    );
+    expect(unplacedPhotoRes.status).toBe(201);
+    const unplacedPhotoId = ((await unplacedPhotoRes.json()) as { photo: { id: number } }).photo.id;
+    expect(
+      (await worker.fetch(makeReq(`/api/dinners/${unplacedDinner!.id}/backfill`, 'POST', { restaurantId: thirdPlaceId }), env)).status,
+    ).toBe(200);
+    const backfilledRow = await env.DB.prepare('SELECT restaurant_id FROM meal_photos WHERE id = ?')
+      .bind(unplacedPhotoId)
+      .first<{ restaurant_id: number | null }>();
+    expect(backfilledRow?.restaurant_id).toBe(thirdPlaceId);
+
+    // 6. Validation errors: SVG payload, invalid base64, empty, oversized > 600KB, unknown dinnerId
+    const svgB64 = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"></svg>', 'utf8').toString('base64');
+    expect(
+      (await worker.fetch(makeReq('/api/photos', 'POST', { dinnerId: 614, imageData: `data:image/svg+xml;base64,${svgB64}` }), env)).status,
+    ).toBe(400);
+    expect(
+      (await worker.fetch(makeReq('/api/photos', 'POST', { dinnerId: 614, imageData: '!!!not-base64!!!' }), env)).status,
+    ).toBe(400);
+    expect((await worker.fetch(makeReq('/api/photos', 'POST', { dinnerId: 614, imageData: '' }), env)).status).toBe(400);
+
+    const oversizedJpeg = new Uint8Array(610 * 1024);
+    oversizedJpeg[0] = 0xff;
+    oversizedJpeg[1] = 0xd8;
+    oversizedJpeg[2] = 0xff;
+    expect(
+      (await worker.fetch(makeReq('/api/photos', 'POST', { dinnerId: 614, imageData: `data:image/jpeg;base64,${toB64(oversizedJpeg)}` }), env)).status,
+    ).toBe(400);
+
+    expect(
+      (await worker.fetch(makeReq('/api/photos', 'POST', { dinnerId: 999999, imageData: `data:image/jpeg;base64,${toB64(sampleJpeg)}` }), env)).status,
+    ).toBe(404);
+
+    // 7. Ownership enforcement & full delete (including blob cleanup & 404 even with If-None-Match)
+    const forbiddenDel = await worker.fetch(makeReq(`/api/photos/${jacobPhotoId}`, 'DELETE'), env);
+    expect(forbiddenDel.status).toBe(403);
+
+    const ownerDel = await worker.fetch(
+      makeReq(`/api/photos/${jacobPhotoId}`, 'DELETE', undefined, {
+        'Cf-Access-Authenticated-User-Email': 'werth6of7@gmail.com',
+      }),
+      env,
+    );
+    expect(ownerDel.status).toBe(200);
+
+    const afterDelImg = await worker.fetch(
+      makeReq(`/api/photos/${jacobPhotoId}/image`, 'GET', undefined, { 'If-None-Match': etag! }),
+      env,
+    );
+    expect(afterDelImg.status).toBe(404);
+
+    const blobCountRow = await env.DB.prepare('SELECT COUNT(*) AS cnt FROM meal_photo_blobs WHERE photo_id = ?')
+      .bind(jacobPhotoId)
+      .first<{ cnt: number }>();
+    expect(Number(blobCountRow?.cnt ?? 0)).toBe(0);
+
+    // 8. Frontend & SW static wiring checks
+    const appJs = readFileSync(resolve(rootDir, 'public/app.js'), 'utf8');
+    const stylesCss = readFileSync(resolve(rootDir, 'public/styles.css'), 'utf8');
+    const swJs = readFileSync(resolve(rootDir, 'public/sw.js'), 'utf8');
+    expect(appJs).toContain('prepareMealPhotoUpload');
+    expect(appJs).toContain('openMealPhotoModal');
+    expect(appJs).toContain('openPhotoLightboxModal');
+    expect(appJs).toContain("api('/api/photos'");
+    expect(stylesCss).toContain('.meal-photo-grid');
+    expect(stylesCss).toContain('.meal-lightbox');
+    expect(swJs).toContain("CACHE_NAME = 'man-night-shell-v11'");
   });
 });

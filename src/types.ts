@@ -99,6 +99,7 @@ export interface DinnerRow {
   noon_draw_ids: string | null;
   place_locked_at: string | null;
   reminder_sent_at: string | null;
+  pre_event_sent_at: string | null;
   completed_at: string | null;
   is_historical: number;
 }
@@ -147,11 +148,22 @@ export interface TrackableDinnerRow {
   restaurant_name: string | null;
 }
 
+export interface DinnerHeadcount {
+  goingMembers: number;
+  lateMembers: number;
+  outMembers: number;
+  extraGuests: number;
+  totalGoing: number;
+  activeCrewCount: number;
+  unansweredCount: number;
+}
+
 export interface PushPayload {
   title: string;
   body: string;
   tag?: string;
   url?: string;
+  directionsUrl?: string;
   actions?: Array<{ action: string; title: string }>;
   dinnerId?: number;
 }

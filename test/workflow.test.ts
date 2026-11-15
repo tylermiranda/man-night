@@ -2,12 +2,12 @@ import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { runWeeklyCronTick } from '../src/cron';
+import { buildPreEventHeadcountPayload, buildThirtyMinReminderPayload, runWeeklyCronTick } from '../src/cron';
 import { buildDirectionsUrl, formatCalendarSummary } from '../src/gcal';
 import worker from '../src/index';
 import { createVapidAuthHeader, encryptWebPushPayload } from '../src/push';
-import type { Env } from '../src/types';
-import { addDaysToIsoDate, drawFourRandomPlaces } from '../src/workflow';
+import type { Env, RestaurantRow } from '../src/types';
+import { addDaysToIsoDate, castRsvp, drawFourRandomPlaces } from '../src/workflow';
 import { createTestD1 } from './d1-shim';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -18,6 +18,7 @@ const migration0003Sql = readFileSync(resolve(rootDir, 'migrations/0003_ratings_
 const migration0004Sql = readFileSync(resolve(rootDir, 'migrations/0004_fix_future_visit_dates.sql'), 'utf8');
 const migration0005Sql = readFileSync(resolve(rootDir, 'migrations/0005_night_vote_reasons.sql'), 'utf8');
 const migration0006Sql = readFileSync(resolve(rootDir, 'migrations/0006_sellout_tracking.sql'), 'utf8');
+const migration0007Sql = readFileSync(resolve(rootDir, 'migrations/0007_extra_guests.sql'), 'utf8');
 
 function makeEnv(db: D1Database, overrides: Partial<Env> = {}): Env {
   return {
@@ -52,6 +53,7 @@ describe('Man Night PWA Worker & Seed', () => {
     await db.exec(migration0004Sql);
     await db.exec(migration0005Sql);
     await db.exec(migration0006Sql);
+    await db.exec(migration0007Sql);
     env = makeEnv(db);
   });
 
@@ -1075,6 +1077,261 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(appJs).not.toContain('Notifications &amp; Phone App');
     expect(indexHtml).toContain('id="btn-report-top"');
     expect(indexHtml).toContain('data-action="open-settings"');
-    expect(swJs).toContain("CACHE_NAME = 'man-night-shell-v7'");
+    expect(swJs).toContain("CACHE_NAME = 'man-night-shell-v8'");
+  });
+
+  it('tracks optional extra guests on RSVPs, updates live headcount, validates bounds, and resets on sellout (issue #9)', async () => {
+    const tylerBootRes = await worker.fetch(makeReq('/api/bootstrap'), env);
+    expect(tylerBootRes.status).toBe(200);
+    const boot = (await tylerBootRes.json()) as {
+      thisWeek: { dinner: { id: number }; headcount: { activeCrewCount: number; unansweredCount: number } };
+    };
+    const dinnerId = boot.thisWeek.dinner.id;
+    expect(boot.thisWeek.headcount.activeCrewCount).toBe(6);
+    expect(boot.thisWeek.headcount.unansweredCount).toBe(6);
+
+    // Tyler marks In with 2 extra people
+    const r1 = await worker.fetch(
+      makeReq('/api/week/rsvp', 'POST', { dinnerId, status: 'in', extraGuests: 2 }),
+      env,
+    );
+    expect(r1.status).toBe(200);
+    const d1 = (await r1.json()) as {
+      ok: boolean;
+      headcount: {
+        goingMembers: number;
+        lateMembers: number;
+        outMembers: number;
+        extraGuests: number;
+        totalGoing: number;
+        unansweredCount: number;
+      };
+    };
+    expect(d1.headcount).toMatchObject({
+      goingMembers: 1,
+      lateMembers: 0,
+      outMembers: 0,
+      extraGuests: 2,
+      totalGoing: 3,
+      unansweredCount: 5,
+    });
+
+    // Update extra people anytime (2 -> 3)
+    const r2 = await worker.fetch(
+      makeReq('/api/week/rsvp', 'POST', { dinnerId, status: 'in', extraGuests: 3 }),
+      env,
+    );
+    const d2 = (await r2.json()) as typeof d1;
+    expect(d2.headcount.extraGuests).toBe(3);
+    expect(d2.headcount.totalGoing).toBe(4);
+
+    // Switching In -> Late without extraGuests preserves existing extra_guests (3)
+    const r3 = await worker.fetch(
+      makeReq('/api/week/rsvp', 'POST', { dinnerId, status: 'late', etaMinutes: 20 }),
+      env,
+    );
+    const d3 = (await r3.json()) as typeof d1;
+    expect(d3.headcount).toMatchObject({
+      goingMembers: 1,
+      lateMembers: 1,
+      extraGuests: 3,
+      totalGoing: 4,
+    });
+
+    // Eric RSVPs In with 1 extra guest
+    const r4 = await worker.fetch(
+      makeReq(
+        '/api/week/rsvp',
+        'POST',
+        { dinnerId, status: 'in', extraGuests: 1 },
+        { 'Cf-Access-Authenticated-User-Email': 'storme2@gmail.com' },
+      ),
+      env,
+    );
+    const d4 = (await r4.json()) as typeof d1;
+    expect(d4.headcount).toMatchObject({
+      goingMembers: 2,
+      lateMembers: 1,
+      outMembers: 0,
+      extraGuests: 4,
+      totalGoing: 6,
+      unansweredCount: 4,
+    });
+
+    // Verify bootstrap exposes extra_guests and headcount
+    const boot2 = (await (await worker.fetch(makeReq('/api/bootstrap'), env)).json()) as {
+      thisWeek: {
+        rsvps: Array<{ user_slug: string; status: string; eta_minutes: number | null; extra_guests: number }>;
+        headcount: typeof d4.headcount;
+      };
+    };
+    expect(boot2.thisWeek.headcount.totalGoing).toBe(6);
+    const tylerRow = boot2.thisWeek.rsvps.find((r) => r.user_slug === 'tyler');
+    expect(tylerRow?.extra_guests).toBe(3);
+    expect(tylerRow?.eta_minutes).toBe(20);
+
+    // Eric switching to Out resets Eric's extra_guests back to 0 automatically
+    const r5 = await worker.fetch(
+      makeReq(
+        '/api/week/rsvp',
+        'POST',
+        { dinnerId, status: 'out', note: 'Kids game' },
+        { 'Cf-Access-Authenticated-User-Email': 'storme2@gmail.com' },
+      ),
+      env,
+    );
+    const d5 = (await r5.json()) as typeof d1;
+    expect(d5.headcount).toMatchObject({
+      goingMembers: 1,
+      lateMembers: 1,
+      outMembers: 1,
+      extraGuests: 3,
+      totalGoing: 4,
+      unansweredCount: 4,
+    });
+
+    // Clear Tyler's extra guests back to 0 while keeping Late ETA preserved
+    const r6 = await worker.fetch(
+      makeReq('/api/week/rsvp', 'POST', { dinnerId, status: 'late', extraGuests: 0 }),
+      env,
+    );
+    const d6 = (await r6.json()) as typeof d1;
+    expect(d6.headcount.extraGuests).toBe(0);
+    expect(d6.headcount.totalGoing).toBe(1);
+
+    // Input validation rejects out-of-range or non-integer extraGuests
+    for (const badVal of [-1, 21, 1.5, 'two']) {
+      const badRes = await worker.fetch(
+        makeReq('/api/week/rsvp', 'POST', { dinnerId, status: 'in', extraGuests: badVal }),
+        env,
+      );
+      expect(badRes.status).toBe(400);
+    }
+  });
+
+  it('runs 5-min cron schedule and dispatches 30-min extra-people reminder and 5-min headcount push (issue #9)', async () => {
+    const wranglerRaw = readFileSync(resolve(rootDir, 'wrangler.jsonc'), 'utf8');
+    expect(wranglerRaw).toContain('"*/5 * * * *"');
+
+    const dinner = await env.DB.prepare("SELECT id FROM dinners WHERE week_key = '2026-W47'").first<{ id: number }>();
+    const place = await env.DB.prepare('SELECT * FROM restaurants LIMIT 1').first<RestaurantRow>();
+    expect(dinner).toBeTruthy();
+    expect(place).toBeTruthy();
+
+    await env.DB.prepare(
+      "UPDATE dinners SET status = 'place_locked', day_of_week = 'Tuesday', dinner_date = '2026-11-17', restaurant_id = ?, start_time = '18:30' WHERE id = ?",
+    )
+      .bind(place!.id, dinner!.id)
+      .run();
+
+    // 2 members going (Tyler +2 extra, Eric running late +1 extra -> totalGoing = 5)
+    await castRsvp(env.DB, dinner!.id, 'tyler', 'in', null, undefined, 'tyler', 2);
+    await castRsvp(env.DB, dinner!.id, 'eric', 'late', 15, undefined, 'eric', 1);
+
+    // Generate real Web Push subscription & VAPID keys to exercise encrypted sendWebPushToSubscribers flow
+    const toB64u = (u: Uint8Array) =>
+      btoa(String.fromCharCode(...u)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    const uaPair = (await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, [
+      'deriveBits',
+    ])) as CryptoKeyPair;
+    const uaPub = new Uint8Array((await crypto.subtle.exportKey('raw', uaPair.publicKey)) as ArrayBuffer);
+    const uaAuth = crypto.getRandomValues(new Uint8Array(16));
+    await env.DB.prepare(
+      "INSERT INTO push_subscriptions (user_slug, endpoint, p256dh, auth) VALUES ('tyler', 'https://web.push.apple.com/test-sub', ?, ?)",
+    )
+      .bind(toB64u(uaPub), toB64u(uaAuth))
+      .run();
+
+    const vapidPair = (await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, [
+      'sign',
+      'verify',
+    ])) as CryptoKeyPair;
+    const vapidJwk = (await crypto.subtle.exportKey('jwk', vapidPair.privateKey)) as JsonWebKey;
+    const vapidPubRaw = new Uint8Array((await crypto.subtle.exportKey('raw', vapidPair.publicKey)) as ArrayBuffer);
+    env.VAPID_PUBLIC_KEY = toB64u(vapidPubRaw);
+    env.VAPID_PRIVATE_KEY = vapidJwk.d!;
+
+    const pushCalls: Array<{ url: string; headers: Record<string, string>; bodyLen: number }> = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : input instanceof Request ? input.url : String(input);
+      if (url === 'https://web.push.apple.com/test-sub') {
+        const hdrs = (init?.headers || {}) as Record<string, string>;
+        const rawBody = init?.body as Uint8Array | ArrayBuffer | undefined;
+        const bodyLen = rawBody ? rawBody.byteLength : 0;
+        pushCalls.push({ url, headers: hdrs, bodyLen });
+        return new Response(null, { status: 201 });
+      }
+      return new Response('unexpected', { status: 500 });
+    });
+
+    // Verify pure notification payload contents
+    const mapsUrl = buildDirectionsUrl(place!);
+    const reminderPayload = buildThirtyMinReminderPayload(dinner!.id, place!, '/', mapsUrl);
+    expect(reminderPayload.title).toContain(`Dinner in 30 min — ${place!.name}`);
+    expect(reminderPayload.body.toLowerCase()).toContain('extra people');
+    expect(reminderPayload.url).toBe('/');
+    expect(reminderPayload.directionsUrl).toBe(mapsUrl);
+    expect(reminderPayload.actions?.map((a) => a.action)).toEqual(['directions', 'late']);
+
+    const preEventPayload = buildPreEventHeadcountPayload(
+      dinner!.id,
+      place!,
+      {
+        goingMembers: 2,
+        lateMembers: 1,
+        outMembers: 0,
+        extraGuests: 3,
+        totalGoing: 5,
+        activeCrewCount: 6,
+        unansweredCount: 4,
+      },
+      mapsUrl,
+    );
+    expect(preEventPayload.title).toBe(`5 people going in 5 min — ${place!.name}`);
+    expect(preEventPayload.body).toContain('2 members + 3 extra (1 running late)');
+    expect(preEventPayload.body).toContain('4 unanswered');
+    expect(preEventPayload.url).toBe(mapsUrl);
+    expect(preEventPayload.directionsUrl).toBe(mapsUrl);
+
+    // 1. T-30m tick: Tuesday 2026-11-17 18:00 CST = 2026-11-18T00:00:00Z
+    const t30 = await runWeeklyCronTick(env, new Date('2026-11-18T00:00:00Z'));
+    expect(t30.actions).toContain('sent_reminder:2026-W47');
+    expect(t30.actions).not.toContain('sent_pre_event:2026-W47');
+    expect(pushCalls).toHaveLength(1);
+    expect(pushCalls[0].headers.Authorization).toMatch(/^vapid t=/);
+    expect(pushCalls[0].headers['Content-Encoding']).toBe('aes128gcm');
+    expect(pushCalls[0].bodyLen).toBeGreaterThan(86);
+
+    // 2. T-15m tick (18:15 CST): no duplicate 30-min push and not yet in 5-min window
+    const t15 = await runWeeklyCronTick(env, new Date('2026-11-18T00:15:00Z'));
+    expect(t15.actions).not.toContain('sent_reminder:2026-W47');
+    expect(t15.actions).not.toContain('sent_pre_event:2026-W47');
+    expect(pushCalls).toHaveLength(1);
+
+    // 3. T-5m tick (18:25 CST): fires 5-min pre-event headcount notification
+    const t5 = await runWeeklyCronTick(env, new Date('2026-11-18T00:25:00Z'));
+    expect(t5.actions).toContain('sent_pre_event:2026-W47');
+    expect(pushCalls).toHaveLength(2);
+    expect(pushCalls[1].bodyLen).toBeGreaterThan(86);
+
+    // 4. Subsequent tick (18:30 CST) does not duplicate pre-event push
+    const t0 = await runWeeklyCronTick(env, new Date('2026-11-18T00:30:00Z'));
+    expect(t0.actions).not.toContain('sent_pre_event:2026-W47');
+    expect(pushCalls).toHaveLength(2);
+
+    const updatedDinner = await env.DB.prepare('SELECT reminder_sent_at, pre_event_sent_at FROM dinners WHERE id = ?')
+      .bind(dinner!.id)
+      .first<{ reminder_sent_at: string | null; pre_event_sent_at: string | null }>();
+    expect(updatedDinner?.reminder_sent_at).toBeTruthy();
+    expect(updatedDinner?.pre_event_sent_at).toBeTruthy();
+
+    // Verify client & service worker updates for extra people and Directions action
+    const appJs = readFileSync(resolve(rootDir, 'public/app.js'), 'utf8');
+    const swJs = readFileSync(resolve(rootDir, 'public/sw.js'), 'utf8');
+    expect(appJs).toContain('set-extra-guests');
+    expect(appJs).toContain('5-min headcount');
+    expect(swJs).toContain("CACHE_NAME = 'man-night-shell-v8'");
+    expect(swJs).toContain("event.action === 'directions'");
+    expect(swJs).toContain('directionsUrl');
   });
 });

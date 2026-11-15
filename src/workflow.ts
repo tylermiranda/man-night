@@ -772,6 +772,53 @@ export async function ensureNextScheduledDinner(db: D1Database): Promise<void> {
     .run();
 }
 
+export async function computeDinnerHeadcount(db: D1Database, dinnerId: number) {
+  const rsvpRows =
+    (
+      await db
+        .prepare('SELECT user_slug, status, extra_guests FROM rsvps WHERE dinner_id = ?')
+        .bind(dinnerId)
+        .all<{ user_slug: string; status: string; extra_guests: number | null }>()
+    ).results ?? [];
+
+  const activeUsers =
+    (
+      await db
+        .prepare("SELECT slug FROM users WHERE email NOT LIKE '%@history.local'")
+        .all<{ slug: string }>()
+    ).results ?? [];
+  const activeSlugs = new Set(activeUsers.map((u) => u.slug));
+
+  let goingMembers = 0;
+  let lateMembers = 0;
+  let outMembers = 0;
+  let extraGuests = 0;
+  const answeredActive = new Set<string>();
+
+  for (const r of rsvpRows) {
+    if (activeSlugs.has(r.user_slug)) {
+      answeredActive.add(r.user_slug);
+    }
+    if (r.status === 'in' || r.status === 'late') {
+      goingMembers++;
+      if (r.status === 'late') lateMembers++;
+      extraGuests += Math.max(0, Number(r.extra_guests) || 0);
+    } else if (r.status === 'out') {
+      outMembers++;
+    }
+  }
+
+  return {
+    goingMembers,
+    lateMembers,
+    outMembers,
+    extraGuests,
+    totalGoing: goingMembers + extraGuests,
+    activeCrewCount: activeUsers.length,
+    unansweredCount: Math.max(0, activeUsers.length - answeredActive.size),
+  };
+}
+
 export async function castRsvp(
   db: D1Database,
   dinnerId: number,
@@ -780,6 +827,7 @@ export async function castRsvp(
   etaMinutes: number | null,
   note?: string,
   recordedBy?: string,
+  extraGuests?: number,
 ) {
   const dinner = await db.prepare('SELECT * FROM dinners WHERE id = ?').bind(dinnerId).first<DinnerRow>();
   if (!dinner) throw new Error('Dinner not found');
@@ -803,7 +851,7 @@ export async function castRsvp(
 
   if (status === 'clear') {
     await db.prepare('DELETE FROM rsvps WHERE dinner_id = ? AND user_slug = ?').bind(dinnerId, userSlug).run();
-    return;
+    return computeDinnerHeadcount(db, dinnerId);
   }
 
   if (status === 'out') {
@@ -811,37 +859,57 @@ export async function castRsvp(
     const cleanNote = hasNote ? note.trim().slice(0, 140) : '';
     await db
       .prepare(
-        `INSERT INTO rsvps (dinner_id, user_slug, status, eta_minutes, note, recorded_by, updated_at)
-         VALUES (?, ?, 'out', NULL, ?, ?, datetime('now'))
+        `INSERT INTO rsvps (dinner_id, user_slug, status, eta_minutes, extra_guests, note, recorded_by, updated_at)
+         VALUES (?, ?, 'out', NULL, 0, ?, ?, datetime('now'))
          ON CONFLICT(dinner_id, user_slug)
          DO UPDATE SET
            status = 'out',
            eta_minutes = NULL,
+           extra_guests = 0,
            note = CASE WHEN ? = 1 THEN excluded.note ELSE CASE WHEN rsvps.status = 'out' THEN rsvps.note ELSE '' END END,
            recorded_by = excluded.recorded_by,
            updated_at = datetime('now')`,
       )
       .bind(dinnerId, userSlug, cleanNote, actor, hasNote ? 1 : 0)
       .run();
-    return;
+    return computeDinnerHeadcount(db, dinnerId);
   }
 
-  const cleanNote = typeof note === 'string' ? note.trim().slice(0, 140) : '';
-  const eta = status === 'late' ? etaMinutes : null;
+  const hasNote = typeof note === 'string';
+  const cleanNote = hasNote ? note.trim().slice(0, 140) : '';
+  const hasEta = typeof etaMinutes === 'number' && Number.isFinite(etaMinutes);
+  const eta = status === 'late' ? (hasEta ? etaMinutes : 15) : null;
+  const hasExtra = typeof extraGuests === 'number' && Number.isFinite(extraGuests);
+  const cleanExtra = hasExtra ? Math.max(0, Math.min(20, Math.trunc(extraGuests))) : 0;
+
   await db
     .prepare(
-      `INSERT INTO rsvps (dinner_id, user_slug, status, eta_minutes, note, recorded_by, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+      `INSERT INTO rsvps (dinner_id, user_slug, status, eta_minutes, extra_guests, note, recorded_by, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
        ON CONFLICT(dinner_id, user_slug)
        DO UPDATE SET
          status = excluded.status,
-         eta_minutes = excluded.eta_minutes,
-         note = excluded.note,
+         eta_minutes = CASE WHEN excluded.status = 'late' THEN CASE WHEN ? = 1 THEN excluded.eta_minutes ELSE COALESCE(rsvps.eta_minutes, 15) END ELSE NULL END,
+         extra_guests = CASE WHEN ? = 1 THEN excluded.extra_guests ELSE CASE WHEN rsvps.status = 'out' THEN 0 ELSE rsvps.extra_guests END END,
+         note = CASE WHEN ? = 1 THEN excluded.note ELSE rsvps.note END,
          recorded_by = excluded.recorded_by,
          updated_at = datetime('now')`,
     )
-    .bind(dinnerId, userSlug, status, eta, cleanNote, actor)
+    .bind(
+      dinnerId,
+      userSlug,
+      status,
+      eta,
+      cleanExtra,
+      cleanNote,
+      actor,
+      hasEta ? 1 : 0,
+      hasExtra ? 1 : 0,
+      hasNote ? 1 : 0,
+    )
     .run();
+
+  return computeDinnerHeadcount(db, dinnerId);
 }
 
 export async function submitRating(
@@ -1268,10 +1336,12 @@ export async function getBootstrapPayload(env: Env, currentUser: UserRow) {
     user_name: string | null;
     status: string;
     eta_minutes: number | null;
+    extra_guests: number;
     note: string;
     recorded_by: string | null;
     updated_at: string;
   }> = [];
+  let headcount: Awaited<ReturnType<typeof computeDinnerHeadcount>> | null = null;
   let ratings: Array<{ user_slug: string; score: number; dish: string; comment: string }> = [];
 
   if (active) {
@@ -1289,7 +1359,7 @@ export async function getBootstrapPayload(env: Env, currentUser: UserRow) {
     noonVotes = (await env.DB.prepare('SELECT user_slug, restaurant_id FROM noon_votes WHERE dinner_id = ?').bind(active.id).all()).results as typeof noonVotes;
     rsvps = (
       await env.DB.prepare(
-        `SELECT r.user_slug, u.name AS user_name, r.status, r.eta_minutes, r.note, r.recorded_by, r.updated_at
+        `SELECT r.user_slug, u.name AS user_name, r.status, r.eta_minutes, r.extra_guests, r.note, r.recorded_by, r.updated_at
          FROM rsvps r
          LEFT JOIN users u ON u.slug = r.user_slug
          WHERE r.dinner_id = ?
@@ -1298,6 +1368,7 @@ export async function getBootstrapPayload(env: Env, currentUser: UserRow) {
         .bind(active.id)
         .all()
     ).results as typeof rsvps;
+    headcount = await computeDinnerHeadcount(env.DB, active.id);
     ratings = (await env.DB.prepare('SELECT user_slug, score, dish, comment FROM ratings WHERE dinner_id = ?').bind(active.id).all()).results as typeof ratings;
 
     const ids = parseIdListJson(active.noon_draw_ids);
@@ -1499,6 +1570,7 @@ export async function getBootstrapPayload(env: Env, currentUser: UserRow) {
           noonVotes,
           noonCandidates,
           rsvps,
+          headcount,
           ratings,
         }
       : null,

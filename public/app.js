@@ -644,10 +644,45 @@ function renderWeekView() {
       const displayName = r.user_name || u?.name || r.user_slug;
       const cls = r.status === 'in' ? 'ok' : r.status === 'late' ? 'late' : 'out';
       const label = r.status === 'in' ? 'In' : r.status === 'late' ? `Late ${r.eta_minutes || 15}m` : 'Sold out';
+      const extra = r.status !== 'out' ? Math.max(0, Number(r.extra_guests) || 0) : 0;
+      const extraLabel = extra > 0 ? ` · +${extra}` : '';
       const tip = r.note ? `${displayName}: ${r.note}` : '';
-      return `<span class="chip ${cls}"${tip ? ` title="${esc(tip)}"` : ''}>${avatarHtml(r.user_slug, displayName, 'sm')} ${esc(displayName)} · ${label}</span>`;
+      return `<span class="chip ${cls}"${tip ? ` title="${esc(tip)}"` : ''}>${avatarHtml(r.user_slug, displayName, 'sm')} ${esc(displayName)} · ${label}${extraLabel}</span>`;
     })
     .join('');
+
+  const myExtraGuests =
+    myRsvp === 'in' || myRsvp === 'late' ? Math.max(0, Number(myRsvpRow?.extra_guests) || 0) : 0;
+
+  const hc = tw.headcount || {
+    goingMembers: tw.rsvps.filter((r) => r.status === 'in' || r.status === 'late').length,
+    extraGuests: tw.rsvps
+      .filter((r) => r.status === 'in' || r.status === 'late')
+      .reduce((sum, r) => sum + Math.max(0, Number(r.extra_guests) || 0), 0),
+  };
+  const totalGoing =
+    typeof tw.headcount?.totalGoing === 'number' ? tw.headcount.totalGoing : hc.goingMembers + hc.extraGuests;
+  const headcountBadge =
+    totalGoing > 0
+      ? `<span class="badge badge-ok tabular" style="margin-left:8px;">${totalGoing} going${hc.extraGuests > 0 ? ` (+${hc.extraGuests} extra)` : ''}</span>`
+      : '';
+
+  const extraGuestsHtml =
+    myRsvp !== 'out'
+      ? `
+        <div class="rsvp-extra-row">
+          <div style="min-width:0;">
+            <div style="font-size:12px;font-weight:700;">Extra people <span style="font-weight:500;color:var(--muted);">(optional · included in 5-min headcount)</span></div>
+          </div>
+          <div class="extra-stepper" role="group" aria-label="Extra people count">
+            <button type="button" class="stepper-btn" data-action="set-extra-guests" data-delta="-1" ${myExtraGuests <= 0 ? 'disabled' : ''} aria-label="Decrease extra people">−</button>
+            <span class="stepper-val tabular">${myExtraGuests}</span>
+            <button type="button" class="stepper-btn" data-action="set-extra-guests" data-delta="1" ${myExtraGuests >= 20 ? 'disabled' : ''} aria-label="Increase extra people">+</button>
+            ${myExtraGuests > 0 ? '<button type="button" class="btn btn-outline btn-sm" data-action="set-extra-guests" data-value="0">Clear</button>' : ''}
+          </div>
+        </div>
+      `
+      : '';
 
   const rsvpExcuseHtml =
     myRsvp === 'out'
@@ -668,7 +703,7 @@ function renderWeekView() {
   const rsvpCard = `
     <div class="card">
       <div class="card-kicker">
-        <span>Attendance · ${fmtShortDate(d.dinner_date)}</span>
+        <span>Attendance · ${fmtShortDate(d.dinner_date)}${headcountBadge}</span>
         <button class="link-btn" style="font-size:12px;" data-action="open-sellout-modal" data-dinner-id="${d.id}">Tag sellout →</button>
       </div>
       <div class="btn-row">
@@ -676,6 +711,7 @@ function renderWeekView() {
         <button class="btn btn-sm ${myRsvp === 'late' ? 'btn-primary' : 'btn-outline'}" data-action="rsvp" data-status="late">Running 15m late</button>
         <button class="btn btn-sm ${myRsvp === 'out' ? 'btn-primary' : 'btn-outline'}" data-action="rsvp" data-status="out">Can’t make it</button>
       </div>
+      ${extraGuestsHtml}
       ${rsvpExcuseHtml}
       ${rsvpChips ? `<div class="rsvp-grid">${rsvpChips}</div>` : `<p class="hero-sub" style="margin:10px 0 0;font-size:13px;">No RSVPs yet for ${fmtShortDate(d.dinner_date)}.</p>`}
     </div>
@@ -1647,7 +1683,7 @@ function showWalkthrough(step = 0) {
         <div><strong style="color:var(--ink);">Pick or Poll Anytime</strong> · Hosts can pick a restaurant or start a place poll ahead of time—the Tuesday/Wednesday vote stays open alongside it (or skip voting).</div>
         <div><strong style="color:var(--ink);">Sun 10:00 AM</strong> · Night vote opens (Tue vs Wed; Tuesday wins ties at Mon noon).</div>
         <div><strong style="color:var(--ink);">Noon Rule</strong> · Unpicked by 12:00 PM on dinner day? App draws <strong>4 random places</strong> (skipping last 8 weeks) until 4:00 PM.</div>
-        <div><strong style="color:var(--ink);">30 min before dinner</strong> · Tap your reminder alert to launch Google Maps directions.</div>
+        <div><strong style="color:var(--ink);">30 min &amp; 5 min before dinner</strong> · Get a 30-min reminder to add any extra people, then a 5-min headcount with Google Maps directions.</div>
       </div>`,
     },
     {
@@ -2231,7 +2267,7 @@ function openSettingsModal(feedbackHtml = '') {
         <input type="checkbox" data-pref="notify_place" ${me.notify_place ? 'checked' : ''} />
       </label>
       <label style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-top:1px solid var(--line);font-size:13px;">
-        <span>30-min dinner reminder</span>
+        <span>30-min &amp; 5-min dinner reminders</span>
         <input type="checkbox" data-pref="notify_reminder" ${me.notify_reminder ? 'checked' : ''} />
       </label>
     </div>
@@ -2431,6 +2467,35 @@ document.addEventListener('click', async (e) => {
       });
       state.rsvpExcuseDraft = null;
       toast(actEl.dataset.status === 'out' ? 'Marked sold out for this week' : 'RSVP updated');
+      await refreshBootstrap();
+    } else if (action === 'set-extra-guests') {
+      const tw = state.bootstrap?.thisWeek;
+      const me = state.bootstrap?.user;
+      if (!tw?.dinner || !me) return;
+      const myRsvpRow = (tw.rsvps || []).find((r) => r.user_slug === me.slug);
+      if (myRsvpRow?.status === 'out') return;
+      const curExtra = myRsvpRow ? Math.max(0, Number(myRsvpRow.extra_guests) || 0) : 0;
+      const explicitVal = actEl.dataset.value !== undefined ? Number(actEl.dataset.value) : null;
+      const delta = actEl.dataset.delta !== undefined ? Number(actEl.dataset.delta) : 0;
+      const nextExtra = Math.max(
+        0,
+        Math.min(20, explicitVal !== null && Number.isFinite(explicitVal) ? explicitVal : curExtra + delta),
+      );
+      if (myRsvpRow && nextExtra === curExtra) return;
+      const targetStatus = myRsvpRow?.status === 'late' ? 'late' : 'in';
+      const payload = {
+        dinnerId: tw.dinner.id,
+        status: targetStatus,
+        extraGuests: nextExtra,
+      };
+      if (targetStatus === 'late') {
+        payload.etaMinutes = myRsvpRow?.eta_minutes || 15;
+      }
+      await api('/api/week/rsvp', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      toast(nextExtra > 0 ? `Updated extra people: +${nextExtra}` : 'Cleared extra people');
       await refreshBootstrap();
     } else if (action === 'save-rsvp-note') {
       const tw = state.bootstrap?.thisWeek;

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'man-night-shell-v7';
+const CACHE_NAME = 'man-night-shell-v8';
 const SHELL_ASSETS = [
   '/',
   '/index.html',
@@ -69,6 +69,7 @@ self.addEventListener('push', (event) => {
       actions: Array.isArray(payload.actions) ? payload.actions : [],
       data: {
         url: payload.url || '/',
+        directionsUrl: payload.directionsUrl || null,
         dinnerId: payload.dinnerId || null,
       },
     }),
@@ -78,7 +79,8 @@ self.addEventListener('push', (event) => {
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
   const data = event.notification.data || {};
-  const targetUrl = data.url || '/';
+  const targetUrl =
+    event.action === 'directions' && data.directionsUrl ? data.directionsUrl : data.url || '/';
 
   if (event.action === 'late' && data.dinnerId) {
     event.waitUntil(

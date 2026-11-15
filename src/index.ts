@@ -257,17 +257,39 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
         status: 'in' | 'late' | 'out' | 'clear';
         etaMinutes?: number | null;
         note?: string;
+        extraGuests?: unknown;
       }>(request);
       if (!['in', 'late', 'out', 'clear'].includes(body.status)) {
         return json({ error: 'Invalid RSVP status' }, 400);
+      }
+      let extraGuests: number | undefined;
+      if (body.extraGuests !== undefined && body.extraGuests !== null) {
+        if (
+          typeof body.extraGuests !== 'number' ||
+          !Number.isInteger(body.extraGuests) ||
+          body.extraGuests < 0 ||
+          body.extraGuests > 20
+        ) {
+          return json({ error: 'extraGuests must be a whole number from 0 to 20' }, 400);
+        }
+        extraGuests = body.extraGuests;
       }
       const dinner = body.dinnerId
         ? await env.DB.prepare('SELECT id FROM dinners WHERE id = ?').bind(body.dinnerId).first<{ id: number }>()
         : await getActiveDinner(env.DB);
       if (!dinner) return json({ error: 'No active dinner found' }, 404);
       const targetSlug = (typeof body.userSlug === 'string' && body.userSlug.trim().toLowerCase()) || user.slug;
-      await castRsvp(env.DB, dinner.id, targetSlug, body.status, body.etaMinutes ?? null, body.note, user.slug);
-      return json({ ok: true });
+      const headcount = await castRsvp(
+        env.DB,
+        dinner.id,
+        targetSlug,
+        body.status,
+        body.etaMinutes ?? null,
+        body.note,
+        user.slug,
+        extraGuests,
+      );
+      return json({ ok: true, headcount });
     }
 
     if (path === '/api/week/rate' && method === 'POST') {

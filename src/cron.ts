@@ -1,13 +1,61 @@
 import { buildDirectionsUrl } from './gcal';
 import { sendWebPushToSubscribers } from './push';
-import type { DinnerRow, Env, RestaurantRow } from './types';
+import type { DinnerHeadcount, DinnerRow, Env, PushPayload, RestaurantRow } from './types';
 import {
   closeNoonVote,
   completeDinner,
+  computeDinnerHeadcount,
   ensureNextScheduledDinner,
   lockNight,
   openNoonDraw,
 } from './workflow';
+
+export function buildThirtyMinReminderPayload(
+  dinnerId: number,
+  place: RestaurantRow,
+  appUrl: string,
+  mapsUrl: string,
+): PushPayload {
+  const addr = place.address || place.name;
+  return {
+    title: `Dinner in 30 min — ${place.name}`,
+    body: `${addr} · Add any extra people in the app before the 5-min headcount`,
+    tag: `reminder-${dinnerId}`,
+    url: appUrl || '/',
+    directionsUrl: mapsUrl,
+    actions: [
+      { action: 'directions', title: 'Directions' },
+      { action: 'late', title: 'Running late' },
+    ],
+    dinnerId,
+  };
+}
+
+export function buildPreEventHeadcountPayload(
+  dinnerId: number,
+  place: RestaurantRow,
+  headcount: DinnerHeadcount,
+  mapsUrl: string,
+): PushPayload {
+  const totalLabel = `${headcount.totalGoing} ${headcount.totalGoing === 1 ? 'person' : 'people'} going in 5 min`;
+  const membersPart = `${headcount.goingMembers} ${headcount.goingMembers === 1 ? 'member' : 'members'}`;
+  const extraPart = headcount.extraGuests > 0 ? ` + ${headcount.extraGuests} extra` : '';
+  const latePart = headcount.lateMembers > 0 ? ` (${headcount.lateMembers} running late)` : '';
+  const unansweredPart = headcount.unansweredCount > 0 ? ` · ${headcount.unansweredCount} unanswered` : '';
+  const placeLine = place.address || place.name;
+  return {
+    title: `${totalLabel} — ${place.name}`,
+    body: `${membersPart}${extraPart}${latePart}${unansweredPart} · ${placeLine} · Tap for Google Maps directions`,
+    tag: `pre-event-${dinnerId}`,
+    url: mapsUrl,
+    directionsUrl: mapsUrl,
+    actions: [
+      { action: 'directions', title: 'Directions' },
+      { action: 'late', title: 'Running late' },
+    ],
+    dinnerId,
+  };
+}
 
 export interface CentralClock {
   dateStr: string;
@@ -166,14 +214,14 @@ export async function runWeeklyCronTick(env: Env, now = new Date()): Promise<{ a
 
     const startMin = parseHHMMMinutes(postPick.start_time || '18:30');
 
-    // 5. 30 minutes before dinner: push reminder carrying Google Maps URL
+    // 5a. 30 minutes before dinner: push reminder prompting crew to add extra people before 5-min headcount
     if (
       postPick.status === 'place_locked' &&
       postPick.restaurant_id &&
       !postPick.reminder_sent_at &&
       clock.dateStr === postPick.dinner_date &&
       clock.minutesOfDay >= startMin - 30 &&
-      clock.minutesOfDay < startMin + 90
+      clock.minutesOfDay < startMin - 5
     ) {
       const place = await env.DB.prepare('SELECT * FROM restaurants WHERE id = ?')
         .bind(postPick.restaurant_id)
@@ -182,23 +230,40 @@ export async function runWeeklyCronTick(env: Env, now = new Date()): Promise<{ a
         const mapsUrl = buildDirectionsUrl(place);
         await sendWebPushToSubscribers(
           env,
-          {
-            title: `Dinner in 30 min — ${place.name}`,
-            body: `${place.address || place.name} · Tap for Google Maps directions`,
-            tag: `reminder-${postPick.id}`,
-            url: mapsUrl,
-            actions: [
-              { action: 'directions', title: 'Directions' },
-              { action: 'late', title: 'Running late' },
-            ],
-            dinnerId: postPick.id,
-          },
+          buildThirtyMinReminderPayload(postPick.id, place, '/', mapsUrl),
           'notify_reminder',
         );
         await env.DB.prepare("UPDATE dinners SET reminder_sent_at = datetime('now') WHERE id = ?")
           .bind(postPick.id)
           .run();
         actions.push(`sent_reminder:${postPick.week_key}`);
+      }
+    }
+
+    // 5b. 5 minutes before dinner: push final headcount (members + extra people) with Google Maps link
+    if (
+      postPick.status === 'place_locked' &&
+      postPick.restaurant_id &&
+      !postPick.pre_event_sent_at &&
+      clock.dateStr === postPick.dinner_date &&
+      clock.minutesOfDay >= startMin - 5 &&
+      clock.minutesOfDay < startMin + 30
+    ) {
+      const place = await env.DB.prepare('SELECT * FROM restaurants WHERE id = ?')
+        .bind(postPick.restaurant_id)
+        .first<RestaurantRow>();
+      if (place) {
+        const mapsUrl = buildDirectionsUrl(place);
+        const headcount = await computeDinnerHeadcount(env.DB, postPick.id);
+        await sendWebPushToSubscribers(
+          env,
+          buildPreEventHeadcountPayload(postPick.id, place, headcount, mapsUrl),
+          'notify_reminder',
+        );
+        await env.DB.prepare("UPDATE dinners SET pre_event_sent_at = datetime('now') WHERE id = ?")
+          .bind(postPick.id)
+          .run();
+        actions.push(`sent_pre_event:${postPick.week_key}`);
       }
     }
 

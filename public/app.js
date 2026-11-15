@@ -47,6 +47,15 @@ const state = {
   photosById: {},
   pendingPhotoUpload: null,
   pendingModalPhoto: null,
+  beers: [],
+  beerStats: { total: 0, avg_rating: null, breweries: 0, styles: 0 },
+  beersQuery: '',
+  beersUser: '',
+  beersSort: 'recent',
+  beersLoading: false,
+  beerRating: 5,
+  pendingBeerPhoto: null,
+  pendingIssueScreenshot: null,
   photoUploadExtraDinners: [],
   lightboxConfirmDeleteId: null,
   lastBootstrapAt: 0,
@@ -471,6 +480,8 @@ function setTab(tab) {
     loadPlacesIfNeeded().then(render);
   } else if (tab === 'history') {
     loadHistory(false);
+  } else if (tab === 'beers') {
+    loadBeers();
   } else {
     render();
   }
@@ -1789,6 +1800,193 @@ function renderPlacesView() {
   `;
 }
 
+async function loadBeers() {
+  state.beersLoading = true;
+  if (state.tab === 'beers') render();
+  try {
+    const qs = new URLSearchParams();
+    if (state.beersQuery) qs.set('q', state.beersQuery);
+    if (state.beersUser) qs.set('user', state.beersUser);
+    if (state.beersSort) qs.set('sort', state.beersSort);
+    const res = await api(`/api/beers?${qs.toString()}`);
+    state.beers = res.beers || [];
+    state.beerStats = res.stats || state.beerStats;
+  } catch (err) {
+    toast(err.message || 'Could not load beers');
+  } finally {
+    state.beersLoading = false;
+    if (state.tab === 'beers') render();
+  }
+}
+
+function renderBeerView() {
+  const beers = state.beers || [];
+  const stats = state.beerStats || { total: 0, avg_rating: null, breweries: 0, styles: 0 };
+  const crew = state.bootstrap?.users || [];
+  const me = state.bootstrap?.user;
+  const crewOptions = crew
+    .map((u) => `<option value="${esc(u.slug)}" ${state.beersUser === u.slug ? 'selected' : ''}>${esc(u.name)}</option>`)
+    .join('');
+
+  const cards = beers
+    .map((b) => {
+      const who = b.user_name || b.user_slug;
+      const loggedDate = String(b.created_at || '').slice(0, 10);
+      return `
+        <article class="beer-card">
+          ${
+            b.image_url
+              ? `<button type="button" class="beer-photo-btn" data-action="view-beer-photo" data-beer-id="${b.id}" aria-label="View photo of ${esc(b.name)}"><img src="${esc(b.image_url)}" alt="${esc(b.name)}" loading="lazy" /></button>`
+              : `<div class="beer-photo-fallback" aria-hidden="true">🍺</div>`
+          }
+          <div class="beer-card-body">
+            <div class="beer-card-head">
+              <div style="min-width:0;">
+                <div class="beer-card-name">${esc(b.name)}</div>
+                <div class="beer-card-brewery">${esc(b.brewery || 'Brewery not set')}${b.style ? ` · ${esc(b.style)}` : ''}</div>
+              </div>
+              ${b.rating != null ? `<span class="badge badge-star tabular" title="${b.rating} out of 5">★ ${Number(b.rating).toFixed(1)}</span>` : ''}
+            </div>
+            ${b.purchased_where ? `<div class="beer-card-where">📍 ${esc(b.purchased_where)}</div>` : ''}
+            ${b.notes ? `<div class="beer-card-notes">${esc(b.notes)}</div>` : ''}
+            <div class="beer-card-foot">
+              <span class="beer-card-by">${avatarHtml(b.user_slug, who, 'sm')}<span>${esc(who)}</span>${loggedDate ? `<span class="beer-card-date">· ${fmtShortDate(loggedDate)}</span>` : ''}</span>
+              ${b.user_slug === me?.slug ? `<button type="button" class="link-btn" data-action="delete-beer" data-beer-id="${b.id}">Delete</button>` : ''}
+            </div>
+          </div>
+        </article>
+      `;
+    })
+    .join('');
+
+  const emptyHtml = state.beersLoading
+    ? '<div class="card muted-bg">Loading the beer cellar…</div>'
+    : state.beersQuery || state.beersUser
+      ? '<div class="card muted-bg">No beers match that search. Try a brewery, store, or crew member.</div>'
+      : `<div class="card muted-bg" style="text-align:center;padding:28px 18px;">
+           <div style="font-size:32px;margin-bottom:6px;" aria-hidden="true">🍺</div>
+           <div style="font-weight:750;margin-bottom:4px;">The cellar is empty</div>
+           <div class="hero-sub" style="margin:0 0 12px;">Log the first beer — name, where you bought it, a rating, and a photo.</div>
+           <button class="btn btn-primary btn-sm" data-action="open-beer-modal">+ Log a beer</button>
+         </div>`;
+
+  return `
+    <div style="display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:14px;">
+      <div>
+        <h1 class="hero-title" style="margin-bottom:2px;">Beer cellar</h1>
+        <p class="hero-sub" style="margin:0;">Everything the crew has bought, rated, and photographed — searchable across everyone.</p>
+      </div>
+      <button class="btn btn-sm btn-primary" data-action="open-beer-modal">+ Log a beer</button>
+    </div>
+    <div class="places-stats-bar">
+      <div class="places-stat-tile">
+        <div class="places-stat-val">${Number(stats.total) || 0}</div>
+        <div class="places-stat-lbl">Beers logged</div>
+      </div>
+      <div class="places-stat-tile">
+        <div class="places-stat-val">${stats.avg_rating != null ? `★ ${Number(stats.avg_rating).toFixed(1)}` : '—'}</div>
+        <div class="places-stat-lbl">Crew average</div>
+      </div>
+      <div class="places-stat-tile">
+        <div class="places-stat-val">${Number(stats.breweries) || 0}</div>
+        <div class="places-stat-lbl">Breweries</div>
+      </div>
+      <div class="places-stat-tile">
+        <div class="places-stat-val">${Number(stats.styles) || 0}</div>
+        <div class="places-stat-lbl">Styles</div>
+      </div>
+    </div>
+    <div class="toolbar">
+      <input id="beer-search" class="input" style="min-width:220px;flex:1;" placeholder="Search beers, breweries, stores, crew…" value="${esc(state.beersQuery)}" />
+      <select id="beer-crew-filter" class="select" aria-label="Filter by crew member">
+        <option value="">All crew</option>
+        ${crewOptions}
+      </select>
+      <select id="beer-sort" class="select" aria-label="Sort beers">
+        <option value="recent" ${state.beersSort === 'recent' ? 'selected' : ''}>Newest first</option>
+        <option value="rating" ${state.beersSort === 'rating' ? 'selected' : ''}>Top rated</option>
+        <option value="name" ${state.beersSort === 'name' ? 'selected' : ''}>A – Z</option>
+      </select>
+    </div>
+    ${beers.length ? `<div class="beer-grid">${cards}</div>` : emptyHtml}
+    ${beers.length ? `<div class="places-list-meta" style="margin-top:10px;"><span>Showing ${beers.length} beer${beers.length === 1 ? '' : 's'}${state.beersQuery || state.beersUser ? ' matching your filters' : ''}</span></div>` : ''}
+  `;
+}
+
+function renderBeerPhotoPreview(prepared) {
+  const el = document.getElementById('beer-photo-preview');
+  if (!el) return;
+  if (!prepared) {
+    el.innerHTML = '<span style="font-size:12px;color:var(--muted);">📷 Add a photo — tap to choose or paste a screenshot</span>';
+    return;
+  }
+  el.innerHTML = `
+    <span style="display:flex;align-items:center;gap:10px;width:100%;">
+      <img src="${esc(prepared.dataUrl)}" alt="Beer photo preview" style="width:56px;height:56px;object-fit:cover;border-radius:8px;" />
+      <span style="font-size:12px;color:var(--muted);flex:1;">Photo ready · ${Math.max(1, Math.round((prepared.byteSize || 0) / 1024))} KB</span>
+      <button type="button" class="link-btn" data-action="remove-beer-photo">Remove</button>
+    </span>
+  `;
+}
+
+function openBeerModal() {
+  state.beerRating = 5;
+  state.pendingBeerPhoto = null;
+  openModal(`
+    <h2 class="hero-title" style="font-size:20px;margin-bottom:6px;">Log a beer</h2>
+    <p class="hero-sub" style="margin-bottom:14px;">Track what you bought, where, how it scored, and what it looked like.</p>
+    <div class="stack" style="gap:10px;">
+      <input id="beer-name" class="input" maxlength="120" placeholder="Beer name (e.g. Tank 7)" />
+      <div style="display:flex;gap:8px;">
+        <input id="beer-brewery" class="input" style="flex:1;min-width:0;" maxlength="120" placeholder="Brewery" />
+        <input id="beer-style" class="input" style="flex:1;min-width:0;" maxlength="120" placeholder="Style (IPA, stout…)" />
+      </div>
+      <input id="beer-where" class="input" maxlength="120" placeholder="Where you bought it (store, bar, brewery)" />
+      <div>
+        <div class="beer-form-label">Your rating</div>
+        <div id="beer-star-row" class="star-row">
+          ${[1, 2, 3, 4, 5]
+            .map(
+              (n) =>
+                `<button type="button" class="star-btn ${state.beerRating >= n ? 'on' : ''}" data-action="set-beer-star" data-score="${n}" aria-label="${n} star${n === 1 ? '' : 's'}">★</button>`,
+            )
+            .join('')}
+        </div>
+      </div>
+      <textarea id="beer-notes" class="textarea" maxlength="600" placeholder="Tasting notes — what it tasted like, would you buy it again? (optional)"></textarea>
+      <div>
+        <input id="beer-photo-input" class="sr-only-file" type="file" accept="image/jpeg,image/png,image/webp,image/gif,image/*" />
+        <label for="beer-photo-input" id="beer-photo-preview" class="meal-photo-dropzone" style="padding:10px 12px;"></label>
+      </div>
+      <div id="beer-feedback"></div>
+      <div class="btn-row" style="justify-content:flex-end;">
+        <button class="btn btn-secondary btn-sm" data-action="close-modal">Cancel</button>
+        <button id="beer-submit-btn" class="btn btn-primary btn-sm" data-action="submit-beer">Save beer</button>
+      </div>
+    </div>
+  `);
+  renderBeerPhotoPreview(null);
+}
+
+function openBeerPhotoModal(beerId) {
+  const beer = (state.beers || []).find((b) => Number(b.id) === Number(beerId));
+  if (!beer || !beer.image_url) return;
+  openModal(`
+    <div class="meal-lightbox">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+        <div style="min-width:0;">
+          <div style="font-weight:750;font-size:16px;">${esc(beer.name)}</div>
+          <div style="font-size:12px;color:var(--muted);">${esc(beer.brewery || '')}${beer.style ? ` · ${esc(beer.style)}` : ''} · ${esc(beer.user_name || beer.user_slug)}</div>
+        </div>
+        <button type="button" class="btn btn-secondary btn-sm" data-action="close-modal">Close</button>
+      </div>
+      <div class="meal-lightbox-img-wrap">
+        <img class="meal-lightbox-img" src="${esc(beer.image_url)}" alt="${esc(beer.name)}" />
+      </div>
+    </div>
+  `);
+}
+
 function renderCrewView() {
   const b = state.bootstrap;
   const hostStats = b.hostStats || [];
@@ -2103,6 +2301,16 @@ function initPlacesMap() {
       marker.togglePopup();
     }
   }
+
+  // Default view: frame every geocoded pin so nothing sits off-screen
+  if (!selected && geocoded.length > 1) {
+    const bounds = new maplibregl.LngLatBounds();
+    for (const p of geocoded) bounds.extend([p.lng, p.lat]);
+    map.fitBounds(bounds, { padding: 44, maxZoom: 13, duration: 0 });
+  } else if (!selected && geocoded.length === 1) {
+    map.jumpTo({ center: [geocoded[0].lng, geocoded[0].lat], zoom: 13 });
+  }
+
   state.mapInstances.push(map);
 }
 
@@ -2142,8 +2350,9 @@ function renderPlacesPagination(page, totalPages) {
 function render() {
   const activeEl = document.activeElement;
   const activeId = activeEl?.id;
-  const selStart = activeId === 'places-search' ? activeEl.selectionStart : null;
-  const selEnd = activeId === 'places-search' ? activeEl.selectionEnd : null;
+  const isSearchInput = activeId === 'places-search' || activeId === 'beer-search';
+  const selStart = isSearchInput ? activeEl.selectionStart : null;
+  const selEnd = isSearchInput ? activeEl.selectionEnd : null;
 
   clearMaps();
   const main = document.getElementById('main-content');
@@ -2174,6 +2383,17 @@ function render() {
     }
   } else if (state.tab === 'crew') {
     main.innerHTML = renderCrewView();
+  } else if (state.tab === 'beers') {
+    main.innerHTML = renderBeerView();
+    if (activeId === 'beer-search') {
+      const searchEl = document.getElementById('beer-search');
+      if (searchEl) {
+        searchEl.focus({ preventScroll: true });
+        if (selStart !== null && selEnd !== null) {
+          searchEl.setSelectionRange(selStart, selEnd);
+        }
+      }
+    }
   }
 }
 
@@ -2741,25 +2961,73 @@ async function refreshRecentIssuesList() {
   }
 }
 
+function renderIssueScreenshotPreview(prepared) {
+  const el = document.getElementById('issue-screenshot-preview');
+  if (!el) return;
+  if (!prepared) {
+    el.innerHTML =
+      '<span style="font-size:12px;color:var(--muted);">📷 Attach or paste a screenshot (⌘V / Ctrl+V) — optional</span>';
+    return;
+  }
+  el.innerHTML = `
+    <span style="display:flex;align-items:center;gap:10px;width:100%;">
+      <img src="${esc(prepared.dataUrl)}" alt="Screenshot preview" style="width:56px;height:56px;object-fit:cover;border-radius:8px;" />
+      <span style="font-size:12px;color:var(--muted);flex:1;">Screenshot attached · ${Math.max(1, Math.round((prepared.byteSize || 0) / 1024))} KB</span>
+      <button type="button" class="link-btn" data-action="remove-issue-screenshot">Remove</button>
+    </span>
+  `;
+}
+
+function showIssueSubmitted(issue) {
+  const link = issue.github_issue_url
+    ? `<a class="btn btn-primary btn-sm" href="${esc(issue.github_issue_url)}" target="_blank" rel="noopener">View GitHub issue #${issue.github_issue_number} ↗</a>`
+    : '';
+  openModal(`
+    <div style="text-align:center;padding:8px 4px;">
+      <div style="font-size:34px;margin-bottom:8px;" aria-hidden="true">✅</div>
+      <h2 class="hero-title" style="font-size:20px;margin-bottom:6px;">Thanks — it’s queued</h2>
+      <p class="hero-sub" style="margin-bottom:14px;">
+        ${
+          issue.github_issue_url
+            ? `Opened GitHub issue #${issue.github_issue_number}. OpenBot picks it up, fixes it, and redeploys automatically.`
+            : `Saved as report #${issue.id} (${esc(issue.webhook_status)}).`
+        }
+      </p>
+      <div class="btn-row" style="justify-content:center;">
+        ${link}
+        <button class="btn btn-secondary btn-sm" data-action="close-modal">Done</button>
+      </div>
+      <div style="margin-top:14px;">
+        <button type="button" class="link-btn" data-action="open-report">Submit another</button>
+      </div>
+    </div>
+  `);
+}
+
 function openReportIssueModal() {
+  state.pendingIssueScreenshot = null;
   const ctx = `Tab: ${state.tab}; Week: ${state.bootstrap?.thisWeek?.dinner?.week_key || 'none'} (${state.bootstrap?.thisWeek?.dinner?.status || 'none'})`;
   openModal(`
-    <h2 class="hero-title" style="font-size:20px;margin-bottom:6px;">Report an issue</h2>
+    <h2 class="hero-title" style="font-size:20px;margin-bottom:6px;">Submit an issue or feature</h2>
     <p class="hero-sub" style="margin-bottom:14px;">Opens a GitHub issue on <code>tylermiranda/man-night</code> and queues OpenBot to fix &amp; redeploy automatically.</p>
-    <div class="stack" style="gap:10px;">
-      <input id="issue-title" class="input" placeholder="Short summary (e.g. Wrong address for Poplar)" />
+    <div id="issue-form" class="stack" style="gap:10px;">
+      <input id="issue-title" class="input" maxlength="140" placeholder="Short summary (e.g. Wrong address for Poplar)" />
       <select id="issue-category" class="select">
         <option value="bug">App bug or layout glitch</option>
+        <option value="feature">Feature idea</option>
         <option value="data">Wrong venue / history data</option>
-        <option value="feature">Feature suggestion</option>
         <option value="access">Notifications / Calendar issue</option>
       </select>
-      <textarea id="issue-desc" class="textarea" placeholder="What happened or what should change?"></textarea>
+      <textarea id="issue-desc" class="textarea" placeholder="What happened, or what should change?"></textarea>
+      <div>
+        <input id="issue-screenshot-input" class="sr-only-file" type="file" accept="image/jpeg,image/png,image/webp,image/gif,image/*" />
+        <label for="issue-screenshot-input" id="issue-screenshot-preview" class="meal-photo-dropzone" style="padding:10px 12px;"></label>
+      </div>
       <div style="font-size:12px;color:var(--muted);">Context attached: <code>${esc(ctx)}</code></div>
       <div id="issue-feedback"></div>
       <div class="btn-row" style="justify-content:flex-end;">
         <button class="btn btn-secondary btn-sm" data-action="close-modal">Close</button>
-        <button id="issue-submit-btn" class="btn btn-primary btn-sm" data-action="submit-issue" data-ctx="${esc(ctx)}">Submit issue</button>
+        <button id="issue-submit-btn" class="btn btn-primary btn-sm" data-action="submit-issue" data-ctx="${esc(ctx)}">Submit</button>
       </div>
       <div style="margin-top:8px;padding-top:10px;border-top:1px solid var(--line);">
         <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.04em;color:var(--muted);margin-bottom:4px;">Recent reports</div>
@@ -2767,6 +3035,7 @@ function openReportIssueModal() {
       </div>
     </div>
   `);
+  renderIssueScreenshotPreview(null);
   refreshRecentIssuesList();
 }
 
@@ -4012,19 +4281,92 @@ document.addEventListener('click', async (e) => {
       const description = document.getElementById('issue-desc')?.value?.trim();
       if (!title || !description) return toast('Enter a title and description');
       actEl.disabled = true;
-      const res = await api('/api/issues', {
-        method: 'POST',
-        body: JSON.stringify({ title, category, description, pageContext: actEl.dataset.ctx }),
-      });
-      const fb = document.getElementById('issue-feedback');
-      if (res.issue?.github_issue_url) {
-        fb.innerHTML = `<div class="badge badge-ok" style="padding:8px 12px;border-radius:10px;width:100%;">Created GitHub Issue #${res.issue.github_issue_number} · <a href="${esc(res.issue.github_issue_url)}" target="_blank" rel="noopener">View issue ↗</a></div>`;
+      try {
+        const shot = state.pendingIssueScreenshot;
+        const res = await api('/api/issues', {
+          method: 'POST',
+          body: JSON.stringify({
+            title,
+            category,
+            description,
+            pageContext: actEl.dataset.ctx,
+            imageData: shot?.dataUrl || null,
+            width: shot?.width ?? null,
+            height: shot?.height ?? null,
+          }),
+        });
+        state.pendingIssueScreenshot = null;
         toast('Issue reported & queued for OpenBot!');
-      } else {
-        fb.innerHTML = `<div class="badge badge-muted" style="padding:8px 12px;border-radius:10px;">Saved report #${res.issue?.id} (${esc(res.issue?.webhook_status)})</div>`;
+        showIssueSubmitted(res.issue || { id: 0, webhook_status: 'saved' });
+      } finally {
+        actEl.disabled = false;
       }
-      await refreshRecentIssuesList();
-      actEl.disabled = false;
+    } else if (action === 'remove-issue-screenshot') {
+      state.pendingIssueScreenshot = null;
+      const shotInput = document.getElementById('issue-screenshot-input');
+      if (shotInput) shotInput.value = '';
+      renderIssueScreenshotPreview(null);
+    } else if (action === 'open-beer-modal') {
+      openBeerModal();
+    } else if (action === 'set-beer-star') {
+      state.beerRating = Number(actEl.dataset.score) || 5;
+      const row = document.getElementById('beer-star-row');
+      if (row) {
+        row.querySelectorAll('.star-btn').forEach((btn) => {
+          btn.classList.toggle('on', Number(btn.dataset.score) <= state.beerRating);
+        });
+      }
+    } else if (action === 'remove-beer-photo') {
+      state.pendingBeerPhoto = null;
+      const beerPhotoInput = document.getElementById('beer-photo-input');
+      if (beerPhotoInput) beerPhotoInput.value = '';
+      renderBeerPhotoPreview(null);
+    } else if (action === 'view-beer-photo') {
+      openBeerPhotoModal(Number(actEl.dataset.beerId));
+    } else if (action === 'delete-beer') {
+      const beerId = Number(actEl.dataset.beerId);
+      const beer = (state.beers || []).find((b) => Number(b.id) === beerId);
+      openModal(`
+        <h2 class="hero-title" style="font-size:20px;margin-bottom:6px;">Delete this beer?</h2>
+        <p class="hero-sub" style="margin-bottom:14px;"><strong>${esc(beer?.name || 'This beer')}</strong> and its photo will be removed for everyone.</p>
+        <div class="btn-row" style="justify-content:flex-end;">
+          <button class="btn btn-secondary btn-sm" data-action="close-modal">Cancel</button>
+          <button class="btn btn-primary btn-sm" data-action="confirm-delete-beer" data-beer-id="${beerId}">Delete</button>
+        </div>
+      `);
+    } else if (action === 'confirm-delete-beer') {
+      const beerId = Number(actEl.dataset.beerId);
+      actEl.disabled = true;
+      await api(`/api/beers/${beerId}`, { method: 'DELETE' });
+      state.beers = state.beers.filter((b) => Number(b.id) !== beerId);
+      closeModal();
+      toast('Beer deleted');
+      await loadBeers();
+    } else if (action === 'submit-beer') {
+      const name = document.getElementById('beer-name')?.value?.trim();
+      if (!name) return toast('Enter the beer name');
+      const photo = state.pendingBeerPhoto;
+      const payload = {
+        name,
+        brewery: document.getElementById('beer-brewery')?.value || '',
+        style: document.getElementById('beer-style')?.value || '',
+        purchasedWhere: document.getElementById('beer-where')?.value || '',
+        notes: document.getElementById('beer-notes')?.value || '',
+        rating: state.beerRating,
+        imageData: photo?.dataUrl || null,
+        width: photo?.width ?? null,
+        height: photo?.height ?? null,
+      };
+      actEl.disabled = true;
+      try {
+        await api('/api/beers', { method: 'POST', body: JSON.stringify(payload) });
+        state.pendingBeerPhoto = null;
+        closeModal();
+        toast(`Logged ${name}`);
+        await loadBeers();
+      } finally {
+        actEl.disabled = false;
+      }
     }
   } catch (err) {
     toast(err.message || 'Action failed');
@@ -4053,6 +4395,10 @@ document.addEventListener('input', (e) => {
     state.placesQuery = e.target.value;
     state.placesPage = 1;
     render();
+  } else if (e.target.id === 'beer-search') {
+    state.beersQuery = e.target.value;
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => loadBeers(), 220);
   }
 });
 
@@ -4073,11 +4419,43 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
+document.addEventListener('paste', async (e) => {
+  const items = Array.from(e.clipboardData?.items || []);
+  const imageItem = items.find((it) => typeof it.type === 'string' && it.type.startsWith('image/'));
+  if (!imageItem) return;
+  const inIssueModal = Boolean(document.getElementById('issue-desc'));
+  const inBeerModal = Boolean(document.getElementById('beer-name'));
+  if (!inIssueModal && !inBeerModal) return;
+  const file = imageItem.getAsFile();
+  if (!file) return;
+  e.preventDefault();
+  try {
+    const prepared = await prepareMealPhotoUpload(file);
+    if (inIssueModal) {
+      state.pendingIssueScreenshot = prepared;
+      renderIssueScreenshotPreview(prepared);
+      toast('Screenshot attached');
+    } else {
+      state.pendingBeerPhoto = prepared;
+      renderBeerPhotoPreview(prepared);
+      toast('Photo attached');
+    }
+  } catch (err) {
+    toast(err.message || 'Could not read that image');
+  }
+});
+
 document.addEventListener('change', async (e) => {
   if (e.target.id === 'places-sort') {
     state.placesSort = e.target.value;
     state.placesPage = 1;
     render();
+  } else if (e.target.id === 'beer-crew-filter') {
+    state.beersUser = e.target.value;
+    await loadBeers();
+  } else if (e.target.id === 'beer-sort') {
+    state.beersSort = e.target.value;
+    await loadBeers();
   } else if (e.target.id === 'sellout-dinner-select') {
     state.selloutModalDinnerId = Number(e.target.value);
     renderSelloutModalBody();
@@ -4099,6 +4477,34 @@ document.addEventListener('change', async (e) => {
       state.pendingPhotoUpload = null;
       renderPhotoPreviewBox('photo-preview-wrap', null);
       toast(err.message || 'Could not process image');
+    }
+  } else if (e.target.id === 'beer-photo-input') {
+    const file = e.target.files?.[0];
+    const previewEl = document.getElementById('beer-photo-preview');
+    if (!file) return;
+    if (previewEl) previewEl.innerHTML = '<div style="font-size:12px;color:var(--muted);">Preparing photo…</div>';
+    try {
+      const prepared = await prepareMealPhotoUpload(file);
+      state.pendingBeerPhoto = prepared;
+      renderBeerPhotoPreview(prepared);
+    } catch (err) {
+      state.pendingBeerPhoto = null;
+      renderBeerPhotoPreview(null);
+      toast(err.message || 'Could not process image');
+    }
+  } else if (e.target.id === 'issue-screenshot-input') {
+    const file = e.target.files?.[0];
+    const previewEl = document.getElementById('issue-screenshot-preview');
+    if (!file) return;
+    if (previewEl) previewEl.innerHTML = '<div style="font-size:12px;color:var(--muted);">Preparing screenshot…</div>';
+    try {
+      const prepared = await prepareMealPhotoUpload(file);
+      state.pendingIssueScreenshot = prepared;
+      renderIssueScreenshotPreview(prepared);
+    } catch (err) {
+      state.pendingIssueScreenshot = null;
+      renderIssueScreenshotPreview(null);
+      toast(err.message || 'Could not process that screenshot');
     }
   } else if (e.target.id === 'modal-photo-input') {
     const file = e.target.files?.[0];

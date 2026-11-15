@@ -3,6 +3,9 @@ import { buildDirectionsUrl, syncLockedPlaceToCalendar } from './gcal';
 import { sendWebPushToSubscribers } from './push';
 import type {
   AllowedPhotoMime,
+  BeerListPayload,
+  BeerStats,
+  BeerViewRow,
   DinnerRow,
   Env,
   HostFavoritePlace,
@@ -1803,7 +1806,16 @@ async function signStandardWebhook(secret: string, msgId: string, timestamp: str
 export async function createIssueReport(
   env: Env,
   reporter: UserRow,
-  body: { title: string; description: string; category?: string; pageContext?: string },
+  body: {
+    title: string;
+    description: string;
+    category?: string;
+    pageContext?: string;
+    imageData?: string | null;
+    mimeType?: string;
+    width?: number | null;
+    height?: number | null;
+  },
 ) {
   const title = body.title.trim().slice(0, 140);
   const description = body.description.trim().slice(0, 4000);
@@ -1811,6 +1823,16 @@ export async function createIssueReport(
   const pageContext = (body.pageContext || '').trim().slice(0, 300);
 
   if (!title || !description) throw new Error('Title and description are required');
+
+  const screenshot = body.imageData ? parsePhotoDataInput(body.imageData) : null;
+  const screenshotWidth =
+    typeof body.width === 'number' && Number.isInteger(body.width) && body.width > 0 && body.width <= 12000
+      ? body.width
+      : null;
+  const screenshotHeight =
+    typeof body.height === 'number' && Number.isInteger(body.height) && body.height > 0 && body.height <= 12000
+      ? body.height
+      : null;
 
   const ins = await env.DB.prepare(
     `INSERT INTO issue_reports (reporter_slug, title, description, category, page_context)
@@ -1820,16 +1842,32 @@ export async function createIssueReport(
     .run();
 
   const reportId = Number(ins.meta.last_row_id);
+
+  if (screenshot) {
+    await env.DB.prepare('INSERT INTO issue_report_screenshots (report_id, image_base64) VALUES (?, ?)')
+      .bind(reportId, screenshot.canonicalBase64)
+      .run();
+    await env.DB.prepare(
+      `UPDATE issue_reports
+       SET screenshot_mime = ?, screenshot_byte_size = ?, screenshot_width = ?, screenshot_height = ?
+       WHERE id = ?`,
+    )
+      .bind(screenshot.mimeType, screenshot.byteSize, screenshotWidth, screenshotHeight, reportId)
+      .run();
+  }
+
   let githubIssueNumber: number | null = null;
   let githubIssueUrl: string | null = null;
   let webhookStatus = env.GITHUB_TOKEN ? 'pending' : 'no_github_token';
 
   if (env.GITHUB_TOKEN && env.GITHUB_REPO) {
+    const screenshotUrl = `${(env.APP_URL || '').replace(/\/+$/, '')}/api/issues/${reportId}/screenshot`;
     const issueBody = [
       `Reported from **Man Night PWA** by **${reporter.name}** (\`${reporter.email}\`)`,
       pageContext ? `- **Context**: \`${pageContext}\`` : '',
       `- **Category**: \`${category}\``,
       `- **Report ID**: \`#${reportId}\``,
+      screenshot ? `- **Screenshot**: \`${screenshotUrl}\` (Cloudflare Access protected — fetch with the service token)` : '',
       '',
       '### Details',
       description,
@@ -1913,6 +1951,312 @@ export async function createIssueReport(
     github_issue_number: githubIssueNumber,
     github_issue_url: githubIssueUrl,
     webhook_status: webhookStatus,
+  };
+}
+
+export const MAX_BEERS_LISTED = 200;
+
+interface RawBeerSelect {
+  id: number;
+  user_slug: string;
+  user_name: string | null;
+  name: string;
+  brewery: string;
+  style: string;
+  purchased_where: string;
+  rating: number | null;
+  notes: string;
+  created_at: string;
+  updated_at: string;
+  has_photo: number;
+}
+
+function mapBeerRow(row: RawBeerSelect): BeerViewRow {
+  const id = Number(row.id);
+  const hasPhoto = Number(row.has_photo) === 1;
+  return {
+    id,
+    user_slug: row.user_slug,
+    user_name: row.user_name ?? null,
+    name: row.name,
+    brewery: row.brewery || '',
+    style: row.style || '',
+    purchased_where: row.purchased_where || '',
+    rating: row.rating !== null && row.rating !== undefined ? Number(row.rating) : null,
+    notes: row.notes || '',
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    has_photo: hasPhoto,
+    image_url: hasPhoto ? `/api/beers/${id}/image` : null,
+  };
+}
+
+const BEER_SELECT_SQL = `
+  SELECT b.id, b.user_slug, u.name AS user_name, b.name, b.brewery, b.style, b.purchased_where,
+         b.rating, b.notes, b.created_at, b.updated_at,
+         CASE WHEN bp.beer_id IS NULL THEN 0 ELSE 1 END AS has_photo
+  FROM beers b
+  LEFT JOIN users u ON u.slug = b.user_slug
+  LEFT JOIN beer_photos bp ON bp.beer_id = b.id
+`;
+
+function cleanBeerText(value: unknown, max: number): string {
+  return typeof value === 'string' ? value.trim().slice(0, max) : '';
+}
+
+function normalizeBeerRating(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null;
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 1 || n > 5) {
+    throw new Error('Beer rating must be a whole number from 1 to 5');
+  }
+  return n;
+}
+
+function cleanImageDimension(value: unknown): number | null {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0 && value <= 12000 ? value : null;
+}
+
+export async function listBeers(
+  db: D1Database,
+  opts: { q?: string; userSlug?: string; sort?: string; limit?: number } = {},
+): Promise<BeerListPayload> {
+  const where: string[] = [];
+  const binds: unknown[] = [];
+  const q = (opts.q ?? '').trim().toLowerCase();
+  if (q) {
+    const pat = `%${q}%`;
+    where.push(
+      `(LOWER(b.name) LIKE ? OR LOWER(b.brewery) LIKE ? OR LOWER(b.style) LIKE ?
+        OR LOWER(b.purchased_where) LIKE ? OR LOWER(b.notes) LIKE ? OR LOWER(COALESCE(u.name, b.user_slug)) LIKE ?)`,
+    );
+    binds.push(pat, pat, pat, pat, pat, pat);
+  }
+  if (opts.userSlug) {
+    where.push('b.user_slug = ?');
+    binds.push(opts.userSlug);
+  }
+  const sortSql =
+    opts.sort === 'rating'
+      ? 'b.rating IS NULL ASC, b.rating DESC, b.created_at DESC, b.id DESC'
+      : opts.sort === 'name'
+        ? 'b.name COLLATE NOCASE ASC, b.id DESC'
+        : 'b.created_at DESC, b.id DESC';
+  const rawLimit = Number(opts.limit ?? MAX_BEERS_LISTED);
+  const limit = Number.isFinite(rawLimit)
+    ? Math.max(1, Math.min(MAX_BEERS_LISTED, Math.trunc(rawLimit)))
+    : MAX_BEERS_LISTED;
+
+  const rows =
+    (
+      await db
+        .prepare(`${BEER_SELECT_SQL} ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY ${sortSql} LIMIT ?`)
+        .bind(...binds, limit)
+        .all<RawBeerSelect>()
+    ).results ?? [];
+
+  const statsRow = await db
+    .prepare(
+      `SELECT COUNT(*) AS total,
+              ROUND(AVG(rating), 2) AS avg_rating,
+              COUNT(DISTINCT CASE WHEN TRIM(brewery) != '' THEN LOWER(TRIM(brewery)) END) AS breweries,
+              COUNT(DISTINCT CASE WHEN TRIM(style) != '' THEN LOWER(TRIM(style)) END) AS styles
+       FROM beers`,
+    )
+    .first<{ total: number; avg_rating: number | null; breweries: number; styles: number }>();
+
+  const stats: BeerStats = {
+    total: Number(statsRow?.total ?? 0),
+    avg_rating:
+      statsRow?.avg_rating !== null && statsRow?.avg_rating !== undefined ? Number(statsRow.avg_rating) : null,
+    breweries: Number(statsRow?.breweries ?? 0),
+    styles: Number(statsRow?.styles ?? 0),
+  };
+
+  const beers = rows.map(mapBeerRow);
+  return { beers, total: beers.length, stats };
+}
+
+async function loadBeerRow(db: D1Database, beerId: number): Promise<BeerViewRow> {
+  const row = await db.prepare(`${BEER_SELECT_SQL} WHERE b.id = ?`).bind(beerId).first<RawBeerSelect>();
+  if (!row) throw new Error('Beer not found');
+  return mapBeerRow(row);
+}
+
+export interface BeerInput {
+  name?: string;
+  brewery?: string;
+  style?: string;
+  purchasedWhere?: string;
+  rating?: number | string | null;
+  notes?: string;
+  imageData?: string | null;
+  width?: number | null;
+  height?: number | null;
+}
+
+export async function createBeer(db: D1Database, userSlug: string, input: BeerInput): Promise<BeerViewRow> {
+  const name = cleanBeerText(input.name, 120);
+  if (!name) throw new Error('Beer name is required');
+  const brewery = cleanBeerText(input.brewery, 120);
+  const style = cleanBeerText(input.style, 120);
+  const purchasedWhere = cleanBeerText(input.purchasedWhere, 120);
+  const notes = cleanBeerText(input.notes, 600);
+  const rating = normalizeBeerRating(input.rating);
+  const photo = input.imageData ? parsePhotoDataInput(input.imageData) : null;
+
+  const ins = await db
+    .prepare(
+      `INSERT INTO beers (user_slug, name, brewery, style, purchased_where, rating, notes, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
+    )
+    .bind(userSlug, name, brewery, style, purchasedWhere, rating, notes)
+    .run();
+
+  const beerId = Number(ins.meta.last_row_id);
+  if (photo) {
+    try {
+      await db
+        .prepare(
+          `INSERT INTO beer_photos (beer_id, mime_type, width, height, byte_size, image_base64)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+        )
+        .bind(
+          beerId,
+          photo.mimeType,
+          cleanImageDimension(input.width),
+          cleanImageDimension(input.height),
+          photo.byteSize,
+          photo.canonicalBase64,
+        )
+        .run();
+    } catch (err) {
+      await db.prepare('DELETE FROM beers WHERE id = ?').bind(beerId).run().catch(() => {});
+      throw err;
+    }
+  }
+
+  return loadBeerRow(db, beerId);
+}
+
+export async function updateBeer(
+  db: D1Database,
+  beerId: number,
+  userSlug: string,
+  input: BeerInput,
+): Promise<BeerViewRow> {
+  const existing = await db
+    .prepare('SELECT id, user_slug FROM beers WHERE id = ?')
+    .bind(beerId)
+    .first<{ id: number; user_slug: string }>();
+  if (!existing) throw new Error('Beer not found');
+  if (existing.user_slug !== userSlug) throw new Error('Forbidden: you can only edit your own beers');
+
+  const name = cleanBeerText(input.name, 120);
+  if (!name) throw new Error('Beer name is required');
+  const brewery = cleanBeerText(input.brewery, 120);
+  const style = cleanBeerText(input.style, 120);
+  const purchasedWhere = cleanBeerText(input.purchasedWhere, 120);
+  const notes = cleanBeerText(input.notes, 600);
+  const rating = normalizeBeerRating(input.rating);
+  const photo = input.imageData ? parsePhotoDataInput(input.imageData) : null;
+
+  await db
+    .prepare(
+      `UPDATE beers
+       SET name = ?, brewery = ?, style = ?, purchased_where = ?, rating = ?, notes = ?, updated_at = datetime('now')
+       WHERE id = ?`,
+    )
+    .bind(name, brewery, style, purchasedWhere, rating, notes, beerId)
+    .run();
+
+  if (photo) {
+    await db
+      .prepare(
+        `INSERT INTO beer_photos (beer_id, mime_type, width, height, byte_size, image_base64)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(beer_id) DO UPDATE SET
+           mime_type = excluded.mime_type,
+           width = excluded.width,
+           height = excluded.height,
+           byte_size = excluded.byte_size,
+           image_base64 = excluded.image_base64`,
+      )
+      .bind(
+        beerId,
+        photo.mimeType,
+        cleanImageDimension(input.width),
+        cleanImageDimension(input.height),
+        photo.byteSize,
+        photo.canonicalBase64,
+      )
+      .run();
+  }
+
+  return loadBeerRow(db, beerId);
+}
+
+export async function deleteBeer(
+  db: D1Database,
+  beerId: number,
+  userSlug: string,
+): Promise<{ deleted: true; id: number }> {
+  const existing = await db
+    .prepare('SELECT id, user_slug FROM beers WHERE id = ?')
+    .bind(beerId)
+    .first<{ id: number; user_slug: string }>();
+  if (!existing) throw new Error('Beer not found');
+  if (existing.user_slug !== userSlug) throw new Error('Forbidden: you can only delete your own beers');
+  await db.prepare('DELETE FROM beers WHERE id = ?').bind(beerId).run();
+  return { deleted: true, id: beerId };
+}
+
+export async function getBeerPhotoBinary(
+  db: D1Database,
+  beerId: number,
+): Promise<{ id: number; mimeType: AllowedPhotoMime; bytes: Uint8Array; byteSize: number } | null> {
+  const row = await db
+    .prepare(
+      `SELECT bp.beer_id, bp.mime_type, bp.byte_size, bp.image_base64
+       FROM beer_photos bp
+       WHERE bp.beer_id = ?`,
+    )
+    .bind(beerId)
+    .first<{ beer_id: number; mime_type: string; byte_size: number; image_base64: string }>();
+  if (!row) return null;
+  const mimeType = ALLOWED_PHOTO_MIMES.has(row.mime_type as AllowedPhotoMime)
+    ? (row.mime_type as AllowedPhotoMime)
+    : 'image/jpeg';
+  return {
+    id: Number(row.beer_id),
+    mimeType,
+    bytes: base64ToUint8(row.image_base64),
+    byteSize: Number(row.byte_size),
+  };
+}
+
+export async function getIssueReportScreenshot(
+  db: D1Database,
+  reportId: number,
+): Promise<{ id: number; mimeType: AllowedPhotoMime; bytes: Uint8Array; byteSize: number } | null> {
+  const row = await db
+    .prepare(
+      `SELECT ir.id, ir.screenshot_mime, ir.screenshot_byte_size, s.image_base64
+       FROM issue_reports ir
+       JOIN issue_report_screenshots s ON s.report_id = ir.id
+       WHERE ir.id = ?`,
+    )
+    .bind(reportId)
+    .first<{ id: number; screenshot_mime: string | null; screenshot_byte_size: number | null; image_base64: string }>();
+  if (!row) return null;
+  const mimeType = ALLOWED_PHOTO_MIMES.has(row.screenshot_mime as AllowedPhotoMime)
+    ? (row.screenshot_mime as AllowedPhotoMime)
+    : 'image/jpeg';
+  return {
+    id: Number(row.id),
+    mimeType,
+    bytes: base64ToUint8(row.image_base64),
+    byteSize: Number(row.screenshot_byte_size ?? 0),
   };
 }
 

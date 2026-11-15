@@ -10,17 +10,22 @@ import {
   castNoonVote,
   castRsvp,
   closeNoonVote,
+  createBeer,
   createIssueReport,
   createPlacePoll,
   createRestaurant,
+  deleteBeer,
   deleteMealPhoto,
   drawLuckyPlaces,
   getActiveDinner,
+  getBeerPhotoBinary,
   getBootstrapPayload,
   getCentralDateStr,
   getDinnerReviews,
+  getIssueReportScreenshot,
   getMealPhotoBinary,
   getPlaceReviews,
+  listBeers,
   listMealPhotos,
   lockNight,
   lockPlace,
@@ -28,6 +33,7 @@ import {
   safeRestaurantSelectSql,
   setDinnerMealPrice,
   submitRating,
+  updateBeer,
   uploadMealPhoto,
 } from './workflow';
 
@@ -695,6 +701,96 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
       }
     }
 
+    if (path === '/api/beers' && method === 'GET') {
+      const q = (url.searchParams.get('q') || '').trim();
+      const userSlug = (url.searchParams.get('user') || '').trim().toLowerCase();
+      const sort = (url.searchParams.get('sort') || 'recent').trim();
+      const limitRaw = url.searchParams.get('limit');
+      const limit = limitRaw ? Number(limitRaw) : undefined;
+      return json(await listBeers(env.DB, { q, userSlug: userSlug || undefined, sort, limit }));
+    }
+
+    if (path === '/api/beers' && method === 'POST') {
+      const body = await readJson<{
+        name?: string;
+        brewery?: string;
+        style?: string;
+        purchasedWhere?: string;
+        rating?: number | string | null;
+        notes?: string;
+        imageData?: string | null;
+        width?: number | null;
+        height?: number | null;
+      }>(request);
+      const beer = await createBeer(env.DB, user.slug, body);
+      return json({ ok: true, beer }, 201);
+    }
+
+    const beerImageMatch = path.match(/^\/api\/beers\/(\d+)\/image$/);
+    if (beerImageMatch && method === 'GET') {
+      const beerId = Number(beerImageMatch[1]);
+      const etag = `"beer-photo-${beerId}"`;
+      if (request.headers.get('If-None-Match') === etag) {
+        const exists = await env.DB.prepare('SELECT beer_id FROM beer_photos WHERE beer_id = ?')
+          .bind(beerId)
+          .first<{ beer_id: number }>();
+        if (!exists) return json({ error: 'Photo not found' }, 404);
+        return new Response(null, {
+          status: 304,
+          headers: { ETag: etag, 'Cache-Control': 'private, max-age=604800, immutable' },
+        });
+      }
+      const photo = await getBeerPhotoBinary(env.DB, beerId);
+      if (!photo) return json({ error: 'Photo not found' }, 404);
+      return new Response(photo.bytes, {
+        status: 200,
+        headers: {
+          'Content-Type': photo.mimeType,
+          'Content-Length': String(photo.bytes.byteLength),
+          'Cache-Control': 'private, max-age=604800, immutable',
+          ETag: etag,
+          'X-Content-Type-Options': 'nosniff',
+          'Content-Security-Policy': "default-src 'none'",
+        },
+      });
+    }
+
+    const beerMatch = path.match(/^\/api\/beers\/(\d+)$/);
+    if (beerMatch && method === 'PATCH') {
+      const body = await readJson<{
+        name?: string;
+        brewery?: string;
+        style?: string;
+        purchasedWhere?: string;
+        rating?: number | string | null;
+        notes?: string;
+        imageData?: string | null;
+        width?: number | null;
+        height?: number | null;
+      }>(request);
+      try {
+        const beer = await updateBeer(env.DB, Number(beerMatch[1]), user.slug, body);
+        return json({ ok: true, beer });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Server error';
+        if (message === 'Beer not found') return json({ error: message }, 404);
+        if (message.startsWith('Forbidden:')) return json({ error: message }, 403);
+        return json({ error: message }, 400);
+      }
+    }
+
+    if (beerMatch && method === 'DELETE') {
+      try {
+        const res = await deleteBeer(env.DB, Number(beerMatch[1]), user.slug);
+        return json({ ok: true, ...res });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Server error';
+        if (message === 'Beer not found') return json({ error: message }, 404);
+        if (message.startsWith('Forbidden:')) return json({ error: message }, 403);
+        return json({ error: message }, 400);
+      }
+    }
+
     if (path === '/api/places' && method === 'POST') {
       const body = await readJson<{ name: string; address?: string; city?: string; lat?: number; lng?: number }>(request);
       const place = await createRestaurant(env.DB, body);
@@ -775,6 +871,35 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
       return json({ ok: true, ...res });
     }
 
+    const issueScreenshotMatch = path.match(/^\/api\/issues\/(\d+)\/screenshot$/);
+    if (issueScreenshotMatch && method === 'GET') {
+      const reportId = Number(issueScreenshotMatch[1]);
+      const etag = `"issue-shot-${reportId}"`;
+      if (request.headers.get('If-None-Match') === etag) {
+        const exists = await env.DB.prepare('SELECT report_id FROM issue_report_screenshots WHERE report_id = ?')
+          .bind(reportId)
+          .first<{ report_id: number }>();
+        if (!exists) return json({ error: 'Screenshot not found' }, 404);
+        return new Response(null, {
+          status: 304,
+          headers: { ETag: etag, 'Cache-Control': 'private, max-age=604800, immutable' },
+        });
+      }
+      const shot = await getIssueReportScreenshot(env.DB, reportId);
+      if (!shot) return json({ error: 'Screenshot not found' }, 404);
+      return new Response(shot.bytes, {
+        status: 200,
+        headers: {
+          'Content-Type': shot.mimeType,
+          'Content-Length': String(shot.bytes.byteLength),
+          'Cache-Control': 'private, max-age=604800, immutable',
+          ETag: etag,
+          'X-Content-Type-Options': 'nosniff',
+          'Content-Security-Policy': "default-src 'none'",
+        },
+      });
+    }
+
     if (path === '/api/issues' && method === 'GET') {
       const rows = (
         await env.DB.prepare('SELECT * FROM issue_reports ORDER BY created_at DESC LIMIT 25').all()
@@ -783,7 +908,15 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
     }
 
     if (path === '/api/issues' && method === 'POST') {
-      const body = await readJson<{ title: string; description: string; category?: string; pageContext?: string }>(request);
+      const body = await readJson<{
+        title: string;
+        description: string;
+        category?: string;
+        pageContext?: string;
+        imageData?: string | null;
+        width?: number | null;
+        height?: number | null;
+      }>(request);
       const result = await createIssueReport(env, user, body);
       return json({ ok: true, issue: result }, 201);
     }

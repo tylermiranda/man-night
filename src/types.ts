@@ -99,6 +99,35 @@ export interface MealPhotoViewRow {
   restaurant_name?: string | null;
 }
 
+export interface BeerViewRow {
+  id: number;
+  user_slug: string;
+  user_name: string | null;
+  name: string;
+  brewery: string;
+  style: string;
+  purchased_where: string;
+  rating: number | null;
+  notes: string;
+  created_at: string;
+  updated_at: string;
+  has_photo: boolean;
+  image_url: string | null;
+}
+
+export interface BeerStats {
+  total: number;
+  avg_rating: number | null;
+  breweries: number;
+  styles: number;
+}
+
+export interface BeerListPayload {
+  beers: BeerViewRow[];
+  total: number;
+  stats: BeerStats;
+}
+
 export interface RatingViewRow {
   id: number;
   dinner_id: number;

@@ -11,6 +11,30 @@ import type { WhatsNewEntry, WhatsNewPayload, WhatsNewViewEntry } from './types'
  */
 export const WHATS_NEW_RELEASES: readonly WhatsNewEntry[] = [
   {
+    id: '2026-11-15-beer-cellar',
+    date: '2026-11-15',
+    kind: 'feature',
+    title: '🍺 Beer Cellar & Crew Search',
+    summary:
+      'Log every beer you buy—name, brewery, style, where you got it, a 1–5 rating, tasting notes, and a photo—then search the whole crew’s cellar by beer, brewery, store, or member.',
+    creditSlug: 'jacob',
+    creditName: 'Jacob',
+    creditRole: 'idea',
+    issueNumber: 15,
+  },
+  {
+    id: '2026-11-15-issue-feature-form',
+    date: '2026-11-15',
+    kind: 'fix',
+    title: '📝 Faster Issue & Feature Reports',
+    summary:
+      'The report button now reads Issue / Feature, accepts a pasted or attached screenshot, hides the form after you submit, and the Places map frames every pin on load.',
+    creditSlug: 'tyler',
+    creditName: 'Tyler',
+    creditRole: 'idea',
+    issueNumber: 16,
+  },
+  {
     id: '2026-11-15-favorite-places',
     date: '2026-11-15',
     kind: 'feature',

@@ -23,6 +23,8 @@ const migration0007Sql = readFileSync(resolve(rootDir, 'migrations/0007_extra_gu
 const migration0008Sql = readFileSync(resolve(rootDir, 'migrations/0008_whats_new.sql'), 'utf8');
 const migration0009Sql = readFileSync(resolve(rootDir, 'migrations/0009_meal_photos.sql'), 'utf8');
 const migration0010Sql = readFileSync(resolve(rootDir, 'migrations/0010_meal_prices.sql'), 'utf8');
+const migration0011Sql = readFileSync(resolve(rootDir, 'migrations/0011_issue_screenshots.sql'), 'utf8');
+const migration0012Sql = readFileSync(resolve(rootDir, 'migrations/0012_beers.sql'), 'utf8');
 
 function makeEnv(db: D1Database, overrides: Partial<Env> = {}): Env {
   return {
@@ -61,6 +63,8 @@ describe('Man Night PWA Worker & Seed', () => {
     await db.exec(migration0008Sql);
     await db.exec(migration0009Sql);
     await db.exec(migration0010Sql);
+    await db.exec(migration0011Sql);
+    await db.exec(migration0012Sql);
     env = makeEnv(db);
   });
 
@@ -1636,8 +1640,11 @@ describe('Man Night PWA Worker & Seed', () => {
     // 1. Changelog integrity
     const seenIds = new Set<string>();
     expect(WHATS_NEW_RELEASES.length).toBeGreaterThanOrEqual(11);
-    expect(WHATS_NEW_RELEASES[0].id).toBe('2026-11-15-favorite-places');
-    expect(WHATS_NEW_RELEASES[0].issueNumber).toBe(14);
+    expect(WHATS_NEW_RELEASES[0].id).toBe('2026-11-15-beer-cellar');
+    expect(WHATS_NEW_RELEASES[0].issueNumber).toBe(15);
+    expect(WHATS_NEW_RELEASES[1].id).toBe('2026-11-15-issue-feature-form');
+    expect(WHATS_NEW_RELEASES[1].issueNumber).toBe(16);
+    expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-15-favorite-places' && e.issueNumber === 14)).toBe(true);
     expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-15-meal-prices' && e.issueNumber === 13)).toBe(true);
     expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-15-meal-pictures' && e.issueNumber === 12)).toBe(true);
     expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-15-whats-new' && e.issueNumber === 11)).toBe(true);
@@ -1721,7 +1728,7 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(bootInit.whatsNew.seenId).toBeNull();
     expect(bootInit.whatsNew.hasUnseen).toBe(true);
     expect(bootInit.whatsNew.unseenCount).toBe(WHATS_NEW_RELEASES.length);
-    expect(bootInit.whatsNew.entries[0].creditLabel).toBe('Idea by Tyler');
+    expect(bootInit.whatsNew.entries[0].creditLabel).toBe('Idea by Jacob');
 
     const getRes = await worker.fetch(makeReq('/api/whats-new'), env);
     expect(getRes.status).toBe(200);
@@ -2245,12 +2252,194 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(appJs).toContain('times_picked');
 
     // 3. Verify changelog has entry for issue 14
-    expect(WHATS_NEW_RELEASES[0].id).toBe('2026-11-15-favorite-places');
-    expect(WHATS_NEW_RELEASES[0].issueNumber).toBe(14);
-    expect(WHATS_NEW_RELEASES[0].creditSlug).toBe('tyler');
+    const favoritePlacesEntry = WHATS_NEW_RELEASES.find((entry) => entry.issueNumber === 14);
+    expect(favoritePlacesEntry).toBeDefined();
+    expect(favoritePlacesEntry?.id).toBe('2026-11-15-favorite-places');
+    expect(favoritePlacesEntry?.creditSlug).toBe('tyler');
 
     // 4. Verify service worker cache version
     const swJs = readFileSync(resolve(rootDir, 'public/sw.js'), 'utf8');
     expect(swJs).toMatch(/CACHE_NAME = 'man-night-shell-v\d+'/);
+  });
+
+  it('supports Issue #16: screenshot paste, clearer report button, hidden form, and map fitBounds', async () => {
+    const pngBase64 =
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
+    const res = await worker.fetch(
+      makeReq('/api/issues', 'POST', {
+        title: 'Map pins cut off',
+        description: 'Zoom the map out so every pin shows on first load.',
+        category: 'bug',
+        pageContext: 'Tab: places; Week: 2026-W47',
+        imageData: `data:image/png;base64,${pngBase64}`,
+        width: 800,
+        height: 600,
+      }),
+      env,
+    );
+    expect(res.status).toBe(201);
+    const data = (await res.json()) as { issue: { id: number; webhook_status: string } };
+    expect(data.issue.id).toBeGreaterThan(0);
+
+    const shotRes = await worker.fetch(makeReq(`/api/issues/${data.issue.id}/screenshot`), env);
+    expect(shotRes.status).toBe(200);
+    expect(shotRes.headers.get('Content-Type')).toBe('image/png');
+    const shotBytes = new Uint8Array(await shotRes.arrayBuffer());
+    expect(shotBytes.byteLength).toBe(Buffer.from(pngBase64, 'base64').byteLength);
+
+    const missingShot = await worker.fetch(makeReq('/api/issues/99999/screenshot'), env);
+    expect(missingShot.status).toBe(404);
+
+    const html = readFileSync(resolve(rootDir, 'public/index.html'), 'utf8');
+    expect(html).toContain('Issue / Feature');
+    expect(html).toContain('data-tab="beers"');
+
+    const appJs = readFileSync(resolve(rootDir, 'public/app.js'), 'utf8');
+    expect(appJs).toContain("addEventListener('paste'");
+    expect(appJs).toContain('issue-screenshot-input');
+    expect(appJs).toContain('showIssueSubmitted');
+    expect(appJs).toContain('map.fitBounds(bounds');
+
+    const entry = WHATS_NEW_RELEASES.find((e) => e.issueNumber === 16);
+    expect(entry).toBeDefined();
+    expect(entry?.creditSlug).toBe('tyler');
+  });
+
+  it('supports Issue #15: beer tracking with ratings, photos, and crew-wide search', async () => {
+    const pngBase64 =
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
+    const created = await worker.fetch(
+      makeReq('/api/beers', 'POST', {
+        name: 'Tank 7',
+        brewery: 'Boulevard',
+        style: 'Saison',
+        purchasedWhere: 'Total Wine',
+        rating: 5,
+        notes: 'Peppery and dry',
+        imageData: `data:image/png;base64,${pngBase64}`,
+        width: 64,
+        height: 64,
+      }),
+      env,
+    );
+    expect(created.status).toBe(201);
+    const createdBody = (await created.json()) as {
+      beer: { id: number; name: string; rating: number; image_url: string | null; user_slug: string };
+    };
+    expect(createdBody.beer.name).toBe('Tank 7');
+    expect(createdBody.beer.rating).toBe(5);
+    expect(createdBody.beer.user_slug).toBe('tyler');
+    expect(createdBody.beer.image_url).toBe(`/api/beers/${createdBody.beer.id}/image`);
+
+    const jacobCreated = await worker.fetch(
+      makeReq(
+        '/api/beers',
+        'POST',
+        {
+          name: 'Little Sumpin’ Sumpin’',
+          brewery: 'Lagunitas',
+          style: 'Wheat Ale',
+          purchasedWhere: 'Liquor Mart',
+          rating: 4,
+        },
+        { 'Cf-Access-Authenticated-User-Email': 'werth6of7@gmail.com' },
+      ),
+      env,
+    );
+    expect(jacobCreated.status).toBe(201);
+    const jacobBody = (await jacobCreated.json()) as { beer: { id: number; user_slug: string; image_url: string | null } };
+    expect(jacobBody.beer.user_slug).toBe('jacob');
+    expect(jacobBody.beer.image_url).toBeNull();
+
+    // Crew-wide list with aggregate stats
+    const listRes = await worker.fetch(makeReq('/api/beers'), env);
+    expect(listRes.status).toBe(200);
+    const list = (await listRes.json()) as {
+      beers: Array<{ name: string; rating: number }>;
+      total: number;
+      stats: { total: number; avg_rating: number; breweries: number; styles: number };
+    };
+    expect(list.total).toBe(2);
+    expect(list.stats.total).toBe(2);
+    expect(list.stats.avg_rating).toBe(4.5);
+    expect(list.stats.breweries).toBe(2);
+    expect(list.stats.styles).toBe(2);
+
+    // Search across beer name, brewery, store, and crew member
+    const byName = (await (await worker.fetch(makeReq('/api/beers?q=tank'), env)).json()) as {
+      beers: Array<{ name: string }>;
+    };
+    expect(byName.beers.map((b) => b.name)).toEqual(['Tank 7']);
+
+    const byBrewery = (await (await worker.fetch(makeReq('/api/beers?q=lagunitas'), env)).json()) as {
+      beers: Array<{ name: string }>;
+    };
+    expect(byBrewery.beers).toHaveLength(1);
+    expect(byBrewery.beers[0].name).toContain('Sumpin');
+
+    const byStore = (await (await worker.fetch(makeReq('/api/beers?q=total%20wine'), env)).json()) as {
+      beers: Array<{ name: string }>;
+    };
+    expect(byStore.beers).toHaveLength(1);
+
+    const byMember = (await (await worker.fetch(makeReq('/api/beers?user=jacob'), env)).json()) as {
+      beers: Array<{ user_slug: string }>;
+    };
+    expect(byMember.beers).toHaveLength(1);
+    expect(byMember.beers[0].user_slug).toBe('jacob');
+
+    const byRating = (await (await worker.fetch(makeReq('/api/beers?sort=rating'), env)).json()) as {
+      beers: Array<{ rating: number }>;
+    };
+    expect(byRating.beers[0].rating).toBe(5);
+
+    // Photo endpoint
+    const photoRes = await worker.fetch(makeReq(`/api/beers/${createdBody.beer.id}/image`), env);
+    expect(photoRes.status).toBe(200);
+    expect(photoRes.headers.get('Content-Type')).toBe('image/png');
+
+    // Validation
+    const badRating = await worker.fetch(makeReq('/api/beers', 'POST', { name: 'Bad', rating: 9 }), env);
+    expect(badRating.status).toBe(400);
+    const noName = await worker.fetch(makeReq('/api/beers', 'POST', { brewery: 'Nobody' }), env);
+    expect(noName.status).toBe(400);
+
+    // Owner-only edits
+    const forbiddenPatch = await worker.fetch(
+      makeReq(`/api/beers/${jacobBody.beer.id}`, 'PATCH', { name: 'Hijacked', rating: 1 }),
+      env,
+    );
+    expect(forbiddenPatch.status).toBe(403);
+
+    const patch = await worker.fetch(
+      makeReq(`/api/beers/${createdBody.beer.id}`, 'PATCH', { name: 'Tank 7', brewery: 'Boulevard', rating: 4 }),
+      env,
+    );
+    expect(patch.status).toBe(200);
+    const patched = (await patch.json()) as { beer: { rating: number } };
+    expect(patched.beer.rating).toBe(4);
+
+    const forbiddenDelete = await worker.fetch(makeReq(`/api/beers/${jacobBody.beer.id}`, 'DELETE'), env);
+    expect(forbiddenDelete.status).toBe(403);
+
+    const deleted = await worker.fetch(makeReq(`/api/beers/${createdBody.beer.id}`, 'DELETE'), env);
+    expect(deleted.status).toBe(200);
+    const afterDelete = (await (await worker.fetch(makeReq('/api/beers?q=tank'), env)).json()) as {
+      beers: unknown[];
+    };
+    expect(afterDelete.beers).toHaveLength(0);
+
+    // UI + release wiring
+    const appJs = readFileSync(resolve(rootDir, 'public/app.js'), 'utf8');
+    expect(appJs).toContain('renderBeerView');
+    expect(appJs).toContain('beer-search');
+    expect(appJs).toContain('open-beer-modal');
+    const styles = readFileSync(resolve(rootDir, 'public/styles.css'), 'utf8');
+    expect(styles).toContain('.beer-grid');
+    const entry = WHATS_NEW_RELEASES.find((e) => e.issueNumber === 15);
+    expect(entry).toBeDefined();
+    expect(entry?.creditSlug).toBe('jacob');
   });
 });

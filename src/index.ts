@@ -471,7 +471,14 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
     }
 
     if (path === '/api/week/rate' && method === 'POST') {
-      const body = await readJson<{ dinnerId: number; score: number; dish?: string; comment?: string; price?: number | string | null }>(request);
+      const body = await readJson<{
+        dinnerId: number;
+        score: number;
+        dish?: string;
+        appetizer?: string;
+        comment?: string;
+        price?: number | string | null;
+      }>(request);
       const dinnerId = Number(body.dinnerId);
       const score = Number(body.score);
       if (!Number.isInteger(dinnerId) || dinnerId <= 0) {
@@ -480,7 +487,16 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
       if (!Number.isInteger(score) || score < 1 || score > 5) {
         return json({ error: 'Score must be 1 to 5' }, 400);
       }
-      const rating = await submitRating(env.DB, dinnerId, user.slug, score, body.dish ?? '', body.comment ?? '', body.price ?? null);
+      const rating = await submitRating(
+        env.DB,
+        dinnerId,
+        user.slug,
+        score,
+        body.dish ?? '',
+        body.comment ?? '',
+        body.price ?? null,
+        body.appetizer ?? '',
+      );
       return json({ ok: true, rating });
     }
 
@@ -653,6 +669,7 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
         imageData?: unknown;
         mimeType?: string;
         dish?: string;
+        appetizer?: string;
         caption?: string;
         width?: number | null;
         height?: number | null;
@@ -681,6 +698,7 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
         imageData: body.imageData,
         mimeType: body.mimeType,
         dish: body.dish,
+        appetizer: body.appetizer,
         caption: body.caption,
         width: body.width ?? null,
         height: body.height ?? null,

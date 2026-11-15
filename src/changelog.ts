@@ -11,6 +11,18 @@ import type { WhatsNewEntry, WhatsNewPayload, WhatsNewViewEntry } from './types'
  */
 export const WHATS_NEW_RELEASES: readonly WhatsNewEntry[] = [
   {
+    id: '2026-11-15-appetizers',
+    date: '2026-11-15',
+    kind: 'feature',
+    title: '🥟 Appetizer Tracking',
+    summary:
+      'Keep track of appetizers alongside standout dishes across dinners, reviews, and meal photos—with dedicated appetizer fields, review badges, and restaurant favorite app callouts.',
+    creditSlug: 'jacob',
+    creditName: 'Jacob',
+    creditRole: 'idea',
+    issueNumber: 17,
+  },
+  {
     id: '2026-11-15-beer-cellar',
     date: '2026-11-15',
     kind: 'feature',

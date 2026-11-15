@@ -1067,6 +1067,7 @@ export async function submitRating(
   dish: string,
   comment: string,
   priceInput?: unknown,
+  appetizerInput?: string,
 ) {
   const dinner = await db
     .prepare('SELECT id, restaurant_id FROM dinners WHERE id = ?')
@@ -1075,17 +1076,18 @@ export async function submitRating(
   if (!dinner) throw new Error('Dinner not found');
 
   const cleanDish = dish.trim().slice(0, 140);
+  const cleanAppetizer = (appetizerInput ?? '').trim().slice(0, 140);
   const cleanComment = comment.trim().slice(0, 500);
   const price = parseMealPrice(priceInput);
 
   await db
     .prepare(
-      `INSERT INTO ratings (dinner_id, restaurant_id, user_slug, score, dish, comment, price, rated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      `INSERT INTO ratings (dinner_id, restaurant_id, user_slug, score, dish, appetizer, comment, price, rated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
        ON CONFLICT(dinner_id, user_slug)
-       DO UPDATE SET restaurant_id = excluded.restaurant_id, score = excluded.score, dish = excluded.dish, comment = excluded.comment, price = excluded.price, rated_at = datetime('now')`,
+       DO UPDATE SET restaurant_id = excluded.restaurant_id, score = excluded.score, dish = excluded.dish, appetizer = excluded.appetizer, comment = excluded.comment, price = excluded.price, rated_at = datetime('now')`,
     )
-    .bind(dinnerId, dinner.restaurant_id ?? null, userSlug, score, cleanDish, cleanComment, price)
+    .bind(dinnerId, dinner.restaurant_id ?? null, userSlug, score, cleanDish, cleanAppetizer, cleanComment, price)
     .run();
 
   await recalcRestaurantAvgRating(db, dinner.restaurant_id);
@@ -1095,6 +1097,7 @@ export async function submitRating(
     restaurant_id: dinner.restaurant_id,
     score,
     dish: cleanDish,
+    appetizer: cleanAppetizer,
     comment: cleanComment,
     price,
   };
@@ -1415,6 +1418,7 @@ interface RawMealPhotoSelect {
   user_slug: string;
   user_name: string | null;
   dish: string;
+  appetizer: string;
   caption: string;
   mime_type: string;
   width: number | null;
@@ -1439,6 +1443,7 @@ function mapMealPhotoRow(row: RawMealPhotoSelect): MealPhotoViewRow {
     user_slug: row.user_slug,
     user_name: row.user_name ?? null,
     dish: row.dish || '',
+    appetizer: row.appetizer || '',
     caption: row.caption || '',
     mime_type: mimeType,
     width: row.width !== null && row.width !== undefined ? Number(row.width) : null,
@@ -1455,7 +1460,7 @@ function mapMealPhotoRow(row: RawMealPhotoSelect): MealPhotoViewRow {
 
 const MEAL_PHOTO_SELECT_SQL = `
   SELECT mp.id, mp.dinner_id, mp.restaurant_id, mp.user_slug, u.name AS user_name,
-         mp.dish, mp.caption, mp.mime_type, mp.width, mp.height, mp.byte_size, mp.created_at,
+         mp.dish, mp.appetizer, mp.caption, mp.mime_type, mp.width, mp.height, mp.byte_size, mp.created_at,
          d.dinner_date, d.day_of_week, d.host_label, r.name AS restaurant_name
   FROM meal_photos mp
   LEFT JOIN users u ON u.slug = mp.user_slug
@@ -1520,6 +1525,7 @@ export async function uploadMealPhoto(
     imageData: string;
     mimeType?: string;
     dish?: string;
+    appetizer?: string;
     caption?: string;
     width?: number | null;
     height?: number | null;
@@ -1541,6 +1547,7 @@ export async function uploadMealPhoto(
 
   const parsed = parsePhotoDataInput(input.imageData);
   const cleanDish = (input.dish ?? '').trim().slice(0, 140);
+  const cleanAppetizer = (input.appetizer ?? '').trim().slice(0, 140);
   const cleanCaption = (input.caption ?? '').trim().slice(0, 300);
   const cleanWidth =
     typeof input.width === 'number' && Number.isInteger(input.width) && input.width > 0 && input.width <= 12000
@@ -1553,14 +1560,15 @@ export async function uploadMealPhoto(
 
   const ins = await db
     .prepare(
-      `INSERT INTO meal_photos (dinner_id, restaurant_id, user_slug, dish, caption, mime_type, width, height, byte_size, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+      `INSERT INTO meal_photos (dinner_id, restaurant_id, user_slug, dish, appetizer, caption, mime_type, width, height, byte_size, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
     )
     .bind(
       input.dinnerId,
       dinner.restaurant_id ?? null,
       userSlug,
       cleanDish,
+      cleanAppetizer,
       cleanCaption,
       parsed.mimeType,
       cleanWidth,
@@ -1669,7 +1677,7 @@ export async function getPlaceReviews(
     await db
       .prepare(
         `SELECT rt.id, rt.dinner_id, rt.restaurant_id, rt.user_slug, u.name AS user_name,
-                rt.score, rt.dish, rt.comment, rt.price, rt.rated_at,
+                rt.score, rt.dish, rt.appetizer, rt.comment, rt.price, rt.rated_at,
                 d.dinner_date, d.day_of_week, d.host_label
          FROM ratings rt
          LEFT JOIN users u ON u.slug = rt.user_slug
@@ -1779,7 +1787,7 @@ export async function getDinnerReviews(db: D1Database, dinnerId: number) {
     await db
       .prepare(
         `SELECT rt.id, rt.dinner_id, rt.restaurant_id, rt.user_slug, u.name AS user_name,
-                rt.score, rt.dish, rt.comment, rt.price, rt.rated_at
+                rt.score, rt.dish, rt.appetizer, rt.comment, rt.price, rt.rated_at
          FROM ratings rt
          LEFT JOIN users u ON u.slug = rt.user_slug
          WHERE rt.dinner_id = ?
@@ -2283,7 +2291,7 @@ export async function getBootstrapPayload(env: Env, currentUser: UserRow) {
     updated_at: string;
   }> = [];
   let headcount: Awaited<ReturnType<typeof computeDinnerHeadcount>> | null = null;
-  let ratings: Array<{ user_slug: string; score: number; dish: string; comment: string; price?: number | null }> = [];
+  let ratings: Array<{ user_slug: string; score: number; dish: string; appetizer?: string; comment: string; price?: number | null }> = [];
   let activePhotos: MealPhotoViewRow[] = [];
 
   if (active) {
@@ -2312,7 +2320,7 @@ export async function getBootstrapPayload(env: Env, currentUser: UserRow) {
         .all()
     ).results as typeof rsvps;
     headcount = await computeDinnerHeadcount(env.DB, active.id);
-    ratings = (await env.DB.prepare('SELECT user_slug, score, dish, comment, price FROM ratings WHERE dinner_id = ?').bind(active.id).all()).results as typeof ratings;
+    ratings = (await env.DB.prepare('SELECT user_slug, score, dish, appetizer, comment, price FROM ratings WHERE dinner_id = ?').bind(active.id).all()).results as typeof ratings;
     activePhotos = await getDinnerPhotos(env.DB, active.id);
 
     const ids = parseIdListJson(active.noon_draw_ids);
@@ -2368,7 +2376,7 @@ export async function getBootstrapPayload(env: Env, currentUser: UserRow) {
     ? (
         await env.DB.prepare(
           `SELECT rt.id, rt.dinner_id, rt.restaurant_id, rt.user_slug, u.name AS user_name,
-                  rt.score, rt.dish, rt.comment, rt.price, rt.rated_at
+                  rt.score, rt.dish, rt.appetizer, rt.comment, rt.price, rt.rated_at
            FROM ratings rt
            LEFT JOIN users u ON u.slug = rt.user_slug
            WHERE rt.dinner_id = ?

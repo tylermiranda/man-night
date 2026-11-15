@@ -86,6 +86,7 @@ export interface MealPhotoViewRow {
   user_slug: string;
   user_name: string | null;
   dish: string;
+  appetizer?: string;
   caption: string;
   mime_type: AllowedPhotoMime;
   width: number | null;
@@ -136,6 +137,7 @@ export interface RatingViewRow {
   user_name: string | null;
   score: number;
   dish: string;
+  appetizer?: string;
   comment: string;
   price?: number | null;
   rated_at: string;

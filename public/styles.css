@@ -1322,7 +1322,8 @@ html[data-theme="dark"] .maplibregl-popup-content {
   line-height: 1;
 }
 
-.review-dish {
+.review-dish,
+.review-appetizer {
   display: inline-block;
   background: var(--bg);
   border: 1px solid var(--line);

@@ -200,7 +200,7 @@ function fmtPrice(amount) {
 
 function renderReviewItem(r, showDate = false) {
   const name = r.user_name || r.user_slug;
-  const hasDetails = Boolean(r.dish || r.comment || (r.price != null && !isNaN(Number(r.price))));
+  const hasDetails = Boolean(r.dish || r.appetizer || r.comment || (r.price != null && !isNaN(Number(r.price))));
   const priceBadge = r.price != null && !isNaN(Number(r.price))
     ? `<span class="review-price" title="Meal price">💵 ${fmtPrice(r.price)}</span>`
     : '';
@@ -215,7 +215,14 @@ function renderReviewItem(r, showDate = false) {
         </div>
         <span class="review-stars" aria-label="${r.score} out of 5 stars">${starsText(r.score)}</span>
       </div>
-      ${r.dish ? `<div class="review-dish">🍽️ ${esc(r.dish)}</div>` : ''}
+      ${
+        r.appetizer || r.dish
+          ? `<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px;">
+               ${r.appetizer ? `<div class="review-appetizer">🥟 ${esc(r.appetizer)}</div>` : ''}
+               ${r.dish ? `<div class="review-dish">🍽️ ${esc(r.dish)}</div>` : ''}
+             </div>`
+          : ''
+      }
       ${r.comment ? `<div style="margin-top:4px;color:var(--ink);">${esc(r.comment)}</div>` : ''}
       ${!hasDetails ? `<div style="margin-top:3px;font-size:12px;color:var(--muted);">Rated ${r.score}/5</div>` : ''}
     </div>
@@ -248,7 +255,7 @@ function renderPhotoGallery(photos, opts = {}) {
       ${photos
         .map((p) => {
           const who = p.user_name || p.user_slug;
-          const titleLine = p.dish || p.caption || '';
+          const titleLine = p.dish || p.appetizer || p.caption || '';
           const dateBit =
             opts.showDate && (p.dinner_date || p.created_at)
               ? ` · ${fmtShortDate(p.dinner_date || String(p.created_at).slice(0, 10))}`
@@ -1149,13 +1156,17 @@ function renderWeekView() {
         </div>
         ${myLastRating ? `<div style="font-size:12px;color:var(--ok);font-weight:600;margin-bottom:8px;">✓ Your review (${myLastRating.score}/5${myLastRating.price != null ? ` · ${fmtPrice(myLastRating.price)}` : ''}) is saved</div>` : ''}
         <div class="stack" style="gap:8px;">
-          <div style="display:flex;gap:8px;align-items:center;">
-            <input id="rate-dish-input" class="input" style="min-height:36px;flex:1;" placeholder="Standout dish (optional)" value="${esc(myLastRating?.dish || '')}" />
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <input id="rate-appetizer-input" class="input" style="min-height:36px;flex:1;min-width:140px;" placeholder="Appetizer (optional, e.g. Queso)" value="${esc(myLastRating?.appetizer || '')}" />
+            <input id="rate-dish-input" class="input" style="min-height:36px;flex:1;min-width:140px;" placeholder="Standout dish / entrée (optional)" value="${esc(myLastRating?.dish || '')}" />
             <input id="rate-price-input" class="input" type="text" inputmode="decimal" style="min-height:36px;width:125px;" placeholder="Price (e.g. 24.50)" value="${myLastRating?.price != null ? esc(String(myLastRating.price)) : ''}" />
           </div>
           <textarea id="rate-comment-input" class="textarea" style="min-height:60px;" placeholder="Review note — food, vibe, would go back? (optional)">${esc(myLastRating?.comment || '')}</textarea>
           <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
-            <button type="button" class="btn btn-sm btn-outline" data-action="open-photo-upload" data-dinner-id="${lastCompleted.id}" data-prefill-source="rate-dish-input">📷 Post meal photo</button>
+            <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+              <button type="button" class="btn btn-sm btn-outline" data-action="open-photo-upload" data-dinner-id="${lastCompleted.id}" data-prefill-source="rate-dish-input">📷 Meal photo</button>
+              <button type="button" class="btn btn-sm btn-outline" data-action="open-photo-upload" data-dinner-id="${lastCompleted.id}" data-prefill-source="rate-appetizer-input" data-prefill-type="appetizer">🥟 App photo</button>
+            </div>
             <button class="btn btn-sm btn-primary" data-action="submit-rate" data-dinner-id="${lastCompleted.id}">${myLastRating ? 'Update review' : 'Post review'}</button>
           </div>
         </div>
@@ -1468,6 +1479,22 @@ function canUploadPhotoForPlace(place, cached) {
   return hasVisits || activeMatches;
 }
 
+function renderStandoutFoodPills(reviews) {
+  if (!reviews || !reviews.length) return '';
+  const apps = [...new Set(reviews.map((r) => r.appetizer?.trim()).filter(Boolean))];
+  const dishes = [...new Set(reviews.map((r) => r.dish?.trim()).filter(Boolean))];
+  if (!apps.length && !dishes.length) return '';
+  return `
+    <div style="margin-bottom:10px;padding:8px 10px;background:var(--bg);border:1px solid var(--line);border-radius:8px;">
+      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.04em;color:var(--muted);margin-bottom:4px;">Crew standout food &amp; appetizers</div>
+      <div style="display:flex;flex-wrap:wrap;gap:4px;">
+        ${apps.map((a) => `<span class="review-appetizer" style="margin:0;">🥟 ${esc(a)}</span>`).join('')}
+        ${dishes.map((d) => `<span class="review-dish" style="margin:0;">🍽️ ${esc(d)}</span>`).join('')}
+      </div>
+    </div>
+  `;
+}
+
 function renderSelectedPlaceCard(selected) {
   if (!selected) return '';
   const cached = state.placeReviews[selected.id];
@@ -1490,7 +1517,7 @@ function renderSelectedPlaceCard(selected) {
   const photosBody = renderSelectedPlacePhotosHtml(place, cached);
   const reviewsBody = cached
     ? cached.reviews?.length
-      ? `<div class="review-list">${cached.reviews.map((r) => renderReviewItem(r, true)).join('')}</div>`
+      ? `${renderStandoutFoodPills(cached.reviews)}<div class="review-list">${cached.reviews.map((r) => renderReviewItem(r, true)).join('')}</div>`
       : `<div style="font-size:13px;color:var(--muted);">No crew reviews yet for this spot.</div>`
     : `<div style="font-size:13px;color:var(--muted);">Loading reviews &amp; photos…</div>`;
 
@@ -3263,7 +3290,10 @@ function openMealPhotoModal(dinnerId = null, opts = {}) {
         <input id="photo-file-input" class="sr-only-file" type="file" accept="image/jpeg,image/png,image/webp,image/gif,image/*" />
         <label for="photo-file-input" id="photo-preview-wrap" class="meal-photo-dropzone"></label>
       </div>
-      <input id="photo-dish-input" class="input" maxlength="140" placeholder="What’d you get? (optional, e.g. Birria tacos)" value="${esc(opts.prefillDish || '')}" />
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <input id="photo-appetizer-input" class="input" maxlength="140" style="flex:1;min-width:140px;" placeholder="Appetizer (optional, e.g. Queso)" value="${esc(opts.prefillAppetizer || '')}" />
+        <input id="photo-dish-input" class="input" maxlength="140" style="flex:1;min-width:140px;" placeholder="Entrée / dish (optional, e.g. Tacos)" value="${esc(opts.prefillDish || '')}" />
+      </div>
       <input id="photo-caption-input" class="input" maxlength="300" placeholder="Caption / note (optional)" />
       <div class="btn-row" style="justify-content:flex-end;margin-top:4px;">
         <button type="button" class="btn btn-secondary btn-sm" data-action="close-modal">Cancel</button>
@@ -3326,7 +3356,14 @@ function openPhotoLightboxModal(photoId, galleryIds = [], returnDinnerModalId = 
       <div class="meal-lightbox-img-wrap">
         <img class="meal-lightbox-img" src="${esc(photo.image_url)}" alt="${esc(titleTxt)}" />
       </div>
-      ${photo.dish ? `<div style="font-weight:750;font-size:16px;">🍽️ ${esc(photo.dish)}</div>` : ''}
+      ${
+        photo.appetizer || photo.dish
+          ? `<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;">
+               ${photo.appetizer ? `<div style="font-weight:750;font-size:15px;color:var(--ink);">🥟 ${esc(photo.appetizer)}</div>` : ''}
+               ${photo.dish ? `<div style="font-weight:750;font-size:16px;">🍽️ ${esc(photo.dish)}</div>` : ''}
+             </div>`
+          : ''
+      }
       ${photo.caption ? `<div style="font-size:13px;color:var(--ink);line-height:1.45;">${esc(photo.caption)}</div>` : ''}
       ${navHtml}
       <div class="btn-row" style="justify-content:space-between;margin-top:4px;">
@@ -3385,8 +3422,9 @@ async function openReviewModal(dinnerId) {
           ${[1, 2, 3, 4, 5].map((n) => `<button type="button" class="star-btn ${state.modalRatingScore >= n ? 'on' : ''}" data-action="set-modal-star" data-score="${n}">★</button>`).join('')}
         </div>
         <div class="stack" style="gap:8px;">
-          <div style="display:flex;gap:8px;align-items:center;">
-            <input id="modal-rate-dish" class="input" style="flex:1;" placeholder="Standout dish (optional)" value="${esc(myReview?.dish || '')}" />
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <input id="modal-rate-appetizer" class="input" style="flex:1;min-width:140px;" placeholder="Appetizer (optional, e.g. Queso)" value="${esc(myReview?.appetizer || '')}" />
+            <input id="modal-rate-dish" class="input" style="flex:1;min-width:140px;" placeholder="Standout dish / entrée (optional)" value="${esc(myReview?.dish || '')}" />
             <input id="modal-rate-price" class="input" type="text" inputmode="decimal" style="width:125px;" placeholder="Price (e.g. 24.50)" value="${myReview?.price != null ? esc(String(myReview.price)) : ''}" />
           </div>
           <textarea id="modal-rate-comment" class="textarea" style="min-height:72px;" placeholder="Review note — food, vibe, would go back? (optional)">${esc(myReview?.comment || '')}</textarea>
@@ -3754,6 +3792,7 @@ document.addEventListener('click', async (e) => {
       });
     } else if (action === 'submit-rate') {
       const dish = document.getElementById('rate-dish-input')?.value || '';
+      const appetizer = document.getElementById('rate-appetizer-input')?.value || '';
       const priceVal = document.getElementById('rate-price-input')?.value || '';
       const comment = document.getElementById('rate-comment-input')?.value || '';
       await api('/api/week/rate', {
@@ -3762,6 +3801,7 @@ document.addEventListener('click', async (e) => {
           dinnerId: Number(actEl.dataset.dinnerId),
           score: state.ratingScore,
           dish,
+          appetizer,
           comment,
           price: priceVal || null,
         }),
@@ -3775,8 +3815,12 @@ document.addEventListener('click', async (e) => {
     } else if (action === 'open-photo-upload') {
       const dinnerId = Number(actEl.dataset.dinnerId || state.bootstrap?.recentDinners?.[0]?.id || state.bootstrap?.thisWeek?.dinner?.id);
       const srcElId = actEl.dataset.prefillSource;
-      const prefillDish = srcElId ? (document.getElementById(srcElId)?.value || '') : '';
-      openMealPhotoModal(dinnerId, { prefillDish });
+      const isApp = actEl.dataset.prefillType === 'appetizer';
+      const prefillVal = srcElId ? (document.getElementById(srcElId)?.value || '') : '';
+      openMealPhotoModal(dinnerId, {
+        prefillDish: !isApp ? prefillVal : '',
+        prefillAppetizer: isApp ? prefillVal : '',
+      });
     } else if (action === 'open-place-photo-upload') {
       const placeId = Number(actEl.dataset.placeId || state.selectedPlaceId);
       const cached = state.placeReviews[placeId];
@@ -3796,6 +3840,7 @@ document.addEventListener('click', async (e) => {
       const dinnerId = Number(document.getElementById('photo-dinner-select')?.value || 0);
       if (!dinnerId) return toast('Pick a dinner first');
       const dish = document.getElementById('photo-dish-input')?.value || '';
+      const appetizer = document.getElementById('photo-appetizer-input')?.value || '';
       const caption = document.getElementById('photo-caption-input')?.value || '';
       actEl.disabled = true;
       try {
@@ -3808,6 +3853,7 @@ document.addEventListener('click', async (e) => {
             width: state.pendingPhotoUpload.width,
             height: state.pendingPhotoUpload.height,
             dish,
+            appetizer,
             caption,
           }),
         });
@@ -3830,6 +3876,7 @@ document.addEventListener('click', async (e) => {
       if (!state.pendingModalPhoto?.dataUrl) return toast('Choose a photo first');
       const dinnerId = Number(actEl.dataset.dinnerId);
       const dish = document.getElementById('modal-rate-dish')?.value || '';
+      const appetizer = document.getElementById('modal-rate-appetizer')?.value || '';
       const caption = document.getElementById('modal-photo-caption')?.value || '';
       actEl.disabled = true;
       await api('/api/photos', {
@@ -3841,6 +3888,7 @@ document.addEventListener('click', async (e) => {
           width: state.pendingModalPhoto.width,
           height: state.pendingModalPhoto.height,
           dish,
+          appetizer,
           caption,
         }),
       });
@@ -3906,6 +3954,7 @@ document.addEventListener('click', async (e) => {
     } else if (action === 'submit-modal-rate') {
       const dinnerId = Number(actEl.dataset.dinnerId);
       const dish = document.getElementById('modal-rate-dish')?.value || '';
+      const appetizer = document.getElementById('modal-rate-appetizer')?.value || '';
       const priceVal = document.getElementById('modal-rate-price')?.value || '';
       const comment = document.getElementById('modal-rate-comment')?.value || '';
       const caption = document.getElementById('modal-photo-caption')?.value || '';
@@ -3915,6 +3964,7 @@ document.addEventListener('click', async (e) => {
           dinnerId,
           score: state.modalRatingScore,
           dish,
+          appetizer,
           comment,
           price: priceVal || null,
         }),
@@ -3929,6 +3979,7 @@ document.addEventListener('click', async (e) => {
             width: state.pendingModalPhoto.width,
             height: state.pendingModalPhoto.height,
             dish,
+            appetizer,
             caption,
           }),
         });

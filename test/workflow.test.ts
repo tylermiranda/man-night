@@ -25,6 +25,7 @@ const migration0009Sql = readFileSync(resolve(rootDir, 'migrations/0009_meal_pho
 const migration0010Sql = readFileSync(resolve(rootDir, 'migrations/0010_meal_prices.sql'), 'utf8');
 const migration0011Sql = readFileSync(resolve(rootDir, 'migrations/0011_issue_screenshots.sql'), 'utf8');
 const migration0012Sql = readFileSync(resolve(rootDir, 'migrations/0012_beers.sql'), 'utf8');
+const migration0013Sql = readFileSync(resolve(rootDir, 'migrations/0013_appetizers.sql'), 'utf8');
 
 function makeEnv(db: D1Database, overrides: Partial<Env> = {}): Env {
   return {
@@ -65,6 +66,7 @@ describe('Man Night PWA Worker & Seed', () => {
     await db.exec(migration0010Sql);
     await db.exec(migration0011Sql);
     await db.exec(migration0012Sql);
+    await db.exec(migration0013Sql);
     env = makeEnv(db);
   });
 
@@ -1640,10 +1642,11 @@ describe('Man Night PWA Worker & Seed', () => {
     // 1. Changelog integrity
     const seenIds = new Set<string>();
     expect(WHATS_NEW_RELEASES.length).toBeGreaterThanOrEqual(11);
-    expect(WHATS_NEW_RELEASES[0].id).toBe('2026-11-15-beer-cellar');
-    expect(WHATS_NEW_RELEASES[0].issueNumber).toBe(15);
-    expect(WHATS_NEW_RELEASES[1].id).toBe('2026-11-15-issue-feature-form');
-    expect(WHATS_NEW_RELEASES[1].issueNumber).toBe(16);
+    expect(WHATS_NEW_RELEASES[0].id).toBe('2026-11-15-appetizers');
+    expect(WHATS_NEW_RELEASES[0].issueNumber).toBe(17);
+    expect(WHATS_NEW_RELEASES[1].id).toBe('2026-11-15-beer-cellar');
+    expect(WHATS_NEW_RELEASES[1].issueNumber).toBe(15);
+    expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-15-issue-feature-form' && e.issueNumber === 16)).toBe(true);
     expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-15-favorite-places' && e.issueNumber === 14)).toBe(true);
     expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-15-meal-prices' && e.issueNumber === 13)).toBe(true);
     expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-15-meal-pictures' && e.issueNumber === 12)).toBe(true);
@@ -2441,5 +2444,119 @@ describe('Man Night PWA Worker & Seed', () => {
     const entry = WHATS_NEW_RELEASES.find((e) => e.issueNumber === 15);
     expect(entry).toBeDefined();
     expect(entry?.creditSlug).toBe('jacob');
+  });
+
+  it('supports Issue #17: appetizer tracking across ratings, reviews, photos, and places', async () => {
+    const bootRes = await worker.fetch(makeReq('/api/bootstrap'), env);
+    const bootData = (await bootRes.json()) as {
+      recentDinners: Array<{ id: number; restaurant_id: number }>;
+    };
+    const lastDinner = bootData.recentDinners[0];
+    expect(lastDinner).toBeDefined();
+
+    // 1. Submit rating with standout dish, appetizer, and price
+    const rateRes = await worker.fetch(
+      makeReq('/api/week/rate', 'POST', {
+        dinnerId: lastDinner.id,
+        score: 5,
+        dish: 'Smoked Brisket',
+        appetizer: 'Fried Pickles & Queso',
+        price: 28.5,
+        comment: 'Amazing apps and brisket!',
+      }),
+      env,
+    );
+    expect(rateRes.status).toBe(200);
+    const rateData = (await rateRes.json()) as {
+      rating: {
+        dinner_id: number;
+        score: number;
+        dish: string;
+        appetizer: string;
+        price: number;
+        comment: string;
+      };
+    };
+    expect(rateData.rating.dish).toBe('Smoked Brisket');
+    expect(rateData.rating.appetizer).toBe('Fried Pickles & Queso');
+    expect(rateData.rating.price).toBe(28.5);
+
+    // 2. Verify bootstrap surfaces appetizer in lastDinnerRatings
+    const afterRateBoot = (await (await worker.fetch(makeReq('/api/bootstrap'), env)).json()) as {
+      lastDinnerRatings: Array<{
+        user_slug: string;
+        dish: string;
+        appetizer: string;
+        price: number;
+      }>;
+    };
+    const myRating = afterRateBoot.lastDinnerRatings.find((r) => r.user_slug === 'tyler');
+    expect(myRating).toBeDefined();
+    expect(myRating?.dish).toBe('Smoked Brisket');
+    expect(myRating?.appetizer).toBe('Fried Pickles & Queso');
+
+    // 3. Verify place reviews endpoint returns appetizer
+    const placeRevRes = await worker.fetch(makeReq(`/api/places/${lastDinner.restaurant_id}/reviews`), env);
+    expect(placeRevRes.status).toBe(200);
+    const placeRevData = (await placeRevRes.json()) as {
+      reviews: Array<{ user_slug: string; dish: string; appetizer: string }>;
+    };
+    const placeReview = placeRevData.reviews.find((r) => r.user_slug === 'tyler');
+    expect(placeReview).toBeDefined();
+    expect(placeReview?.appetizer).toBe('Fried Pickles & Queso');
+    expect(placeReview?.dish).toBe('Smoked Brisket');
+
+    // 4. Verify dinner details endpoint returns appetizer
+    const dinnerDetailsRes = await worker.fetch(makeReq(`/api/dinners/${lastDinner.id}/reviews`), env);
+    expect(dinnerDetailsRes.status).toBe(200);
+    const dinnerDetails = (await dinnerDetailsRes.json()) as {
+      reviews: Array<{ user_slug: string; dish: string; appetizer: string }>;
+    };
+    const dinnerReview = dinnerDetails.reviews.find((r) => r.user_slug === 'tyler');
+    expect(dinnerReview?.appetizer).toBe('Fried Pickles & Queso');
+
+    // 5. Upload photo tagged with appetizer
+    const toB64 = (buf: Uint8Array) => Buffer.from(buf).toString('base64');
+    const samplePng = new Uint8Array([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+      0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+      0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+      0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+      0x89, 0x00, 0x00, 0x00, 0x0a, 0x49, 0x44, 0x41,
+      0x54, 0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00,
+      0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00,
+      0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae,
+      0x42, 0x60, 0x82,
+    ]);
+    const photoUploadRes = await worker.fetch(
+      makeReq('/api/photos', 'POST', {
+        dinnerId: lastDinner.id,
+        imageData: `data:image/png;base64,${toB64(samplePng)}`,
+        appetizer: 'Fried Pickles Basket',
+        caption: 'Extra crispy!',
+      }),
+      env,
+    );
+    expect(photoUploadRes.status).toBe(201);
+    const photoData = (await photoUploadRes.json()) as {
+      photo: { id: number; appetizer: string; caption: string };
+    };
+    expect(photoData.photo.appetizer).toBe('Fried Pickles Basket');
+
+    // 6. Verify UI and changelog wiring
+    const appJs = readFileSync(resolve(rootDir, 'public/app.js'), 'utf8');
+    expect(appJs).toContain('rate-appetizer-input');
+    expect(appJs).toContain('modal-rate-appetizer');
+    expect(appJs).toContain('review-appetizer');
+    expect(appJs).toContain('photo-appetizer-input');
+    expect(appJs).toContain('renderStandoutFoodPills');
+
+    const styles = readFileSync(resolve(rootDir, 'public/styles.css'), 'utf8');
+    expect(styles).toContain('.review-appetizer');
+
+    const entry = WHATS_NEW_RELEASES.find((e) => e.issueNumber === 17);
+    expect(entry).toBeDefined();
+    expect(entry?.creditSlug).toBe('jacob');
+    expect(entry?.creditRole).toBe('idea');
   });
 });

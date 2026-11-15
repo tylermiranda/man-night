@@ -1,6 +1,6 @@
 import { buildDirectionsUrl, syncLockedPlaceToCalendar } from './gcal';
 import { sendWebPushToSubscribers } from './push';
-import type { DinnerRow, Env, RatingViewRow, RestaurantRow, UserRow } from './types';
+import type { DinnerRow, Env, NightVoteViewRow, RatingViewRow, RestaurantRow, UserRow } from './types';
 
 async function recalcRestaurantAvgRating(db: D1Database, restaurantId: number | null): Promise<void> {
   if (!restaurantId) return;
@@ -134,34 +134,60 @@ export async function drawFourRandomPlaces(db: D1Database, referenceDate: string
   return shuffleRandom(allRows.results ?? []).slice(0, 4);
 }
 
+export async function getNightVotesForDinner(db: D1Database, dinnerId: number): Promise<NightVoteViewRow[]> {
+  const rows = await db
+    .prepare(
+      `SELECT nv.user_slug, u.name AS user_name, nv.choice, nv.reason, nv.voted_at
+       FROM night_votes nv
+       LEFT JOIN users u ON u.slug = nv.user_slug
+       WHERE nv.dinner_id = ?
+       ORDER BY nv.voted_at ASC, nv.id ASC`,
+    )
+    .bind(dinnerId)
+    .all<NightVoteViewRow>();
+  return rows.results ?? [];
+}
+
 export async function castNightVote(
   db: D1Database,
   dinnerId: number,
   userSlug: string,
   choice: 'tuesday' | 'wednesday',
-): Promise<{ tuesday: number; wednesday: number; userChoice: 'tuesday' | 'wednesday' }> {
+  reason?: string,
+): Promise<{
+  tuesday: number;
+  wednesday: number;
+  userChoice: 'tuesday' | 'wednesday';
+  reason: string;
+  nightVotes: NightVoteViewRow[];
+}> {
+  const hasReason = typeof reason === 'string';
+  const cleanReason = hasReason ? reason.trim().slice(0, 200) : '';
+
   await db
     .prepare(
-      `INSERT INTO night_votes (dinner_id, user_slug, choice, voted_at)
-       VALUES (?, ?, ?, datetime('now'))
+      `INSERT INTO night_votes (dinner_id, user_slug, choice, reason, voted_at)
+       VALUES (?, ?, ?, ?, datetime('now'))
        ON CONFLICT(dinner_id, user_slug)
-       DO UPDATE SET choice = excluded.choice, voted_at = datetime('now')`,
+       DO UPDATE SET
+         choice = excluded.choice,
+         reason = CASE WHEN ? = 1 THEN excluded.reason ELSE night_votes.reason END,
+         voted_at = datetime('now')`,
     )
-    .bind(dinnerId, userSlug, choice)
+    .bind(dinnerId, userSlug, choice, cleanReason, hasReason ? 1 : 0)
     .run();
 
-  const votes = await db
-    .prepare('SELECT choice, COUNT(*) AS cnt FROM night_votes WHERE dinner_id = ? GROUP BY choice')
-    .bind(dinnerId)
-    .all<{ choice: string; cnt: number }>();
+  const nightVotes = await getNightVotesForDinner(db, dinnerId);
 
   let tuesday = 0;
   let wednesday = 0;
-  for (const row of votes.results ?? []) {
-    if (row.choice === 'tuesday') tuesday = Number(row.cnt);
-    if (row.choice === 'wednesday') wednesday = Number(row.cnt);
+  let savedReason = '';
+  for (const row of nightVotes) {
+    if (row.choice === 'tuesday') tuesday += 1;
+    if (row.choice === 'wednesday') wednesday += 1;
+    if (row.user_slug === userSlug) savedReason = row.reason || '';
   }
-  return { tuesday, wednesday, userChoice: choice };
+  return { tuesday, wednesday, userChoice: choice, reason: savedReason, nightVotes };
 }
 
 function parseIdListJson(raw: string | null | undefined): number[] {
@@ -1170,7 +1196,7 @@ export async function getBootstrapPayload(env: Env, currentUser: UserRow) {
   ).results ?? [];
 
   let activePlace: RestaurantRow | null = null;
-  let nightVotes: Array<{ user_slug: string; choice: string }> = [];
+  let nightVotes: NightVoteViewRow[] = [];
   let noonVotes: Array<{ user_slug: string; restaurant_id: number }> = [];
   let noonCandidates: RestaurantRow[] = [];
   let rsvps: Array<{ user_slug: string; status: string; eta_minutes: number | null; note: string }> = [];
@@ -1187,7 +1213,7 @@ export async function getBootstrapPayload(env: Env, currentUser: UserRow) {
         .bind(todayStr, todayStr, todayStr, todayStr, active.restaurant_id)
         .first<RestaurantRow>();
     }
-    nightVotes = (await env.DB.prepare('SELECT user_slug, choice FROM night_votes WHERE dinner_id = ?').bind(active.id).all()).results as typeof nightVotes;
+    nightVotes = await getNightVotesForDinner(env.DB, active.id);
     noonVotes = (await env.DB.prepare('SELECT user_slug, restaurant_id FROM noon_votes WHERE dinner_id = ?').bind(active.id).all()).results as typeof noonVotes;
     rsvps = (await env.DB.prepare('SELECT user_slug, status, eta_minutes, note FROM rsvps WHERE dinner_id = ?').bind(active.id).all()).results as typeof rsvps;
     ratings = (await env.DB.prepare('SELECT user_slug, score, dish, comment FROM ratings WHERE dinner_id = ?').bind(active.id).all()).results as typeof ratings;

@@ -16,6 +16,7 @@ const schemaSql = readFileSync(resolve(rootDir, 'migrations/0001_schema.sql'), '
 const seedSql = readFileSync(resolve(rootDir, 'migrations/0002_seed_history.sql'), 'utf8');
 const migration0003Sql = readFileSync(resolve(rootDir, 'migrations/0003_ratings_indexes.sql'), 'utf8');
 const migration0004Sql = readFileSync(resolve(rootDir, 'migrations/0004_fix_future_visit_dates.sql'), 'utf8');
+const migration0005Sql = readFileSync(resolve(rootDir, 'migrations/0005_night_vote_reasons.sql'), 'utf8');
 
 function makeEnv(db: D1Database, overrides: Partial<Env> = {}): Env {
   return {
@@ -48,6 +49,7 @@ describe('Man Night PWA Worker & Seed', () => {
     const db = createTestD1(schemaSql, seedSql);
     await db.exec(migration0003Sql);
     await db.exec(migration0004Sql);
+    await db.exec(migration0005Sql);
     env = makeEnv(db);
   });
 
@@ -754,5 +756,99 @@ describe('Man Night PWA Worker & Seed', () => {
       env,
     );
     expect(badBackfill.status).toBe(400);
+  });
+
+  it('captures optional night vote reasons, preserves them on day switches, and surfaces them to other members', async () => {
+    // 1. Voting without reason stores empty string
+    const v1Res = await worker.fetch(
+      makeReq('/api/week/vote-night', 'POST', { choice: 'tuesday' }),
+      env,
+    );
+    expect(v1Res.status).toBe(200);
+    const v1Data = (await v1Res.json()) as {
+      tuesday: number;
+      wednesday: number;
+      userChoice: string;
+      reason: string;
+      nightVotes: Array<{ user_slug: string; user_name: string | null; choice: string; reason: string }>;
+    };
+    expect(v1Data.tuesday).toBe(1);
+    expect(v1Data.reason).toBe('');
+    expect(v1Data.nightVotes).toHaveLength(1);
+
+    // 2. Saving a reason trims whitespace, enforces 200-char cap, and exposes it to other members via /api/bootstrap
+    const longNote = `  Kids soccer game Wednesday night ${'x'.repeat(220)}  `;
+    const rSaveRes = await worker.fetch(
+      makeReq('/api/week/vote-night', 'POST', { choice: 'tuesday', reason: longNote }),
+      env,
+    );
+    expect(rSaveRes.status).toBe(200);
+    const rSaveData = (await rSaveRes.json()) as { reason: string };
+    expect(rSaveData.reason.length).toBe(200);
+    expect(rSaveData.reason.startsWith('Kids soccer game Wednesday night')).toBe(true);
+
+    // Second member votes Wednesday with a reason
+    const ericRes = await worker.fetch(
+      makeReq(
+        '/api/week/vote-night',
+        'POST',
+        { choice: 'wednesday', reason: '  Out of town Tuesday  ' },
+        { 'Cf-Access-Authenticated-User-Email': 'storme2@gmail.com' },
+      ),
+      env,
+    );
+    expect(ericRes.status).toBe(200);
+
+    // Another member fetches bootstrap and sees both members' names, choices, and reasons
+    const bootOther = (await (
+      await worker.fetch(
+        makeReq('/api/bootstrap', 'GET', undefined, { 'Cf-Access-Authenticated-User-Email': 'bigheadwillie@gmail.com' }),
+        env,
+      )
+    ).json()) as {
+      thisWeek: {
+        nightVotes: Array<{ user_slug: string; user_name: string | null; choice: string; reason: string }>;
+      };
+    };
+    const tylerVote = bootOther.thisWeek.nightVotes.find((v) => v.user_slug === 'tyler');
+    const ericVote = bootOther.thisWeek.nightVotes.find((v) => v.user_slug === 'eric');
+    expect(tylerVote?.user_name).toBe('Tyler');
+    expect(tylerVote?.choice).toBe('tuesday');
+    expect(tylerVote?.reason.length).toBe(200);
+    expect(ericVote?.user_name).toBe('Eric');
+    expect(ericVote?.choice).toBe('wednesday');
+    expect(ericVote?.reason).toBe('Out of town Tuesday');
+
+    // 3. Switching day without sending `reason` preserves the previously saved reason
+    const switchRes = await worker.fetch(
+      makeReq('/api/week/vote-night', 'POST', { choice: 'wednesday' }),
+      env,
+    );
+    expect(switchRes.status).toBe(200);
+    const switchData = (await switchRes.json()) as { userChoice: string; reason: string };
+    expect(switchData.userChoice).toBe('wednesday');
+    expect(switchData.reason.length).toBe(200);
+
+    // 4. Clearing reason with empty string clears only the reason while keeping the vote choice
+    const clearRes = await worker.fetch(
+      makeReq('/api/week/vote-night', 'POST', { choice: 'wednesday', reason: '' }),
+      env,
+    );
+    expect(clearRes.status).toBe(200);
+    const clearData = (await clearRes.json()) as { userChoice: string; reason: string };
+    expect(clearData.userChoice).toBe('wednesday');
+    expect(clearData.reason).toBe('');
+
+    // 5. After Monday noon lock, remaining vote reasons stay available in /api/bootstrap
+    await runWeeklyCronTick(env, new Date('2026-11-16T18:05:00Z'));
+    const bootLocked = (await (await worker.fetch(makeReq('/api/bootstrap'), env)).json()) as {
+      thisWeek: {
+        dinner: { status: string };
+        nightVotes: Array<{ user_slug: string; choice: string; reason: string }>;
+      };
+    };
+    expect(bootLocked.thisWeek.dinner.status).toBe('awaiting_pick');
+    const ericLocked = bootLocked.thisWeek.nightVotes.find((v) => v.user_slug === 'eric');
+    expect(ericLocked?.reason).toBe('Out of town Tuesday');
   });
 });

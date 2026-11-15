@@ -1211,6 +1211,7 @@ html[data-theme="dark"] .maplibregl-popup-content {
   .places-stats-bar { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .trophy-grid { grid-template-columns: 1fr; }
   .install-guide-grid { grid-template-columns: 1fr; }
+  .night-reason-form .input { font-size: 16px; }
 }
 
 @media (min-width: 821px) {
@@ -1297,4 +1298,82 @@ html[data-theme="dark"] .maplibregl-popup-content {
 .place-card-row.selected {
   border-color: var(--accent);
   background: var(--accent-soft);
+}
+
+/* Night Vote Reasons */
+.night-reason-box {
+  background: var(--surf);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 11px 12px;
+  margin-top: -4px;
+  margin-bottom: 12px;
+}
+
+.night-reason-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ink);
+  margin-bottom: 8px;
+}
+
+.night-reason-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.night-reason-form .input {
+  flex: 1 1 200px;
+  min-height: 36px;
+  padding: 7px 10px;
+  font-size: 13px;
+}
+
+.night-reasons-section {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.night-reasons-kicker {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+
+.night-reasons-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.night-reason-item {
+  background: var(--surf);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 9px 11px;
+}
+
+.night-reason-item-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.night-reason-item-body {
+  margin-top: 5px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--ink);
+  word-break: break-word;
 }

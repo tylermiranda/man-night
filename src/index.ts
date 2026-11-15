@@ -170,7 +170,7 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
     }
 
     if (path === '/api/week/vote-night' && method === 'POST') {
-      const body = await readJson<{ dinnerId?: number; choice: 'tuesday' | 'wednesday' }>(request);
+      const body = await readJson<{ dinnerId?: number; choice: 'tuesday' | 'wednesday'; reason?: string }>(request);
       if (body.choice !== 'tuesday' && body.choice !== 'wednesday') {
         return json({ error: 'Choice must be tuesday or wednesday' }, 400);
       }
@@ -178,7 +178,7 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
         ? await env.DB.prepare('SELECT id FROM dinners WHERE id = ?').bind(body.dinnerId).first<{ id: number }>()
         : await getActiveDinner(env.DB);
       if (!dinner) return json({ error: 'No active dinner found' }, 404);
-      const tally = await castNightVote(env.DB, dinner.id, user.slug, body.choice);
+      const tally = await castNightVote(env.DB, dinner.id, user.slug, body.choice, body.reason);
       return json({ ok: true, ...tally });
     }
 

@@ -18,6 +18,9 @@ const state = {
   pickerDay: 'Tuesday',
   pickerKeepNightVote: true,
   pickerAllowKeepNightVote: false,
+  nightReasonDraft: null,
+  nightReasonDinnerId: null,
+  focusNightReason: false,
   pollCandidateIds: [],
   pollSearchQuery: '',
   theme: localStorage.getItem('mn_theme') || 'light',
@@ -140,12 +143,13 @@ function parsePollIds(raw) {
   }
 }
 
-function avatarHtml(slug, name, size = '') {
+function avatarHtml(slug, name, size = '', title = '') {
   const users = state.bootstrap?.users || [];
   const u = users.find((x) => x.slug === slug);
   const cls = u?.avatar_class || 'avn';
   const init = u?.initials || (name || '?').slice(0, 1).toUpperCase();
-  return `<span class="av ${cls} ${size}">${esc(init)}</span>`;
+  const titleAttr = title ? ` title="${esc(title)}"` : '';
+  return `<span class="av ${cls} ${size}"${titleAttr}>${esc(init)}</span>`;
 }
 
 function starsText(score) {
@@ -315,6 +319,38 @@ function closeModal() {
   document.getElementById('modal-panel').innerHTML = '';
 }
 
+function renderNightVoteReasons(nightVotes, kickerLabel = 'Crew vote reasons') {
+  const withReasons = (nightVotes || []).filter((v) => v.reason && String(v.reason).trim().length > 0);
+  if (!withReasons.length) return '';
+  const users = state.bootstrap?.users || [];
+  return `
+    <div class="night-reasons-section">
+      <div class="night-reasons-kicker">${esc(kickerLabel)}</div>
+      <div class="night-reasons-list">
+        ${withReasons
+          .map((v) => {
+            const u = users.find((x) => x.slug === v.user_slug);
+            const voterName = v.user_name || u?.name || v.user_slug;
+            const isTue = v.choice === 'tuesday';
+            return `
+              <div class="night-reason-item">
+                <div class="night-reason-item-head">
+                  <div style="display:flex;align-items:center;gap:6px;">
+                    ${avatarHtml(v.user_slug, voterName, 'sm')}
+                    <strong style="font-size:13px;">${esc(voterName)}</strong>
+                  </div>
+                  <span class="badge ${isTue ? 'badge-red' : 'badge-muted'}">${isTue ? 'Tuesday' : 'Wednesday'}</span>
+                </div>
+                <div class="night-reason-item-body">${esc(v.reason)}</div>
+              </div>
+            `;
+          })
+          .join('')}
+      </div>
+    </div>
+  `;
+}
+
 function renderPlacePollOptions(tw) {
   const totalNoon = tw.noonVotes.length;
   const myNoon = tw.noonVotes.find((v) => v.user_slug === state.bootstrap?.user?.slug)?.restaurant_id;
@@ -355,10 +391,17 @@ function renderWeekView() {
   const d = tw.dinner;
   const me = b.user;
   const isHost = d.host_slug === me.slug;
+  if (state.nightReasonDinnerId !== d.id) {
+    state.nightReasonDinnerId = d.id;
+    state.nightReasonDraft = null;
+  }
   const tueCount = tw.nightVotes.filter((v) => v.choice === 'tuesday').length;
   const wedCount = tw.nightVotes.filter((v) => v.choice === 'wednesday').length;
   const totalNight = tueCount + wedCount;
-  const myNight = tw.nightVotes.find((v) => v.user_slug === me.slug)?.choice;
+  const myNightRow = tw.nightVotes.find((v) => v.user_slug === me.slug);
+  const myNight = myNightRow?.choice;
+  const savedNightReason = (myNightRow?.reason || '').trim();
+  const draftNightReason = state.nightReasonDraft !== null ? state.nightReasonDraft : (myNightRow?.reason || '');
   const myRsvp = tw.rsvps.find((v) => v.user_slug === me.slug)?.status;
 
   const nightOpen = !d.night_locked_at && (d.status === 'scheduled' || d.status === 'night_poll');
@@ -395,8 +438,36 @@ function renderWeekView() {
   if (nightOpen) {
     const tuePct = totalNight ? Math.round((tueCount / totalNight) * 100) : 0;
     const wedPct = totalNight ? Math.round((wedCount / totalNight) * 100) : 0;
-    const tueVoters = tw.nightVotes.filter((v) => v.choice === 'tuesday').map((v) => avatarHtml(v.user_slug, v.user_slug, 'sm')).join('');
-    const wedVoters = tw.nightVotes.filter((v) => v.choice === 'wednesday').map((v) => avatarHtml(v.user_slug, v.user_slug, 'sm')).join('');
+    const renderVoterAvatars = (choice) =>
+      tw.nightVotes
+        .filter((v) => v.choice === choice)
+        .map((v) => {
+          const u = (b.users || []).find((x) => x.slug === v.user_slug);
+          const voterName = v.user_name || u?.name || v.user_slug;
+          const tip = v.reason ? `${voterName}: ${v.reason}` : voterName;
+          return avatarHtml(v.user_slug, voterName, 'sm', tip);
+        })
+        .join('');
+    const tueVoters = renderVoterAvatars('tuesday');
+    const wedVoters = renderVoterAvatars('wednesday');
+
+    const myDayLabel = myNight === 'tuesday' ? 'Tuesday' : 'Wednesday';
+    const otherDayLabel = myNight === 'tuesday' ? 'Wednesday' : 'Tuesday';
+    const reasonBoxHtml = myNight
+      ? `
+        <div class="night-reason-box">
+          <div class="night-reason-label">
+            <span>Why ${myDayLabel}? <span style="font-weight:500;color:var(--muted);">(optional · visible to crew)</span></span>
+            ${savedNightReason ? '<span class="badge badge-ok">✓ Shared</span>' : ''}
+          </div>
+          <div class="night-reason-form">
+            <input id="night-vote-reason" class="input" type="text" maxlength="200" placeholder="Add a reason for ${myDayLabel} (e.g. busy ${otherDayLabel} night)…" value="${esc(draftNightReason)}" />
+            <button type="button" class="btn btn-primary btn-sm" data-action="save-night-reason">${savedNightReason ? 'Update' : 'Save reason'}</button>
+            ${savedNightReason ? '<button type="button" class="btn btn-outline btn-sm" data-action="clear-night-reason">Clear</button>' : ''}
+          </div>
+        </div>
+      `
+      : '';
 
     bodyHtml = `
       <h1 class="hero-title">Tuesday or Wednesday?</h1>
@@ -433,6 +504,8 @@ function renderWeekView() {
           </div>
         </button>
       </div>
+      ${reasonBoxHtml}
+      ${renderNightVoteReasons(tw.nightVotes, 'Crew vote reasons')}
     `;
 
     if (hasPickedPlace) {
@@ -509,6 +582,7 @@ function renderWeekView() {
         <button class="btn btn-outline" data-action="open-poll-builder" data-dinner-id="${d.id}">Create place poll</button>
         <button class="btn btn-secondary" data-action="open-pass-swap">Pass / Swap turn</button>
       </div>
+      ${renderNightVoteReasons(tw.nightVotes, 'Night vote notes')}
     `;
   } else if (d.status === 'noon_vote') {
     const isHostPoll = d.chosen_via === 'host_poll';
@@ -525,6 +599,7 @@ function renderWeekView() {
         <button class="btn btn-outline btn-sm" data-action="open-poll-builder" data-dinner-id="${d.id}">Edit poll</button>
         <button class="btn btn-secondary btn-sm" data-action="open-picker" data-dinner-id="${d.id}" data-day="${esc(d.day_of_week)}" data-host="${esc(d.host_label)}" data-date="${esc(d.dinner_date)}">Pick 1 place directly</button>
       </div>
+      ${renderNightVoteReasons(tw.nightVotes, 'Night vote notes')}
     `;
   } else if (d.status === 'place_locked' && tw.place) {
     const p = tw.place;
@@ -544,6 +619,7 @@ function renderWeekView() {
         <button class="btn btn-outline" data-action="open-picker" data-dinner-id="${d.id}" data-day="${esc(d.day_of_week)}" data-host="${esc(d.host_label)}" data-date="${esc(d.dinner_date)}">Change place</button>
         <button class="btn btn-secondary" data-action="open-poll-builder" data-dinner-id="${d.id}">Switch to poll</button>
       </div>
+      ${renderNightVoteReasons(tw.nightVotes, 'Night vote notes')}
     `;
   }
 
@@ -1312,6 +1388,12 @@ function render() {
   if (state.tab === 'week') {
     main.innerHTML = renderWeekView();
     requestAnimationFrame(initTonightMap);
+    if (state.focusNightReason) {
+      state.focusNightReason = false;
+      if (!('ontouchstart' in window)) {
+        requestAnimationFrame(() => document.getElementById('night-vote-reason')?.focus({ preventScroll: true }));
+      }
+    }
   } else if (state.tab === 'history') {
     main.innerHTML = renderHistoryView();
   } else if (state.tab === 'places') {
@@ -1947,11 +2029,52 @@ document.addEventListener('click', async (e) => {
     } else if (action === 'goto-tab') {
       setTab(actEl.dataset.target);
     } else if (action === 'vote-night') {
+      const payload = {
+        dinnerId: state.bootstrap.thisWeek.dinner.id,
+        choice: actEl.dataset.choice,
+      };
+      if (state.nightReasonDraft !== null) {
+        payload.reason = state.nightReasonDraft;
+      }
+      const res = await api('/api/week/vote-night', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      state.nightReasonDraft = null;
+      state.focusNightReason = !res.reason;
+      toast(`Voted for ${actEl.dataset.choice}`);
+      await refreshBootstrap();
+    } else if (action === 'save-night-reason') {
+      const tw = state.bootstrap?.thisWeek;
+      const myVote = tw?.nightVotes?.find((v) => v.user_slug === state.bootstrap?.user?.slug);
+      if (!tw?.dinner || !myVote) return toast('Pick Tuesday or Wednesday first');
+      const inputEl = document.getElementById('night-vote-reason');
+      const reasonVal = inputEl ? inputEl.value : (state.nightReasonDraft || '');
       await api('/api/week/vote-night', {
         method: 'POST',
-        body: JSON.stringify({ dinnerId: state.bootstrap.thisWeek.dinner.id, choice: actEl.dataset.choice }),
+        body: JSON.stringify({
+          dinnerId: tw.dinner.id,
+          choice: myVote.choice,
+          reason: reasonVal,
+        }),
       });
-      toast(`Voted for ${actEl.dataset.choice}`);
+      state.nightReasonDraft = null;
+      toast(reasonVal.trim() ? 'Vote reason saved!' : 'Reason cleared');
+      await refreshBootstrap();
+    } else if (action === 'clear-night-reason') {
+      const tw = state.bootstrap?.thisWeek;
+      const myVote = tw?.nightVotes?.find((v) => v.user_slug === state.bootstrap?.user?.slug);
+      if (!tw?.dinner || !myVote) return;
+      await api('/api/week/vote-night', {
+        method: 'POST',
+        body: JSON.stringify({
+          dinnerId: tw.dinner.id,
+          choice: myVote.choice,
+          reason: '',
+        }),
+      });
+      state.nightReasonDraft = null;
+      toast('Reason cleared');
       await refreshBootstrap();
     } else if (action === 'vote-noon') {
       await api('/api/week/vote-noon', {
@@ -2250,7 +2373,10 @@ document.addEventListener('click', async (e) => {
 
 let searchTimer = null;
 document.addEventListener('input', (e) => {
-  if (e.target.id === 'picker-q') {
+  if (e.target.id === 'night-vote-reason') {
+    state.nightReasonDinnerId = state.bootstrap?.thisWeek?.dinner?.id ?? null;
+    state.nightReasonDraft = e.target.value;
+  } else if (e.target.id === 'picker-q') {
     const btn = document.querySelector('[data-action="picker-create-and-use"]');
     renderPickerOptions(btn?.dataset.mode || 'pick', btn?.dataset.dinnerId || '', e.target.value);
   } else if (e.target.id === 'poll-q') {
@@ -2263,6 +2389,13 @@ document.addEventListener('input', (e) => {
   } else if (e.target.id === 'places-search') {
     state.placesQuery = e.target.value;
     render();
+  }
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.target.id === 'night-vote-reason' && e.key === 'Enter') {
+    e.preventDefault();
+    document.querySelector('[data-action="save-night-reason"]')?.click();
   }
 });
 

@@ -62,6 +62,14 @@ export interface RatingViewRow {
   host_label?: string;
 }
 
+export interface NightVoteViewRow {
+  user_slug: string;
+  user_name: string | null;
+  choice: 'tuesday' | 'wednesday';
+  reason: string;
+  voted_at: string;
+}
+
 export type DinnerStatus =
   | 'night_poll'
   | 'awaiting_pick'

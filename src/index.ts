@@ -325,7 +325,41 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
       const filtered = q
         ? rows.filter((r) => r.name.toLowerCase().includes(q) || r.address.toLowerCase().includes(q))
         : rows;
-      return json({ places: filtered });
+
+      const limitParam = url.searchParams.get('limit');
+      const offsetParam = url.searchParams.get('offset');
+      const pageParam = url.searchParams.get('page');
+      const hasPagination = limitParam !== null || offsetParam !== null || pageParam !== null;
+
+      if (!hasPagination) {
+        return json({ places: filtered, total: filtered.length });
+      }
+
+      const rawLimit = Number.parseInt(limitParam || '15', 10);
+      const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 200) : 15;
+      const total = filtered.length;
+      const totalPages = Math.max(1, Math.ceil(total / limit));
+
+      let currentPage = 1;
+      let offset = 0;
+      if (pageParam !== null) {
+        const rawPage = Number.parseInt(pageParam, 10);
+        currentPage = Number.isFinite(rawPage) && rawPage > 0 ? Math.min(rawPage, totalPages) : 1;
+        offset = (currentPage - 1) * limit;
+      } else if (offsetParam !== null) {
+        const rawOffset = Number.parseInt(offsetParam, 10);
+        offset = Number.isFinite(rawOffset) && rawOffset >= 0 ? rawOffset : 0;
+        currentPage = Math.max(1, Math.min(totalPages, Math.floor(offset / limit) + 1));
+      }
+
+      return json({
+        places: filtered.slice(offset, offset + limit),
+        total,
+        limit,
+        offset,
+        page: currentPage,
+        totalPages,
+      });
     }
 
     const placeReviewsMatch = path.match(/^\/api\/places\/(\d+)\/reviews$/);

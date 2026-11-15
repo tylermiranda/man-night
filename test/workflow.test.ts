@@ -1014,4 +1014,67 @@ describe('Man Night PWA Worker & Seed', () => {
     );
     expect(donErr.status).toBe(400);
   });
+
+  it('paginates /api/places when requested while keeping unpaginated full list compatible, and cleans Crew cards (issue #8)', async () => {
+    // Unpaginated call still returns all 225 restaurants for map + client-side search/filter
+    const fullRes = await worker.fetch(makeReq('/api/places'), env);
+    expect(fullRes.status).toBe(200);
+    const fullData = (await fullRes.json()) as { places: Array<{ id: number; name: string }>; total: number };
+    expect(fullData.places).toHaveLength(225);
+    expect(fullData.total).toBe(225);
+
+    // Page 1 of 15-per-page slice
+    const page1Res = await worker.fetch(makeReq('/api/places?page=1&limit=15'), env);
+    expect(page1Res.status).toBe(200);
+    const page1 = (await page1Res.json()) as {
+      places: Array<{ id: number; name: string }>;
+      total: number;
+      limit: number;
+      offset: number;
+      page: number;
+      totalPages: number;
+    };
+    expect(page1.places).toHaveLength(15);
+    expect(page1.total).toBe(225);
+    expect(page1.limit).toBe(15);
+    expect(page1.offset).toBe(0);
+    expect(page1.page).toBe(1);
+    expect(page1.totalPages).toBe(15);
+    expect(page1.places[0].id).toBe(fullData.places[0].id);
+
+    // Page 2 starts at index 15
+    const page2Res = await worker.fetch(makeReq('/api/places?page=2&limit=15'), env);
+    const page2 = (await page2Res.json()) as typeof page1;
+    expect(page2.places).toHaveLength(15);
+    expect(page2.offset).toBe(15);
+    expect(page2.page).toBe(2);
+    expect(page2.places[0].id).toBe(fullData.places[15].id);
+
+    // Out-of-bounds page clamps cleanly to last page
+    const clampRes = await worker.fetch(makeReq('/api/places?page=99&limit=15'), env);
+    const clamped = (await clampRes.json()) as typeof page1;
+    expect(clamped.page).toBe(15);
+    expect(clamped.offset).toBe(210);
+    expect(clamped.places).toHaveLength(15);
+
+    // Query search + pagination
+    const qRes = await worker.fetch(makeReq('/api/places?q=wichita&page=1&limit=5'), env);
+    const qData = (await qRes.json()) as typeof page1;
+    expect(qData.places.length).toBeLessThanOrEqual(5);
+    expect(qData.total).toBeGreaterThan(0);
+
+    // UI & SW asset checks: Places pagination + Crew redundant cards removed (still in header/settings)
+    const appJs = readFileSync(resolve(rootDir, 'public/app.js'), 'utf8');
+    const indexHtml = readFileSync(resolve(rootDir, 'public/index.html'), 'utf8');
+    const swJs = readFileSync(resolve(rootDir, 'public/sw.js'), 'utf8');
+
+    expect(appJs).toContain('PLACES_PAGE_SIZE = 15');
+    expect(appJs).toContain('data-action="places-page"');
+    expect(appJs).toContain('buildPaginationItems');
+    expect(appJs).not.toContain('Help &amp; Feedback');
+    expect(appJs).not.toContain('Notifications &amp; Phone App');
+    expect(indexHtml).toContain('id="btn-report-top"');
+    expect(indexHtml).toContain('data-action="open-settings"');
+    expect(swJs).toContain("CACHE_NAME = 'man-night-shell-v7'");
+  });
 });

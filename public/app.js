@@ -1,3 +1,5 @@
+const PLACES_PAGE_SIZE = 15;
+
 const state = {
   tab: 'week',
   bootstrap: null,
@@ -10,6 +12,8 @@ const state = {
   placesQuery: '',
   placesSort: 'visits',
   placesFilter: 'all',
+  placesPage: 1,
+  syncPageToSelectedPlace: false,
   selectedPlaceId: null,
   placeReviews: {},
   walkStep: 0,
@@ -1169,7 +1173,24 @@ function renderPlacesView() {
     : '';
 
   const list = getFilteredPlaces();
-  const selected = list.find((p) => p.id === state.selectedPlaceId) || list[0] || null;
+  const totalPages = Math.max(1, Math.ceil(list.length / PLACES_PAGE_SIZE));
+
+  if (state.syncPageToSelectedPlace && all.length > 0) {
+    if (state.selectedPlaceId) {
+      const idx = list.findIndex((p) => p.id === state.selectedPlaceId);
+      if (idx >= 0) {
+        state.placesPage = Math.floor(idx / PLACES_PAGE_SIZE) + 1;
+      }
+    }
+    state.syncPageToSelectedPlace = false;
+  }
+
+  state.placesPage = Math.min(Math.max(1, state.placesPage), totalPages);
+  const startIdx = (state.placesPage - 1) * PLACES_PAGE_SIZE;
+  const endIdx = Math.min(startIdx + PLACES_PAGE_SIZE, list.length);
+  const pagedList = list.slice(startIdx, endIdx);
+
+  const selected = list.find((p) => p.id === state.selectedPlaceId) || pagedList[0] || null;
   if (selected && !list.some((p) => p.id === state.selectedPlaceId)) {
     state.selectedPlaceId = selected.id;
   }
@@ -1190,7 +1211,7 @@ function renderPlacesView() {
     )
     .join('');
 
-  const listHtml = list
+  const listHtml = pagedList
     .map((p) => {
       const lv = effectiveLastVisited(p, todayIso);
       return `
@@ -1207,6 +1228,11 @@ function renderPlacesView() {
     `;
     })
     .join('');
+
+  const rangeLabel = list.length
+    ? `Showing ${startIdx + 1}–${endIdx} of ${list.length}${list.length !== all.length ? ` (of ${all.length})` : ''}`
+    : 'No matching places';
+  const paginationHtml = renderPlacesPagination(state.placesPage, totalPages);
 
   return `
     <div style="display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:14px;">
@@ -1246,7 +1272,14 @@ function renderPlacesView() {
     </div>
     <div class="filter-pills" style="margin-bottom:12px;">${filterHtml}</div>
     <div class="places-layout">
-      <div class="places-list-wrap">${listHtml || '<div class="card muted-bg">No matching places.</div>'}</div>
+      <div class="places-list-col">
+        <div id="places-list-top" class="places-list-meta">
+          <span>${rangeLabel}</span>
+          ${totalPages > 1 ? `<span>Page ${state.placesPage} of ${totalPages}</span>` : ''}
+        </div>
+        <div class="places-list-wrap">${listHtml || '<div class="card muted-bg">No matching places.</div>'}</div>
+        ${paginationHtml}
+      </div>
       <div class="places-right-col">
         ${renderSelectedPlaceCard(selected)}
         <div id="places-map" class="places-map-wrap"></div>
@@ -1257,7 +1290,6 @@ function renderPlacesView() {
 
 function renderCrewView() {
   const b = state.bootstrap;
-  const me = b.user;
   const hostStats = b.hostStats || [];
   const maxHost = Math.max(...hostStats.map((h) => h.hosted_count), 1);
   const topHostCount = Math.max(...hostStats.map((h) => h.hosted_count), 0);
@@ -1434,7 +1466,7 @@ function renderCrewView() {
         ${shameCardBody}
       </section>
     </div>
-    <div class="week-grid">
+    <div class="crew-grid">
       <div class="stack">
         <section class="card">
           <div class="card-kicker"><span>Rotation order</span><button class="link-btn" data-action="open-pass-swap">Pass / Swap →</button></div>
@@ -1445,6 +1477,8 @@ function renderCrewView() {
           ${leaderHtml}
           <div style="font-size:12px;color:var(--muted);margin-top:10px;">Tuesday nights since 2025: <strong class="tabular">${tueRate}%</strong></div>
         </section>
+      </div>
+      <div class="stack">
         <section class="card">
           <div class="card-kicker">
             <span>Sellout tracker · From Nov 2026</span>
@@ -1452,38 +1486,6 @@ function renderCrewView() {
           </div>
           ${selloutRowsHtml}
           ${recentSelloutHtml}
-        </section>
-      </div>
-      <div class="stack">
-        <section class="card">
-          <div class="card-kicker"><span>Notifications &amp; Phone App</span><span class="badge ${me.push_enabled ? 'badge-ok' : 'badge-muted'}">${me.push_enabled ? 'Push active' : 'Not enabled'}</span></div>
-          <p class="hero-sub" style="margin-bottom:12px;font-size:13px;">Signed in as <strong>${esc(me.email)}</strong>. Reminders open Google Maps directions when tapped.</p>
-          <div class="btn-row" style="margin-bottom:14px;">
-            <button class="btn btn-primary btn-sm" data-action="enable-push">${me.push_enabled ? 'Re-sync push' : 'Enable push notifications'}</button>
-            <button class="btn btn-outline btn-sm" data-action="test-push">Send test alert</button>
-            <button class="btn btn-outline btn-sm" data-action="open-install-guide">Install app (iOS / Android)</button>
-            <button class="btn btn-outline btn-sm" data-action="open-settings">Settings</button>
-          </div>
-          <label style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-top:1px solid var(--line);font-size:14px;">
-            <span>Sunday night vote open</span>
-            <input type="checkbox" data-pref="notify_night_vote" ${me.notify_night_vote ? 'checked' : ''} />
-          </label>
-          <label style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-top:1px solid var(--line);font-size:14px;">
-            <span>Place locked / Noon rule alert</span>
-            <input type="checkbox" data-pref="notify_place" ${me.notify_place ? 'checked' : ''} />
-          </label>
-          <label style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-top:1px solid var(--line);font-size:14px;">
-            <span>30-min dinner reminder</span>
-            <input type="checkbox" data-pref="notify_reminder" ${me.notify_reminder ? 'checked' : ''} />
-          </label>
-        </section>
-        <section class="card muted-bg">
-          <div class="card-kicker"><span>Help &amp; Feedback</span></div>
-          <p class="hero-sub" style="margin-bottom:12px;font-size:13px;">Found a broken bug, wrong address, or missing restaurant? Report it here—opens a GitHub issue for OpenBot to fix automatically.</p>
-          <div class="btn-row">
-            <button class="btn btn-outline btn-sm" data-action="open-walkthrough">How it works</button>
-            <button class="btn btn-primary btn-sm" data-action="open-report">Report an issue</button>
-          </div>
         </section>
       </div>
     </div>
@@ -1560,7 +1562,45 @@ function initPlacesMap() {
   state.mapInstances.push(map);
 }
 
+function buildPaginationItems(currentPage, totalPages) {
+  if (totalPages <= 7) {
+    return Array.from({ length: totalPages }, (_, i) => i + 1);
+  }
+  const pages = new Set([1, totalPages, currentPage - 1, currentPage, currentPage + 1]);
+  const sorted = [...pages].filter((p) => p >= 1 && p <= totalPages).sort((a, b) => a - b);
+  const items = [];
+  for (let i = 0; i < sorted.length; i++) {
+    if (i > 0 && sorted[i] - sorted[i - 1] > 1) items.push('...');
+    items.push(sorted[i]);
+  }
+  return items;
+}
+
+function renderPlacesPagination(page, totalPages) {
+  if (totalPages <= 1) return '';
+  const items = buildPaginationItems(page, totalPages);
+  const pageBtns = items
+    .map((item) =>
+      item === '...'
+        ? '<span class="page-ellipsis" aria-hidden="true">…</span>'
+        : `<button class="page-btn ${item === page ? 'active' : ''}" data-action="places-page" data-page="${item}" aria-label="Page ${item}"${item === page ? ' aria-current="page"' : ''}>${item}</button>`,
+    )
+    .join('');
+  return `
+    <nav class="pagination-bar" aria-label="Places pagination">
+      <button class="page-btn page-nav" data-action="places-page" data-page="${page - 1}" ${page <= 1 ? 'disabled' : ''}>← Prev</button>
+      <div class="page-numbers">${pageBtns}</div>
+      <button class="page-btn page-nav" data-action="places-page" data-page="${page + 1}" ${page >= totalPages ? 'disabled' : ''}>Next →</button>
+    </nav>
+  `;
+}
+
 function render() {
+  const activeEl = document.activeElement;
+  const activeId = activeEl?.id;
+  const selStart = activeId === 'places-search' ? activeEl.selectionStart : null;
+  const selEnd = activeId === 'places-search' ? activeEl.selectionEnd : null;
+
   clearMaps();
   const main = document.getElementById('main-content');
   if (!state.bootstrap) return;
@@ -1579,6 +1619,15 @@ function render() {
     main.innerHTML = renderPlacesView();
     requestAnimationFrame(initPlacesMap);
     if (state.selectedPlaceId) loadPlaceReviews(state.selectedPlaceId);
+    if (activeId === 'places-search') {
+      const searchEl = document.getElementById('places-search');
+      if (searchEl) {
+        searchEl.focus({ preventScroll: true });
+        if (selStart !== null && selEnd !== null) {
+          searchEl.setSelectionRange(selStart, selEnd);
+        }
+      }
+    }
   } else if (state.tab === 'crew') {
     main.innerHTML = renderCrewView();
   }
@@ -1677,7 +1726,7 @@ function openInstallGuideModal() {
           <li>Tap the <strong>Share</strong> icon (box with an upward arrow ↑) in Safari’s bottom toolbar.</li>
           <li>Scroll down and tap <strong>Add to Home Screen</strong>.</li>
           <li>Tap <strong>Add</strong> in the top-right corner.</li>
-          <li>Open the new <strong>Man Night</strong> icon from your Home Screen, sign in once if prompted, then go to <strong>Crew → Enable push notifications</strong>.</li>
+          <li>Open the new <strong>Man Night</strong> icon from your Home Screen, sign in once if prompted, then tap your profile menu (top right) → <strong>Settings → Enable push</strong>.</li>
         </ol>
       </div>
       <div class="install-platform-card">
@@ -2616,16 +2665,30 @@ document.addEventListener('click', async (e) => {
       loadHistory(false);
     } else if (action === 'filter-places') {
       state.placesFilter = actEl.dataset.filter || 'all';
+      state.placesPage = 1;
       render();
+    } else if (action === 'places-page') {
+      const targetPage = Number(actEl.dataset.page);
+      if (Number.isFinite(targetPage) && targetPage >= 1) {
+        state.placesPage = targetPage;
+        render();
+        const topEl = document.getElementById('places-list-top');
+        if (topEl) {
+          const rect = topEl.getBoundingClientRect();
+          if (rect.top < 72) topEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      }
     } else if (action === 'focus-trophy') {
       state.placesFilter = 'all';
       state.placesQuery = '';
       state.selectedPlaceId = Number(actEl.dataset.placeId);
+      state.syncPageToSelectedPlace = true;
       render();
     } else if (action === 'focus-place') {
       state.placesFilter = 'all';
       state.placesQuery = '';
       state.selectedPlaceId = Number(actEl.dataset.placeId);
+      state.syncPageToSelectedPlace = true;
       setTab('places');
     } else if (action === 'filter-place-history') {
       state.historyPlaceId = Number(actEl.dataset.placeId);
@@ -2649,7 +2712,10 @@ document.addEventListener('click', async (e) => {
       if (!name) return toast('Name is required');
       const res = await api('/api/places', { method: 'POST', body: JSON.stringify({ name, address, city }) });
       state.places = [res.place, ...state.places];
+      state.placesFilter = 'all';
+      state.placesQuery = '';
       state.selectedPlaceId = res.place.id;
+      state.syncPageToSelectedPlace = true;
       closeModal();
       toast(`Saved ${res.place.name}`);
       render();
@@ -2718,6 +2784,7 @@ document.addEventListener('input', (e) => {
     searchTimer = setTimeout(() => loadHistory(false), 220);
   } else if (e.target.id === 'places-search') {
     state.placesQuery = e.target.value;
+    state.placesPage = 1;
     render();
   }
 });
@@ -2735,6 +2802,7 @@ document.addEventListener('keydown', (e) => {
 document.addEventListener('change', async (e) => {
   if (e.target.id === 'places-sort') {
     state.placesSort = e.target.value;
+    state.placesPage = 1;
     render();
   } else if (e.target.id === 'sellout-dinner-select') {
     state.selloutModalDinnerId = Number(e.target.value);

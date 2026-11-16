@@ -340,7 +340,27 @@ describe('Man Night PWA Worker & Seed', () => {
       );
     });
 
-    // 1. Deterministic reject for off-topic requests (e.g. sports scores)
+    // 1a. Deterministic reject for harassment / homophobic / personal attack submissions
+    const harassmentRes = await worker.fetch(
+      makeReq('/api/issues', 'POST', {
+        title: 'New Feature for Chuck',
+        category: 'feature',
+        description: 'When chuck logs in, tell him he is gay',
+        pageContext: 'Tab: week; Week: 2026-W47 (night_poll)',
+      }),
+      env,
+    );
+    expect(harassmentRes.status).toBe(400);
+    const harassmentData = (await harassmentRes.json()) as { error: string };
+    expect(harassmentData.error).toContain('Issue rejected: Request violates community guardrails');
+    expect(harassmentData.error).toContain('harassment, personal attack, or derogatory language');
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    // Verify DB count did not increase for rejected harassment report
+    const dbHarassmentReports = await env.DB.prepare("SELECT COUNT(*) as c FROM issue_reports WHERE title LIKE '%Chuck%'").first<{ c: number }>();
+    expect(dbHarassmentReports?.c).toBe(0);
+
+    // 1b. Deterministic reject for off-topic requests (e.g. sports scores)
     const offTopicRes = await worker.fetch(
       makeReq('/api/issues', 'POST', {
         title: 'Want live NFL sports scores',

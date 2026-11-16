@@ -1867,6 +1867,29 @@ async function signStandardWebhook(secret: string, msgId: string, timestamp: str
   return `v1,${b64Sig}`;
 }
 
+export const HARASSMENT_OR_ABUSIVE_PATTERNS: RegExp[] = [
+  // Homophobic remarks, slurs, or targeting individuals with sexual orientation insults/pranks
+  /\b(tell\s+[a-z0-9_-]+\s+(that\s+)?(he|she|they)?\s*(is|are|was|were|'s|'re)?\s*gay)\b/i,
+  /\b([a-z0-9_-]+|he|she|they)\s*(is|are|was|were|'s|'re)\s+gay\b/i,
+  /\b(that'?s\s+(so\s+)?gay|no\s+homo)\b/i,
+  /\b(fag|faggot[s]?|homo[s]?|dyke[s]?|trann(y|ies))\b/i,
+  // Hate speech, severe harassment, threats
+  /\b(kill\s+(your|him|her|them)self|kys)\b/i,
+  /\b(retard(ed)?|cunt[s]?|nigger[s]?|nigga[s]?|chink[s]?|spic[s]?|kike[s]?)\b/i,
+  // Targeted harassment / demeaning member pranks
+  /\btell\s+[a-z0-9_-]+\s+(he|she|they)\s*(is|are|'s|'re)\s*(a\s+)?(bitch|loser|idiot|stupid|fat|ugly|worthless)\b/i,
+];
+
+export function checkDeterministicHarassment(text: string): { harassment: boolean; matched?: string } {
+  for (const pattern of HARASSMENT_OR_ABUSIVE_PATTERNS) {
+    const match = text.match(pattern);
+    if (match) {
+      return { harassment: true, matched: match[0] };
+    }
+  }
+  return { harassment: false };
+}
+
 export const OFF_TOPIC_RELEVANCE_PATTERNS: RegExp[] = [
   /\b(nfl|nba|mlb|nhl|fifa|uefa|premier\s+league|formula\s*1|f1|nascar|wnba|pga)\b/i,
   /\b(touchdown|quarterback|super\s*bowl|world\s*cup|playoffs?|box\s*scores?|sports?\s*scores?|sports?\s*betting|fantasy\s*football|fantasy\s*league)\b/i,
@@ -1898,7 +1921,15 @@ export async function assertIssueRelevance(
 ): Promise<void> {
   const combinedText = `${report.title} ${report.description} ${report.pageContext || ''}`;
 
-  // 1. Fast deterministic heuristic rejection
+  // 1. Fast deterministic harassment / abusive content rejection
+  const harassmentCheck = checkDeterministicHarassment(combinedText);
+  if (harassmentCheck.harassment) {
+    throw new Error(
+      `Issue rejected: Request violates community guardrails (contains harassment, personal attack, or derogatory language: "${harassmentCheck.matched}").`,
+    );
+  }
+
+  // 2. Fast deterministic heuristic rejection
   const fastCheck = checkDeterministicOffTopic(combinedText);
   if (fastCheck.offTopic) {
     throw new Error(
@@ -1906,10 +1937,10 @@ export async function assertIssueRelevance(
     );
   }
 
-  // 2. Cloudflare Workers AI classification (when AI binding is present)
+  // 3. Cloudflare Workers AI classification (when AI binding is present)
   if (env.AI) {
     try {
-      const systemPrompt = `You are a strict guardrail classifier for "Man Night Dinner Club", a private web application used by a close crew to track weekly dinners.
+      const systemPrompt = `You are a strict safety, content moderation, and relevance guardrail classifier for "Man Night Dinner Club", a private web application used by a close crew to track weekly dinners.
 The application ONLY covers:
 - Weekly dinner scheduling, Tuesday vs Wednesday voting, and attendance / RSVPs / extra guests.
 - Restaurant directory, place suggestions, place voting/polls, maps, addresses, and history.
@@ -1917,8 +1948,9 @@ The application ONLY covers:
 - Reviews, star ratings, meal prices, beer tracking, appetizer tracking, and meal photos.
 - App functionality, notifications (Web Push), Google Calendar syncing, and bug reports.
 
-Determine whether the user's issue/feature submission is directly relevant to this dinner club app.
-Unrelated topics (such as live sports scores, fantasy leagues, stock/crypto prices, weather, ride sharing, generic chatbots, or unrelated external tools/games) MUST be rejected.
+YOU MUST REJECT:
+1. Harassment, personal attacks, insults, bullying, derogatory remarks, hate speech, homophobic slurs/jokes, or targeting any club member or person (e.g. calling a member gay, insults, demeaning jokes, abusive or discriminatory language).
+2. Unrelated topics (such as live sports scores, fantasy leagues, stock/crypto prices, weather, ride sharing, generic chatbots, or unrelated external tools/games).
 
 Respond ONLY with valid JSON in this exact structure:
 {"relevant": true}

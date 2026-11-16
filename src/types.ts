@@ -5,6 +5,7 @@ export interface Env {
   CLUB_TIMEZONE: string;
   GCAL_CALENDAR_ID: string;
   GITHUB_REPO: string;
+  AI?: Ai;
   VAPID_PUBLIC_KEY?: string;
   VAPID_PRIVATE_KEY?: string;
   VAPID_SUBJECT?: string;

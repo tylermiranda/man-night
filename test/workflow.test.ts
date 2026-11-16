@@ -327,6 +327,98 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(listBody.issues[0].webhook_status).toBe('github_and_openbot_notified');
   });
 
+  it('enforces Tier 2 relevance guardrails on /api/issues rejecting off-topic reports and gating auto-fix', async () => {
+    env.GITHUB_TOKEN = 'ghp_test_token';
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : input instanceof Request ? input.url : String(input);
+      if (url.startsWith('https://signal.openbot.run/')) {
+        return new Response(null, { status: 202 });
+      }
+      return new Response(
+        JSON.stringify({ number: 99, html_url: 'https://github.com/tylermiranda/man-night/issues/99' }),
+        { status: 201, headers: { 'Content-Type': 'application/json' } },
+      );
+    });
+
+    // 1. Deterministic reject for off-topic requests (e.g. sports scores)
+    const offTopicRes = await worker.fetch(
+      makeReq('/api/issues', 'POST', {
+        title: 'Want live NFL sports scores',
+        category: 'feature',
+        description: 'Can we add football scores to the top bar?',
+      }),
+      env,
+    );
+    expect(offTopicRes.status).toBe(400);
+    const offTopicData = (await offTopicRes.json()) as { error: string };
+    expect(offTopicData.error).toContain('Issue rejected: Request appears unrelated to Man Night Dinner Club');
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    // Verify DB count did not increase for rejected report
+    const dbReports = await env.DB.prepare("SELECT COUNT(*) as c FROM issue_reports WHERE title LIKE '%NFL%'").first<{ c: number }>();
+    expect(dbReports?.c).toBe(0);
+
+    // 2. Cloudflare Workers AI rejects off-topic submission when AI returns relevant: false
+    const mockAiRun = vi.fn();
+    env.AI = { run: mockAiRun } as unknown as Ai;
+
+    mockAiRun.mockResolvedValueOnce({
+      response: JSON.stringify({ relevant: false, reason: 'Cryptocurrency tracking is outside the dinner club remit.' }),
+    });
+    const aiOffTopicRes = await worker.fetch(
+      makeReq('/api/issues', 'POST', {
+        title: 'Add wallet balance viewer',
+        category: 'feature',
+        description: 'Check our external wallet balances for fun.',
+      }),
+      env,
+    );
+    expect(aiOffTopicRes.status).toBe(400);
+    const aiOffTopicData = (await aiOffTopicRes.json()) as { error: string };
+    expect(aiOffTopicData.error).toBe('Issue rejected: Cryptocurrency tracking is outside the dinner club remit.');
+
+    // 3. Cloudflare Workers AI accepts relevant feature request, but gates 'auto-fix' label
+    mockAiRun.mockResolvedValueOnce({
+      response: JSON.stringify({ relevant: true }),
+    });
+    const relevantFeatureRes = await worker.fetch(
+      makeReq('/api/issues', 'POST', {
+        title: 'Add patio seating filter to places list',
+        category: 'feature',
+        description: 'Filter restaurants by outdoor patio seating for nice weather nights.',
+      }),
+      env,
+    );
+    expect(relevantFeatureRes.status).toBe(201);
+    expect(fetchMock).toHaveBeenCalled();
+    const featureCallBody = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(featureCallBody.labels).toContain('user-reported');
+    expect(featureCallBody.labels).toContain('feature');
+    expect(featureCallBody.labels).toContain('feature-request');
+    expect(featureCallBody.labels).toContain('needs-review');
+    expect(featureCallBody.labels).not.toContain('auto-fix');
+    expect(featureCallBody.body).toContain('_Submitted as a feature request for review._');
+
+    // 4. Graceful fallback when Workers AI errors/times out on legitimate bug report
+    fetchMock.mockClear();
+    mockAiRun.mockRejectedValueOnce(new Error('AI inference timeout'));
+    const bugRes = await worker.fetch(
+      makeReq('/api/issues', 'POST', {
+        title: 'Toasted ravioli photo upload failed',
+        category: 'bug',
+        description: 'When uploading appetizer photo from phone, button stuck on uploading.',
+      }),
+      env,
+    );
+    expect(bugRes.status).toBe(201);
+    expect(fetchMock).toHaveBeenCalled();
+    const bugCallBody = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(bugCallBody.labels).toContain('auto-fix');
+    expect(bugCallBody.labels).toContain('user-reported');
+    expect(bugCallBody.labels).toContain('bug');
+    expect(bugCallBody.body).toContain('_Labeled `auto-fix` for OpenBot Man Night Desk._');
+  });
+
   it('lets host pick place and night in advance so voting and noon draw are skipped', async () => {
     const bootRes = await worker.fetch(makeReq('/api/bootstrap'), env);
     const boot = (await bootRes.json()) as {

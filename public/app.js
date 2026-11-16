@@ -4349,6 +4349,12 @@ document.addEventListener('click', async (e) => {
         state.pendingIssueScreenshot = null;
         toast('Issue reported & queued for OpenBot!');
         showIssueSubmitted(res.issue || { id: 0, webhook_status: 'saved' });
+      } catch (err) {
+        const fb = document.getElementById('issue-feedback');
+        if (fb) {
+          fb.innerHTML = `<div style="font-size:12px;color:#ff8585;background:rgba(255,100,100,0.12);border:1px solid rgba(255,100,100,0.25);padding:8px 10px;border-radius:8px;line-height:1.35;margin-bottom:8px;">${esc(err.message || 'Submission rejected')}</div>`;
+        }
+        toast(err.message || 'Submission rejected');
       } finally {
         actEl.disabled = false;
       }

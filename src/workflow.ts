@@ -1867,6 +1867,97 @@ async function signStandardWebhook(secret: string, msgId: string, timestamp: str
   return `v1,${b64Sig}`;
 }
 
+export const OFF_TOPIC_RELEVANCE_PATTERNS: RegExp[] = [
+  /\b(nfl|nba|mlb|nhl|fifa|uefa|premier\s+league|formula\s*1|f1|nascar|wnba|pga)\b/i,
+  /\b(touchdown|quarterback|super\s*bowl|world\s*cup|playoffs?|box\s*scores?|sports?\s*scores?|sports?\s*betting|fantasy\s*football|fantasy\s*league)\b/i,
+  /\b(crypto(currency)?|bitcoin|btc|ethereum|eth|solana|doge(coin)?|memecoin|nft[s]?)\b/i,
+  /\b(stock\s*ticker|stock\s*prices?|nasdaq|dow\s*jones|s&p\s*500|tradingview|forex)\b/i,
+  /\b(weather\s*forecast|weather\s*radar|7-day\s*forecast|hurricane\s*tracker)\b/i,
+  /\b(flight\s*tracker|airline\s*status|boarding\s*pass|tsa\s*precheck)\b/i,
+  /\b(uber\s*eats|doordash|grubhub|postmates|instacart)\b/i,
+];
+
+export function checkDeterministicOffTopic(text: string): { offTopic: boolean; matched?: string } {
+  for (const pattern of OFF_TOPIC_RELEVANCE_PATTERNS) {
+    const match = text.match(pattern);
+    if (match) {
+      return { offTopic: true, matched: match[0] };
+    }
+  }
+  return { offTopic: false };
+}
+
+export async function assertIssueRelevance(
+  env: Env,
+  report: {
+    title: string;
+    description: string;
+    category?: string;
+    pageContext?: string;
+  },
+): Promise<void> {
+  const combinedText = `${report.title} ${report.description} ${report.pageContext || ''}`;
+
+  // 1. Fast deterministic heuristic rejection
+  const fastCheck = checkDeterministicOffTopic(combinedText);
+  if (fastCheck.offTopic) {
+    throw new Error(
+      `Issue rejected: Request appears unrelated to Man Night Dinner Club (matched off-topic term: "${fastCheck.matched}"). Issues must relate directly to dinners, restaurants, host rotation, ratings, beers/appetizers, notifications, or app bugs.`,
+    );
+  }
+
+  // 2. Cloudflare Workers AI classification (when AI binding is present)
+  if (env.AI) {
+    try {
+      const systemPrompt = `You are a strict guardrail classifier for "Man Night Dinner Club", a private web application used by a close crew to track weekly dinners.
+The application ONLY covers:
+- Weekly dinner scheduling, Tuesday vs Wednesday voting, and attendance / RSVPs / extra guests.
+- Restaurant directory, place suggestions, place voting/polls, maps, addresses, and history.
+- Host rotation queue, King of Hosting, Crown of Shame, and sellout tracking.
+- Reviews, star ratings, meal prices, beer tracking, appetizer tracking, and meal photos.
+- App functionality, notifications (Web Push), Google Calendar syncing, and bug reports.
+
+Determine whether the user's issue/feature submission is directly relevant to this dinner club app.
+Unrelated topics (such as live sports scores, fantasy leagues, stock/crypto prices, weather, ride sharing, generic chatbots, or unrelated external tools/games) MUST be rejected.
+
+Respond ONLY with valid JSON in this exact structure:
+{"relevant": true}
+or
+{"relevant": false, "reason": "<brief explanation under 25 words>"}`;
+
+      const userContent = `Title: ${report.title}\nCategory: ${report.category || 'bug'}\nContext: ${report.pageContext || ''}\nDescription: ${report.description}`;
+
+      const aiResponse = (await env.AI.run('@cf/meta/llama-3.2-3b-instruct', {
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userContent },
+        ],
+        max_tokens: 120,
+        temperature: 0.1,
+      })) as { response?: string };
+
+      if (aiResponse && typeof aiResponse.response === 'string') {
+        const jsonMatch = aiResponse.response.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          const parsed = JSON.parse(jsonMatch[0]) as { relevant?: boolean; reason?: string };
+          if (parsed.relevant === false) {
+            throw new Error(
+              parsed.reason
+                ? `Issue rejected: ${parsed.reason}`
+                : 'Issue rejected: Request does not appear directly related to Man Night Dinner Club (dinners, restaurants, rotation, ratings, or app features).',
+            );
+          }
+        }
+      }
+    } catch (err) {
+      if (err instanceof Error && err.message.startsWith('Issue rejected:')) {
+        throw err;
+      }
+      console.warn('Workers AI relevance classification check skipped or failed:', err);
+    }
+  }
+}
+
 export async function createIssueReport(
   env: Env,
   reporter: UserRow,
@@ -1887,6 +1978,8 @@ export async function createIssueReport(
   const pageContext = (body.pageContext || '').trim().slice(0, 300);
 
   if (!title || !description) throw new Error('Title and description are required');
+
+  await assertIssueRelevance(env, { title, description, category, pageContext });
 
   const screenshot = body.imageData ? parsePhotoDataInput(body.imageData) : null;
   const screenshotWidth =
@@ -1926,6 +2019,14 @@ export async function createIssueReport(
 
   if (env.GITHUB_TOKEN && env.GITHUB_REPO) {
     const screenshotUrl = `${(env.APP_URL || '').replace(/\/+$/, '')}/api/issues/${reportId}/screenshot`;
+    const isFeature = category === 'feature';
+    const issueLabels = ['user-reported', category];
+    if (isFeature) {
+      issueLabels.push('feature-request', 'needs-review');
+    } else {
+      issueLabels.push('auto-fix');
+    }
+
     const issueBody = [
       `Reported from **Man Night PWA** by **${reporter.name}** (\`${reporter.email}\`)`,
       pageContext ? `- **Context**: \`${pageContext}\`` : '',
@@ -1937,7 +2038,7 @@ export async function createIssueReport(
       description,
       '',
       '---',
-      '_Labeled `auto-fix` for OpenBot Man Night Desk._',
+      isFeature ? '_Submitted as a feature request for review._' : '_Labeled `auto-fix` for OpenBot Man Night Desk._',
     ]
       .filter(Boolean)
       .join('\n');
@@ -1953,7 +2054,7 @@ export async function createIssueReport(
       body: JSON.stringify({
         title: `[App Report] ${title}`,
         body: issueBody,
-        labels: ['user-reported', 'auto-fix', category],
+        labels: issueLabels,
       }),
     });
 

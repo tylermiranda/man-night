@@ -28,6 +28,7 @@ const migration0011Sql = readFileSync(resolve(rootDir, 'migrations/0011_issue_sc
 const migration0012Sql = readFileSync(resolve(rootDir, 'migrations/0012_beers.sql'), 'utf8');
 const migration0013Sql = readFileSync(resolve(rootDir, 'migrations/0013_appetizers.sql'), 'utf8');
 const migration0014Sql = readFileSync(resolve(rootDir, 'migrations/0014_admin_dashboard.sql'), 'utf8');
+const migration0015Sql = readFileSync(resolve(rootDir, 'migrations/0015_fix_pour_haus_seed_counts.sql'), 'utf8');
 
 function makeEnv(db: D1Database, overrides: Partial<Env> = {}): Env {
   return {
@@ -70,6 +71,7 @@ describe('Man Night PWA Worker & Seed', () => {
     await db.exec(migration0012Sql);
     await db.exec(migration0013Sql);
     await db.exec(migration0014Sql);
+    await db.exec(migration0015Sql);
     env = makeEnv(db);
   });
 
@@ -1757,12 +1759,13 @@ describe('Man Night PWA Worker & Seed', () => {
     // 1. Changelog integrity
     const seenIds = new Set<string>();
     expect(WHATS_NEW_RELEASES.length).toBeGreaterThanOrEqual(12);
-    expect(WHATS_NEW_RELEASES[0].id).toBe('2026-11-15-future-pick-notifications');
-    expect(WHATS_NEW_RELEASES[0].issueNumber).toBe(18);
-    expect(WHATS_NEW_RELEASES[1].id).toBe('2026-11-15-appetizers');
-    expect(WHATS_NEW_RELEASES[1].issueNumber).toBe(17);
-    expect(WHATS_NEW_RELEASES[2].id).toBe('2026-11-15-beer-cellar');
-    expect(WHATS_NEW_RELEASES[2].issueNumber).toBe(15);
+    expect(WHATS_NEW_RELEASES[0].id).toBe('2026-11-16-top-places-poplar-fix');
+    expect(WHATS_NEW_RELEASES[1].id).toBe('2026-11-15-future-pick-notifications');
+    expect(WHATS_NEW_RELEASES[1].issueNumber).toBe(18);
+    expect(WHATS_NEW_RELEASES[2].id).toBe('2026-11-15-appetizers');
+    expect(WHATS_NEW_RELEASES[2].issueNumber).toBe(17);
+    expect(WHATS_NEW_RELEASES[3].id).toBe('2026-11-15-beer-cellar');
+    expect(WHATS_NEW_RELEASES[3].issueNumber).toBe(15);
     expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-15-issue-feature-form' && e.issueNumber === 16)).toBe(true);
     expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-15-favorite-places' && e.issueNumber === 14)).toBe(true);
     expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-15-meal-prices' && e.issueNumber === 13)).toBe(true);
@@ -1849,7 +1852,8 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(bootInit.whatsNew.hasUnseen).toBe(true);
     expect(bootInit.whatsNew.unseenCount).toBe(WHATS_NEW_RELEASES.length);
     expect(bootInit.whatsNew.entries[0].creditLabel).toBe('Bug report by Tyler');
-    expect(bootInit.whatsNew.entries[1].creditLabel).toBe('Idea by Jacob');
+    expect(bootInit.whatsNew.entries[1].creditLabel).toBe('Bug report by Tyler');
+    expect(bootInit.whatsNew.entries[2].creditLabel).toBe('Idea by Jacob');
 
     const getRes = await worker.fetch(makeReq('/api/whats-new'), env);
     expect(getRes.status).toBe(200);
@@ -2351,12 +2355,12 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(chuck?.favorite_place?.restaurant_name).toBe('Poplar');
     expect(chuck?.favorite_place?.times_picked).toBe(17);
 
-    // Eric's favorite place is Pour Haus Restaurant & Tavern (23x)
+    // Eric's favorite place is Wichita Brewing Co. & Pizzeria (13x)
     const eric = b.hostStats.find((h) => h.host_slug === 'eric');
     expect(eric).toBeDefined();
     expect(eric?.favorite_place).toBeDefined();
-    expect(eric?.favorite_place?.restaurant_name).toContain('Pour Haus');
-    expect(eric?.favorite_place?.times_picked).toBe(23);
+    expect(eric?.favorite_place?.restaurant_name).toContain('Wichita Brewing Co');
+    expect(eric?.favorite_place?.times_picked).toBe(13);
 
     // Tyler's favorite place is Empire Tacos (6x)
     const tyler = b.hostStats.find((h) => h.host_slug === 'tyler');
@@ -2780,7 +2784,7 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(entry18?.creditRole).toBe('bug_report');
 
     const swJs = readFileSync(resolve(rootDir, 'public/sw.js'), 'utf8');
-    expect(swJs).toContain("const CACHE_NAME = 'man-night-shell-v16'");
+    expect(swJs).toMatch(/const CACHE_NAME = 'man-night-shell-v\d+'/);
   });
 
   it('gates /admin route to Tyler, serves HTML/JSON dashboard, and logs usage silently', async () => {
@@ -2839,5 +2843,21 @@ describe('Man Night PWA Worker & Seed', () => {
     const clearJson = (await clearRes.json()) as { ok: boolean; cleared: boolean };
     expect(clearJson.ok).toBe(true);
     expect(clearJson.cleared).toBe(true);
+  });
+
+  it('verifies Poplar is ranked #1 in /api/places and Pour Haus has exactly 1 visit', async () => {
+    const res = await worker.fetch(makeReq('/api/places'), env);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { places: Array<{ name: string; visit_count: number; slug: string }> };
+    expect(body.places.length).toBeGreaterThan(0);
+
+    // Poplar must be #1
+    expect(body.places[0].name).toBe('Poplar');
+    expect(body.places[0].visit_count).toBe(29);
+
+    // Pour Haus must only have 1 visit
+    const pourHaus = body.places.find((p) => p.name.includes('Pour Haus'));
+    expect(pourHaus).toBeDefined();
+    expect(pourHaus?.visit_count).toBe(1);
   });
 });

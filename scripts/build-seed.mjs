@@ -64,7 +64,8 @@ const filteredPlaces = placesRaw.filter((p) => !SKIP_KEYS.has(p.key));
 
 const usedSlugs = new Set();
 const restaurants = filteredPlaces.map((p, idx) => {
-  let slug = slugify(p.key);
+  const effectiveKey = p.key === 'dinner' ? 'pour-haus-restaurant-tavern' : p.key;
+  let slug = slugify(effectiveKey);
   if (usedSlugs.has(slug)) slug = `${slug}-${idx + 1}`;
   usedSlugs.add(slug);
   const name = cleanPlaceName(p);
@@ -72,7 +73,8 @@ const restaurants = filteredPlaces.map((p, idx) => {
   const coords = geoEnriched[p.key] || null;
   return {
     id: idx + 1,
-    key: p.key,
+    key: effectiveKey,
+    origKey: p.key,
     slug,
     name,
     address: addr,
@@ -85,6 +87,7 @@ const restaurants = filteredPlaces.map((p, idx) => {
 });
 
 // Helper lookup table sorted longest key/name first for ICS text matching
+const STOPWORDS = new Set(['dinner', 'place', 'restaurant', 'tavern', 'bar', 'grill']);
 const matchCandidates = restaurants
   .flatMap((r) => {
     const tokens = new Set([
@@ -93,7 +96,7 @@ const matchCandidates = restaurants
       slugify(r.name).replace(/-/g, ' '),
     ]);
     return [...tokens]
-      .filter((t) => t.length >= 3)
+      .filter((t) => t.length >= 3 && !STOPWORDS.has(t))
       .map((t) => ({ token: t, restaurant: r }));
   })
   .sort((a, b) => b.token.length - a.token.length);
@@ -128,6 +131,7 @@ const ALIAS_KEYS = [
   ['empire taco', 'empire tacos'],
   ['pourhouse', 'pourhouse'],
   ['pour house', 'pourhouse'],
+  ['pour haus', 'pour-haus-restaurant-tavern'],
   ['oak & pie', 'oak pie'],
   ['oak and pie', 'oak pie'],
   ['monarch', 'monarch'],
@@ -159,9 +163,33 @@ const ALIAS_KEYS = [
   ['amy\'s pizza', 'w d munson primary school'],
   ['la chona', 'https www google com maps place la chona con huevos'],
   ['nelson', 'nelsons kitchen'],
+  ['knolla', 'knollas pizza'],
+  ['molino', 'molinos cuisine midtown'],
+  ['chipotle', 'chipotle mexican'],
+  ['n&j', 'n j bakery'],
+  ['n & j', 'n j bakery'],
+  ['picasso', 'picassos pizzeria'],
+  ['barn\'rd', 'barnrds roast beef'],
+  ['barnrd', 'barnrds roast beef'],
+  ['bionic burger', 'bionic burger'],
+  ['el agave', 'el agave'],
+  ['felipe', 'felipes'],
+  ['maple street pizza', 'maple street pizza company'],
+  ['side pocket', 'side pockets'],
+  ['oasis lounge', 'oasis lounge'],
+  ['taco fajita', 'taco fajita'],
+  ['anchor', 'the anchor'],
+  ['po boy', 'po boy'],
+  ['buffalo wings', 'buffalo wings and rings'],
+  ['public', 'public at brickyard'],
 ];
 
-const byKey = new Map(restaurants.map((r) => [r.key, r]));
+const byKey = new Map();
+for (const r of restaurants) {
+  byKey.set(r.key, r);
+  if (r.origKey) byKey.set(r.origKey, r);
+  byKey.set(r.slug, r);
+}
 
 function matchRestaurant(location, summary) {
   const locClean = (location || '').toLowerCase().trim();

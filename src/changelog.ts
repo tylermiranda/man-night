@@ -11,6 +11,17 @@ import type { WhatsNewEntry, WhatsNewPayload, WhatsNewViewEntry } from './types'
  */
 export const WHATS_NEW_RELEASES: readonly WhatsNewEntry[] = [
   {
+    id: '2026-11-16-top-places-poplar-fix',
+    date: '2026-11-16',
+    kind: 'fix',
+    title: '🏆 Poplar Restored to #1 Top Place',
+    summary:
+      'Fixed a calendar seed parsing bug where historical visits containing generic "dinner" keywords were mistakenly assigned to Pour Haus. Poplar is now accurately crowned as the #1 all-time venue with 29 visits!',
+    creditSlug: 'tyler',
+    creditName: 'Tyler',
+    creditRole: 'bug_report',
+  },
+  {
     id: '2026-11-15-future-pick-notifications',
     date: '2026-11-15',
     kind: 'fix',

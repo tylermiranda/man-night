@@ -1,4 +1,4 @@
-const CACHE_NAME = 'man-night-shell-v16';
+const CACHE_NAME = 'man-night-shell-v17';
 const SHELL_ASSETS = [
   '/',
   '/index.html',

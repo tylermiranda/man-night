@@ -316,12 +316,13 @@ export async function castNightVote(
   db: D1Database,
   dinnerId: number,
   userSlug: string,
-  choice: 'tuesday' | 'wednesday',
+  choice: 'tuesday' | 'wednesday' | 'both',
   reason?: string,
 ): Promise<{
   tuesday: number;
   wednesday: number;
-  userChoice: 'tuesday' | 'wednesday';
+  both: number;
+  userChoice: 'tuesday' | 'wednesday' | 'both';
   reason: string;
   nightVotes: NightVoteViewRow[];
 }> {
@@ -345,13 +346,19 @@ export async function castNightVote(
 
   let tuesday = 0;
   let wednesday = 0;
+  let both = 0;
   let savedReason = '';
   for (const row of nightVotes) {
     if (row.choice === 'tuesday') tuesday += 1;
     if (row.choice === 'wednesday') wednesday += 1;
+    if (row.choice === 'both') {
+      tuesday += 1;
+      wednesday += 1;
+      both += 1;
+    }
     if (row.user_slug === userSlug) savedReason = row.reason || '';
   }
-  return { tuesday, wednesday, userChoice: choice, reason: savedReason, nightVotes };
+  return { tuesday, wednesday, both, userChoice: choice, reason: savedReason, nightVotes };
 }
 
 function parseIdListJson(raw: string | null | undefined): number[] {
@@ -399,8 +406,12 @@ export async function lockNight(env: Env, dinnerId: number): Promise<DinnerRow |
   let tue = 0;
   let wed = 0;
   for (const row of votes.results ?? []) {
-    if (row.choice === 'tuesday') tue = Number(row.cnt);
-    if (row.choice === 'wednesday') wed = Number(row.cnt);
+    if (row.choice === 'tuesday') tue += Number(row.cnt);
+    if (row.choice === 'wednesday') wed += Number(row.cnt);
+    if (row.choice === 'both') {
+      tue += Number(row.cnt);
+      wed += Number(row.cnt);
+    }
   }
 
   const winningDay: 'Tuesday' | 'Wednesday' = tue >= wed ? 'Tuesday' : 'Wednesday';

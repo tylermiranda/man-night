@@ -9,7 +9,7 @@ import worker from '../src/index';
 import * as pushModule from '../src/push';
 import { createVapidAuthHeader, encryptWebPushPayload } from '../src/push';
 import type { Env, RestaurantRow } from '../src/types';
-import { addDaysToIsoDate, castRsvp, drawFourRandomPlaces, formatShortDate, isFutureDinner } from '../src/workflow';
+import { addDaysToIsoDate, castNightVote, castRsvp, drawFourRandomPlaces, formatShortDate, isFutureDinner, lockNight } from '../src/workflow';
 import { createTestD1 } from './d1-shim';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -29,6 +29,7 @@ const migration0012Sql = readFileSync(resolve(rootDir, 'migrations/0012_beers.sq
 const migration0013Sql = readFileSync(resolve(rootDir, 'migrations/0013_appetizers.sql'), 'utf8');
 const migration0014Sql = readFileSync(resolve(rootDir, 'migrations/0014_admin_dashboard.sql'), 'utf8');
 const migration0015Sql = readFileSync(resolve(rootDir, 'migrations/0015_fix_pour_haus_seed_counts.sql'), 'utf8');
+const migration0016Sql = readFileSync(resolve(rootDir, 'migrations/0016_allow_both_night_vote.sql'), 'utf8');
 
 function makeEnv(db: D1Database, overrides: Partial<Env> = {}): Env {
   return {
@@ -72,6 +73,7 @@ describe('Man Night PWA Worker & Seed', () => {
     await db.exec(migration0013Sql);
     await db.exec(migration0014Sql);
     await db.exec(migration0015Sql);
+    await db.exec(migration0016Sql);
     env = makeEnv(db);
   });
 
@@ -986,6 +988,89 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(ericLocked?.reason).toBe('Out of town Tuesday');
   });
 
+  it('allows voting for either day (both) in night poll and tallies +1 toward both Tuesday and Wednesday', async () => {
+    // 1. Voting 'both' increments both tuesday and wednesday counts, plus both counter
+    const bothRes = await worker.fetch(
+      makeReq('/api/week/vote-night', 'POST', { choice: 'both', reason: 'Free all week' }),
+      env,
+    );
+    expect(bothRes.status).toBe(200);
+    const bothData = (await bothRes.json()) as {
+      tuesday: number;
+      wednesday: number;
+      both: number;
+      userChoice: string;
+      reason: string;
+      nightVotes: Array<{ user_slug: string; choice: string; reason: string }>;
+    };
+    expect(bothData.userChoice).toBe('both');
+    expect(bothData.both).toBe(1);
+    expect(bothData.tuesday).toBe(1);
+    expect(bothData.wednesday).toBe(1);
+    expect(bothData.reason).toBe('Free all week');
+    expect(bothData.nightVotes).toHaveLength(1);
+    expect(bothData.nightVotes[0].choice).toBe('both');
+
+    // 2. Invalid choice is rejected with 400
+    const badRes = await worker.fetch(
+      makeReq('/api/week/vote-night', 'POST', { choice: 'thursday' }),
+      env,
+    );
+    expect(badRes.status).toBe(400);
+
+    // 3. Second member votes Wednesday, third member votes Tuesday
+    // Counts:
+    // Tyler (both): +1 Tue, +1 Wed
+    // Eric (wednesday): +1 Wed
+    // Chuck (tuesday): +1 Tue
+    // Totals: Tue: 2, Wed: 2 -> Tie! Tuesday wins per rule.
+    await worker.fetch(
+      makeReq('/api/week/vote-night', 'POST', { choice: 'wednesday' }, { 'Cf-Access-Authenticated-User-Email': 'storme2@gmail.com' }),
+      env,
+    );
+    await worker.fetch(
+      makeReq('/api/week/vote-night', 'POST', { choice: 'tuesday' }, { 'Cf-Access-Authenticated-User-Email': 'bigheadwillie@gmail.com' }),
+      env,
+    );
+
+    // Bootstrap check verifies stored choices
+    const boot = (await (await worker.fetch(makeReq('/api/bootstrap'), env)).json()) as {
+      thisWeek: {
+        nightVotes: Array<{ user_slug: string; choice: string }>;
+      };
+    };
+    expect(boot.thisWeek.nightVotes).toHaveLength(3);
+    expect(boot.thisWeek.nightVotes.find((v) => v.user_slug === 'tyler')?.choice).toBe('both');
+
+    // Monday noon lock resolves 2-2 tie in favor of Tuesday
+    await runWeeklyCronTick(env, new Date('2026-11-16T18:05:00Z'));
+    const bootLocked = (await (await worker.fetch(makeReq('/api/bootstrap'), env)).json()) as {
+      thisWeek: {
+        dinner: { day_of_week: string; status: string };
+      };
+    };
+    expect(bootLocked.thisWeek.dinner.day_of_week).toBe('Tuesday');
+    expect(bootLocked.thisWeek.dinner.status).toBe('awaiting_pick');
+
+    // 4. Test direct castNightVote and lockNight functions
+    const directBoot = (await (await worker.fetch(makeReq('/api/bootstrap'), env)).json()) as {
+      thisWeek: { dinner: { id: number } };
+    };
+    const dinnerId = directBoot.thisWeek.dinner.id;
+
+    // Jacob votes both
+    const directCast = await castNightVote(env.DB, dinnerId, 'jacob', 'both', 'Any day works for me');
+    expect(directCast.userChoice).toBe('both');
+    expect(directCast.both).toBe(2); // tyler + jacob
+    expect(directCast.tuesday).toBe(3); // chuck (tue) + tyler (both) + jacob (both)
+    expect(directCast.wednesday).toBe(3); // eric (wed) + tyler (both) + jacob (both)
+
+    // Heath votes Wednesday -> Wednesday becomes 4, Tuesday is 3 -> Wednesday wins!
+    await castNightVote(env.DB, dinnerId, 'heath', 'wednesday');
+    const lockedDinner = await lockNight(env, dinnerId);
+    expect(lockedDinner?.day_of_week).toBe('Wednesday');
+  });
+
   it('crowns King of Hosting from all-time history and tracks forward-only sellouts for the Crown of Shame', async () => {
     const bootInitial = (await (await worker.fetch(makeReq('/api/bootstrap'), env)).json()) as {
       hostStats: Array<{ host_slug: string; host_label: string; hosted_count: number; last_hosted: string | null }>;
@@ -1759,13 +1844,14 @@ describe('Man Night PWA Worker & Seed', () => {
     // 1. Changelog integrity
     const seenIds = new Set<string>();
     expect(WHATS_NEW_RELEASES.length).toBeGreaterThanOrEqual(12);
-    expect(WHATS_NEW_RELEASES[0].id).toBe('2026-11-16-top-places-poplar-fix');
-    expect(WHATS_NEW_RELEASES[1].id).toBe('2026-11-15-future-pick-notifications');
-    expect(WHATS_NEW_RELEASES[1].issueNumber).toBe(18);
-    expect(WHATS_NEW_RELEASES[2].id).toBe('2026-11-15-appetizers');
-    expect(WHATS_NEW_RELEASES[2].issueNumber).toBe(17);
-    expect(WHATS_NEW_RELEASES[3].id).toBe('2026-11-15-beer-cellar');
-    expect(WHATS_NEW_RELEASES[3].issueNumber).toBe(15);
+    expect(WHATS_NEW_RELEASES[0].id).toBe('2026-11-17-both-night-voting');
+    expect(WHATS_NEW_RELEASES[1].id).toBe('2026-11-16-top-places-poplar-fix');
+    expect(WHATS_NEW_RELEASES[2].id).toBe('2026-11-15-future-pick-notifications');
+    expect(WHATS_NEW_RELEASES[2].issueNumber).toBe(18);
+    expect(WHATS_NEW_RELEASES[3].id).toBe('2026-11-15-appetizers');
+    expect(WHATS_NEW_RELEASES[3].issueNumber).toBe(17);
+    expect(WHATS_NEW_RELEASES[4].id).toBe('2026-11-15-beer-cellar');
+    expect(WHATS_NEW_RELEASES[4].issueNumber).toBe(15);
     expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-15-issue-feature-form' && e.issueNumber === 16)).toBe(true);
     expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-15-favorite-places' && e.issueNumber === 14)).toBe(true);
     expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-15-meal-prices' && e.issueNumber === 13)).toBe(true);
@@ -1851,9 +1937,10 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(bootInit.whatsNew.seenId).toBeNull();
     expect(bootInit.whatsNew.hasUnseen).toBe(true);
     expect(bootInit.whatsNew.unseenCount).toBe(WHATS_NEW_RELEASES.length);
-    expect(bootInit.whatsNew.entries[0].creditLabel).toBe('Bug report by Tyler');
+    expect(bootInit.whatsNew.entries[0].creditLabel).toBe('Idea by Tyler');
     expect(bootInit.whatsNew.entries[1].creditLabel).toBe('Bug report by Tyler');
-    expect(bootInit.whatsNew.entries[2].creditLabel).toBe('Idea by Jacob');
+    expect(bootInit.whatsNew.entries[2].creditLabel).toBe('Bug report by Tyler');
+    expect(bootInit.whatsNew.entries[3].creditLabel).toBe('Idea by Jacob');
 
     const getRes = await worker.fetch(makeReq('/api/whats-new'), env);
     expect(getRes.status).toBe(200);

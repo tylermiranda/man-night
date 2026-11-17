@@ -691,6 +691,8 @@ function renderNightVoteReasons(nightVotes, kickerLabel = 'Crew vote reasons') {
             const u = users.find((x) => x.slug === v.user_slug);
             const voterName = v.user_name || u?.name || v.user_slug;
             const isTue = v.choice === 'tuesday';
+            const choiceBadge = v.choice === 'tuesday' ? 'Tuesday' : v.choice === 'wednesday' ? 'Wednesday' : 'Either day';
+            const badgeClass = v.choice === 'tuesday' ? 'badge-red' : v.choice === 'wednesday' ? 'badge-muted' : 'badge-ok';
             return `
               <div class="night-reason-item">
                 <div class="night-reason-item-head">
@@ -698,7 +700,7 @@ function renderNightVoteReasons(nightVotes, kickerLabel = 'Crew vote reasons') {
                     ${avatarHtml(v.user_slug, voterName, 'sm')}
                     <strong style="font-size:13px;">${esc(voterName)}</strong>
                   </div>
-                  <span class="badge ${isTue ? 'badge-red' : 'badge-muted'}">${isTue ? 'Tuesday' : 'Wednesday'}</span>
+                  <span class="badge ${badgeClass}">${choiceBadge}</span>
                 </div>
                 <div class="night-reason-item-body">${esc(v.reason)}</div>
               </div>
@@ -758,9 +760,11 @@ function renderWeekView() {
     state.rsvpExcuseDinnerId = d.id;
     state.rsvpExcuseDraft = null;
   }
-  const tueCount = tw.nightVotes.filter((v) => v.choice === 'tuesday').length;
-  const wedCount = tw.nightVotes.filter((v) => v.choice === 'wednesday').length;
-  const totalNight = tueCount + wedCount;
+  const tueCount = tw.nightVotes.filter((v) => v.choice === 'tuesday' || v.choice === 'both').length;
+  const wedCount = tw.nightVotes.filter((v) => v.choice === 'wednesday' || v.choice === 'both').length;
+  const bothCount = tw.nightVotes.filter((v) => v.choice === 'both').length;
+  const totalNightVoters = tw.nightVotes.length;
+  const totalNight = totalNightVoters;
   const myNightRow = tw.nightVotes.find((v) => v.user_slug === me.slug);
   const myNight = myNightRow?.choice;
   const savedNightReason = (myNightRow?.reason || '').trim();
@@ -804,9 +808,20 @@ function renderWeekView() {
   if (nightOpen) {
     const tuePct = totalNight ? Math.round((tueCount / totalNight) * 100) : 0;
     const wedPct = totalNight ? Math.round((wedCount / totalNight) * 100) : 0;
+    const bothPct = totalNight ? Math.round((bothCount / totalNight) * 100) : 0;
     const renderVoterAvatars = (choice) =>
       tw.nightVotes
-        .filter((v) => v.choice === choice)
+        .filter((v) => v.choice === choice || (choice !== 'both' && v.choice === 'both'))
+        .map((v) => {
+          const u = (b.users || []).find((x) => x.slug === v.user_slug);
+          const voterName = v.user_name || u?.name || v.user_slug;
+          const tip = v.reason ? `${voterName}: ${v.reason}` : voterName;
+          return avatarHtml(v.user_slug, voterName, 'sm', tip);
+        })
+        .join('');
+    const renderBothOnlyAvatars = () =>
+      tw.nightVotes
+        .filter((v) => v.choice === 'both')
         .map((v) => {
           const u = (b.users || []).find((x) => x.slug === v.user_slug);
           const voterName = v.user_name || u?.name || v.user_slug;
@@ -816,9 +831,10 @@ function renderWeekView() {
         .join('');
     const tueVoters = renderVoterAvatars('tuesday');
     const wedVoters = renderVoterAvatars('wednesday');
+    const bothVoters = renderBothOnlyAvatars();
 
-    const myDayLabel = myNight === 'tuesday' ? 'Tuesday' : 'Wednesday';
-    const otherDayLabel = myNight === 'tuesday' ? 'Wednesday' : 'Tuesday';
+    const myDayLabel = myNight === 'tuesday' ? 'Tuesday' : myNight === 'wednesday' ? 'Wednesday' : 'Either day';
+    const otherDayLabel = myNight === 'tuesday' ? 'Wednesday' : myNight === 'wednesday' ? 'Tuesday' : 'a specific';
     const reasonBoxHtml = myNight
       ? `
         <div class="night-reason-box">
@@ -827,7 +843,7 @@ function renderWeekView() {
             ${savedNightReason ? '<span class="badge badge-ok">✓ Shared</span>' : ''}
           </div>
           <div class="night-reason-form">
-            <input id="night-vote-reason" class="input" type="text" maxlength="200" placeholder="Add a reason for ${myDayLabel} (e.g. busy ${otherDayLabel} night)…" value="${esc(draftNightReason)}" />
+            <input id="night-vote-reason" class="input" type="text" maxlength="200" placeholder="Add a reason for ${myDayLabel} (e.g. flexible this week)…" value="${esc(draftNightReason)}" />
             <button type="button" class="btn btn-primary btn-sm" data-action="save-night-reason">${savedNightReason ? 'Update' : 'Save reason'}</button>
             ${savedNightReason ? '<button type="button" class="btn btn-outline btn-sm" data-action="clear-night-reason">Clear</button>' : ''}
           </div>
@@ -866,6 +882,19 @@ function renderWeekView() {
             <div style="display:flex;align-items:center;gap:8px;">
               ${wedVoters}
               <span class="vote-count">${wedCount}</span>
+            </div>
+          </div>
+        </button>
+        <button class="vote-option ${myNight === 'both' ? 'selected' : ''}" data-action="vote-night" data-choice="both">
+          <div class="vote-fill" style="width:${bothPct}%"></div>
+          <div class="vote-inner">
+            <div>
+              <div class="vote-main">Either day · Can do both</div>
+              <div class="vote-meta">Flexible · Adds +1 to both Tuesday and Wednesday</div>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;">
+              ${bothVoters}
+              <span class="vote-count">${bothCount}</span>
             </div>
           </div>
         </button>
@@ -3655,12 +3684,13 @@ document.addEventListener('click', async (e) => {
       });
       state.nightReasonDraft = null;
       state.focusNightReason = !res.reason;
-      toast(`Voted for ${actEl.dataset.choice}`);
+      const choiceLabel = actEl.dataset.choice === 'both' ? 'either day (can do both)' : actEl.dataset.choice;
+      toast(`Voted for ${choiceLabel}`);
       await refreshBootstrap();
     } else if (action === 'save-night-reason') {
       const tw = state.bootstrap?.thisWeek;
       const myVote = tw?.nightVotes?.find((v) => v.user_slug === state.bootstrap?.user?.slug);
-      if (!tw?.dinner || !myVote) return toast('Pick Tuesday or Wednesday first');
+      if (!tw?.dinner || !myVote) return toast('Vote for a night first');
       const inputEl = document.getElementById('night-vote-reason');
       const reasonVal = inputEl ? inputEl.value : (state.nightReasonDraft || '');
       await api('/api/week/vote-night', {

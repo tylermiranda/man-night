@@ -969,9 +969,9 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
     }
 
     if (path === '/api/week/vote-night' && method === 'POST') {
-      const body = await readJson<{ dinnerId?: number; choice: 'tuesday' | 'wednesday'; reason?: string }>(request);
-      if (body.choice !== 'tuesday' && body.choice !== 'wednesday') {
-        return json({ error: 'Choice must be tuesday or wednesday' }, 400);
+      const body = await readJson<{ dinnerId?: number; choice: 'tuesday' | 'wednesday' | 'both'; reason?: string }>(request);
+      if (body.choice !== 'tuesday' && body.choice !== 'wednesday' && body.choice !== 'both') {
+        return json({ error: 'Choice must be tuesday, wednesday, or both' }, 400);
       }
       const dinner = body.dinnerId
         ? await env.DB.prepare('SELECT id FROM dinners WHERE id = ?').bind(body.dinnerId).first<{ id: number }>()

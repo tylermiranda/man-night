@@ -150,7 +150,7 @@ export interface RatingViewRow {
 export interface NightVoteViewRow {
   user_slug: string;
   user_name: string | null;
-  choice: 'tuesday' | 'wednesday';
+  choice: 'tuesday' | 'wednesday' | 'both';
   reason: string;
   voted_at: string;
 }

@@ -11,6 +11,17 @@ import type { WhatsNewEntry, WhatsNewPayload, WhatsNewViewEntry } from './types'
  */
 export const WHATS_NEW_RELEASES: readonly WhatsNewEntry[] = [
   {
+    id: '2026-11-17-both-night-voting',
+    date: '2026-11-17',
+    kind: 'feature',
+    title: '🤝 Either Day (Can Do Both) Night Poll Voting',
+    summary:
+      'Crew members can now vote "Either day (can do both)" in the Tuesday vs Wednesday night poll. Selecting either day adds +1 to both Tuesday and Wednesday availability counts while maintaining Tuesday tie-breaker priority.',
+    creditSlug: 'tyler',
+    creditName: 'Tyler',
+    creditRole: 'idea',
+  },
+  {
     id: '2026-11-16-top-places-poplar-fix',
     date: '2026-11-16',
     kind: 'fix',

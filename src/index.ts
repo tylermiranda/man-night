@@ -6,6 +6,7 @@ import type { Env, LuckyPool, RestaurantRow } from './types';
 import {
   applyRotationOverride,
   backfillDinnerPlace,
+  cancelNight,
   castNightVote,
   castNoonVote,
   castRsvp,
@@ -30,6 +31,7 @@ import {
   lockNight,
   lockPlace,
   openNoonDraw,
+  restoreNight,
   safeRestaurantSelectSql,
   setDinnerMealPrice,
   submitRating,
@@ -1082,6 +1084,9 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
       if (dinner.status === 'completed') {
         return json({ error: 'Completed dinner cannot use I’m Feeling Lucky' }, 400);
       }
+      if (dinner.status === 'cancelled') {
+        return json({ error: 'This night has been cancelled' }, 400);
+      }
 
       const todayStr = getCentralDateStr(new Date(), env.CLUB_TIMEZONE || 'America/Chicago');
       const drawn = await drawLuckyPlaces(env.DB, {
@@ -1264,13 +1269,36 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
       return json({ ok: true, dinner: updated });
     }
 
-    // Controlled admin/preview triggers for manual workflow advancement if the picker/group triggers early
-    if (path === '/api/week/advance' && method === 'POST') {
-      const body = await readJson<{ dinnerId?: number; stage: 'lock_night' | 'open_noon' | 'close_noon' }>(request);
+    if (path === '/api/week/cancel' && method === 'POST') {
+      const body = await readJson<{ dinnerId?: number; reason?: string }>(request);
       const dinner = body.dinnerId
         ? await env.DB.prepare('SELECT id FROM dinners WHERE id = ?').bind(body.dinnerId).first<{ id: number }>()
         : await getActiveDinner(env.DB);
       if (!dinner) return json({ error: 'No active dinner found' }, 404);
+      const res = await cancelNight(env, dinner.id, user, body.reason);
+      return json({ ok: true, ...res });
+    }
+
+    if (path === '/api/week/restore' && method === 'POST') {
+      const body = await readJson<{ dinnerId?: number }>(request);
+      const dinner = body.dinnerId
+        ? await env.DB.prepare('SELECT id FROM dinners WHERE id = ?').bind(body.dinnerId).first<{ id: number }>()
+        : await getActiveDinner(env.DB);
+      if (!dinner) return json({ error: 'No active dinner found' }, 404);
+      const res = await restoreNight(env, dinner.id, user);
+      return json({ ok: true, ...res });
+    }
+
+    // Controlled admin/preview triggers for manual workflow advancement if the picker/group triggers early
+    if (path === '/api/week/advance' && method === 'POST') {
+      const body = await readJson<{ dinnerId?: number; stage: 'lock_night' | 'open_noon' | 'close_noon' }>(request);
+      const dinner = body.dinnerId
+        ? await env.DB.prepare('SELECT id, status FROM dinners WHERE id = ?')
+            .bind(body.dinnerId)
+            .first<{ id: number; status: string }>()
+        : await getActiveDinner(env.DB);
+      if (!dinner) return json({ error: 'No active dinner found' }, 404);
+      if (dinner.status === 'cancelled') return json({ error: 'This night has been cancelled' }, 400);
       if (body.stage === 'lock_night') return json({ ok: true, dinner: await lockNight(env, dinner.id) });
       if (body.stage === 'open_noon') return json({ ok: true, ...(await openNoonDraw(env, dinner.id)) });
       if (body.stage === 'close_noon') return json({ ok: true, ...(await closeNoonVote(env, dinner.id)) });

@@ -11,6 +11,18 @@ import type { WhatsNewEntry, WhatsNewPayload, WhatsNewViewEntry } from './types'
  */
 export const WHATS_NEW_RELEASES: readonly WhatsNewEntry[] = [
   {
+    id: '2026-11-18-cancel-night',
+    date: '2026-11-18',
+    kind: 'feature',
+    title: '🚫 Cancel & Restore Man Night',
+    summary:
+      'Any crew member can now cancel an active or upcoming Man Night with an optional reason. Cancelling keeps the host rotation order intact by moving the host turn to next week, alerts the crew via push notification, marks Google Calendar cancelled, and lets you restore the night if plans change.',
+    creditSlug: 'tyler',
+    creditName: 'Tyler',
+    creditRole: 'idea',
+    issueNumber: 20,
+  },
+  {
     id: '2026-11-17-both-night-voting',
     date: '2026-11-17',
     kind: 'feature',

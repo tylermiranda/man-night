@@ -161,7 +161,8 @@ export type DinnerStatus =
   | 'noon_vote'
   | 'place_locked'
   | 'completed'
-  | 'scheduled';
+  | 'scheduled'
+  | 'cancelled';
 
 export interface DinnerRow {
   id: number;
@@ -186,6 +187,11 @@ export interface DinnerRow {
   reminder_sent_at: string | null;
   pre_event_sent_at: string | null;
   completed_at: string | null;
+  cancelled_at?: string | null;
+  cancelled_by?: string | null;
+  cancel_reason?: string;
+  cancelled_prev_status?: string | null;
+  cancelled_archived_at?: string | null;
   meal_price?: number | null;
   dinner_avg_price?: number | null;
   is_historical: number;

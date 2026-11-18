@@ -1,5 +1,10 @@
 import { buildWhatsNewPayload } from './changelog';
-import { buildDirectionsUrl, syncLockedPlaceToCalendar } from './gcal';
+import {
+  buildDirectionsUrl,
+  restoreCalendarForNight,
+  syncCancelledNightToCalendar,
+  syncLockedPlaceToCalendar,
+} from './gcal';
 import { sendWebPushToSubscribers } from './push';
 import type {
   AllowedPhotoMime,
@@ -7,6 +12,7 @@ import type {
   BeerStats,
   BeerViewRow,
   DinnerRow,
+  DinnerStatus,
   Env,
   HostFavoritePlace,
   HostStatRow,
@@ -127,7 +133,9 @@ export async function getActiveDinner(db: D1Database): Promise<DinnerRow | null>
   const next = await db
     .prepare(
       `SELECT * FROM dinners
-       WHERE is_historical = 0 AND status != 'completed'
+       WHERE is_historical = 0
+         AND status != 'completed'
+         AND (status != 'cancelled' OR cancelled_archived_at IS NULL)
        ORDER BY dinner_date ASC
        LIMIT 1`,
     )
@@ -138,6 +146,7 @@ export async function getActiveDinner(db: D1Database): Promise<DinnerRow | null>
     .prepare(
       `SELECT * FROM dinners
        WHERE is_historical = 0
+         AND status != 'cancelled'
        ORDER BY dinner_date DESC
        LIMIT 1`,
     )
@@ -157,6 +166,7 @@ export async function drawFourRandomPlaces(db: D1Database, referenceDate: string
          AND NOT EXISTS (
            SELECT 1 FROM dinners d
            WHERE d.restaurant_id = r.id
+             AND d.status != 'cancelled'
              AND d.dinner_date >= ?
              AND d.dinner_date < ?
          )
@@ -210,6 +220,7 @@ export async function drawLuckyPlaces(
                   SELECT 1 FROM dinners d
                   WHERE d.restaurant_id = r.id
                     AND d.id != ?
+                    AND d.status != 'cancelled'
                     AND d.dinner_date >= ?
                     AND d.dinner_date <= ?
                 ) AS in_recent_window
@@ -326,6 +337,10 @@ export async function castNightVote(
   reason: string;
   nightVotes: NightVoteViewRow[];
 }> {
+  const dinner = await db.prepare('SELECT id, status FROM dinners WHERE id = ?').bind(dinnerId).first<{ id: number; status: string }>();
+  if (!dinner) throw new Error('Dinner not found');
+  if (dinner.status === 'cancelled') throw new Error('This night has been cancelled');
+
   const hasReason = typeof reason === 'string';
   const cleanReason = hasReason ? reason.trim().slice(0, 200) : '';
 
@@ -395,7 +410,7 @@ async function syncRatingsForDinnerPlace(
  */
 export async function lockNight(env: Env, dinnerId: number): Promise<DinnerRow | null> {
   const dinner = await env.DB.prepare('SELECT * FROM dinners WHERE id = ?').bind(dinnerId).first<DinnerRow>();
-  if (!dinner) return null;
+  if (!dinner || dinner.status === 'cancelled') return null;
 
   const votes = await env.DB.prepare(
     'SELECT choice, COUNT(*) AS cnt FROM night_votes WHERE dinner_id = ? GROUP BY choice',
@@ -493,6 +508,7 @@ export async function lockPlace(
 ): Promise<{ dinner: DinnerRow; restaurant: RestaurantRow; calendar: { synced: boolean; reason?: string } }> {
   const existing = await env.DB.prepare('SELECT * FROM dinners WHERE id = ?').bind(dinnerId).first<DinnerRow>();
   if (!existing) throw new Error('Dinner not found');
+  if (existing.status === 'cancelled') throw new Error('This night has been cancelled');
 
   const restaurant = await env.DB.prepare('SELECT * FROM restaurants WHERE id = ?')
     .bind(restaurantId)
@@ -690,6 +706,7 @@ export async function createPlacePoll(
 ): Promise<{ dinner: DinnerRow; candidates: RestaurantRow[] }> {
   const existing = await env.DB.prepare('SELECT * FROM dinners WHERE id = ?').bind(dinnerId).first<DinnerRow>();
   if (!existing) throw new Error('Dinner not found');
+  if (existing.status === 'cancelled') throw new Error('This night has been cancelled');
   if (existing.status === 'completed') throw new Error('Completed dinner cannot open a poll');
 
   const seen = new Set<number>();
@@ -815,6 +832,7 @@ export async function createPlacePoll(
 export async function openNoonDraw(env: Env, dinnerId: number): Promise<{ dinner: DinnerRow; candidates: RestaurantRow[] }> {
   const dinner = await env.DB.prepare('SELECT * FROM dinners WHERE id = ?').bind(dinnerId).first<DinnerRow>();
   if (!dinner) throw new Error('Dinner not found');
+  if (dinner.status === 'cancelled') throw new Error('This night has been cancelled');
 
   const candidates = await drawFourRandomPlaces(env.DB, dinner.dinner_date);
   const drawIds = JSON.stringify(candidates.map((c) => c.id));
@@ -854,7 +872,7 @@ export async function castNoonVote(
   restaurantId: number,
 ): Promise<Array<{ restaurant_id: number; count: number }>> {
   const dinner = await db.prepare('SELECT * FROM dinners WHERE id = ?').bind(dinnerId).first<DinnerRow>();
-  if (!dinner || dinner.status === 'completed' || dinner.status === 'place_locked' || dinner.restaurant_id) {
+  if (!dinner || dinner.status === 'completed' || dinner.status === 'cancelled' || dinner.status === 'place_locked' || dinner.restaurant_id) {
     throw new Error('Place poll is not open');
   }
 
@@ -883,6 +901,7 @@ export async function castNoonVote(
 export async function closeNoonVote(env: Env, dinnerId: number) {
   const dinner = await env.DB.prepare('SELECT * FROM dinners WHERE id = ?').bind(dinnerId).first<DinnerRow>();
   if (!dinner) throw new Error('Dinner not found');
+  if (dinner.status === 'cancelled') throw new Error('This night has been cancelled');
 
   const drawIds = parseIdListJson(dinner.noon_draw_ids);
   if (drawIds.length === 0) throw new Error('No candidates drawn for poll');
@@ -949,22 +968,25 @@ export async function completeDinner(db: D1Database, dinnerId: number): Promise<
 }
 
 export async function ensureNextScheduledDinner(db: D1Database): Promise<void> {
-  const latest = await db
-    .prepare('SELECT * FROM dinners ORDER BY dinner_date DESC LIMIT 1')
-    .first<DinnerRow>();
+  const latestDateRow = await db
+    .prepare('SELECT dinner_date FROM dinners ORDER BY dinner_date DESC LIMIT 1')
+    .first<{ dinner_date: string }>();
+  const latestHostRow = await db
+    .prepare("SELECT host_slug FROM dinners WHERE status != 'cancelled' ORDER BY dinner_date DESC LIMIT 1")
+    .first<{ host_slug: string | null }>();
   const activeRot = await db
     .prepare('SELECT * FROM users WHERE is_rotation = 1 ORDER BY rotation_order ASC')
     .all<UserRow>();
   const rotation = activeRot.results ?? [];
-  if (!latest || rotation.length === 0) return;
+  if (!latestDateRow || rotation.length === 0) return;
 
   const upcomingCountRow = await db
-    .prepare("SELECT COUNT(*) AS cnt FROM dinners WHERE is_historical = 0 AND status != 'completed'")
+    .prepare("SELECT COUNT(*) AS cnt FROM dinners WHERE is_historical = 0 AND status NOT IN ('completed', 'cancelled')")
     .first<{ cnt: number }>();
   if (Number(upcomingCountRow?.cnt ?? 0) >= 3) return;
 
-  const nextDate = addDaysToIsoDate(latest.dinner_date, 7);
-  const lastIdx = rotation.findIndex((u) => u.slug === latest.host_slug);
+  const nextDate = addDaysToIsoDate(latestDateRow.dinner_date, 7);
+  const lastIdx = rotation.findIndex((u) => u.slug === latestHostRow?.host_slug);
   const nextHost = rotation[(lastIdx >= 0 ? lastIdx + 1 : 0) % rotation.length];
 
   await db
@@ -975,6 +997,205 @@ export async function ensureNextScheduledDinner(db: D1Database): Promise<void> {
     )
     .bind(isoWeekKey(nextDate), nextDate, nextHost.slug, nextHost.name, `Man Night @ ${nextHost.name}'s`)
     .run();
+}
+
+const RESTORABLE_STATUSES = new Set<DinnerStatus>([
+  'scheduled',
+  'night_poll',
+  'awaiting_pick',
+  'noon_vote',
+  'place_locked',
+]);
+
+async function updateDinnerHost(
+  db: D1Database,
+  dinner: Pick<DinnerRow, 'id' | 'raw_summary'>,
+  hostSlug: string | null,
+  hostLabel: string,
+): Promise<void> {
+  const updatedSummary =
+    dinner.raw_summary.startsWith('Man Night @ ') ? `Man Night @ ${hostLabel}'s` : dinner.raw_summary;
+  await db
+    .prepare("UPDATE dinners SET host_slug = ?, host_label = ?, raw_summary = ?, updated_at = datetime('now') WHERE id = ?")
+    .bind(hostSlug, hostLabel, updatedSummary, dinner.id)
+    .run();
+}
+
+export async function cancelNight(
+  env: Env,
+  dinnerId: number,
+  actor: Pick<UserRow, 'slug' | 'name'>,
+  reason?: string,
+): Promise<{
+  dinner: DinnerRow;
+  calendar: { synced: boolean; reason?: string };
+  push: { sent: number; failed: number; removed: number };
+}> {
+  const dinner = await env.DB.prepare('SELECT * FROM dinners WHERE id = ?').bind(dinnerId).first<DinnerRow>();
+  if (!dinner) throw new Error('Dinner not found');
+  if (dinner.is_historical === 1) throw new Error('Historical dinners cannot be cancelled');
+  if (dinner.status === 'completed') throw new Error('Completed dinner cannot be cancelled');
+  if (dinner.status === 'cancelled') throw new Error('This night is already cancelled');
+
+  const cleanReason = typeof reason === 'string' ? reason.trim().slice(0, 200) : '';
+
+  // Ensure at least one future dinner exists to receive the deferred host turn
+  await ensureNextScheduledDinner(env.DB);
+
+  const futureDinners =
+    (
+      await env.DB.prepare(
+        `SELECT * FROM dinners
+         WHERE is_historical = 0
+           AND status NOT IN ('completed', 'cancelled')
+           AND dinner_date > ?
+         ORDER BY dinner_date ASC`,
+      )
+        .bind(dinner.dinner_date)
+        .all<DinnerRow>()
+    ).results ?? [];
+
+  await env.DB.prepare(
+    `UPDATE dinners
+     SET status = 'cancelled',
+         cancelled_prev_status = ?,
+         cancelled_at = datetime('now'),
+         cancelled_by = ?,
+         cancel_reason = ?,
+         cancelled_archived_at = NULL,
+         updated_at = datetime('now')
+     WHERE id = ?`,
+  )
+    .bind(dinner.status, actor.slug, cleanReason, dinnerId)
+    .run();
+
+  // Keep rotation order intact: shift future hosts forward 1 week so this host picks next week
+  for (let i = 0; i < futureDinners.length; i++) {
+    const target = futureDinners[i];
+    const source = i === 0 ? dinner : futureDinners[i - 1];
+    await updateDinnerHost(env.DB, target, source.host_slug, source.host_label);
+  }
+
+  await ensureNextScheduledDinner(env.DB);
+
+  const updated = (await env.DB.prepare('SELECT * FROM dinners WHERE id = ?').bind(dinnerId).first<DinnerRow>())!;
+  const cal = await syncCancelledNightToCalendar(env, updated, actor.name, cleanReason);
+
+  const dateLabel = formatShortDate(updated.dinner_date);
+  const dayDateLabel = `${updated.day_of_week}, ${dateLabel}`;
+  const reasonText = cleanReason ? `: "${cleanReason}"` : '';
+  const push = await sendWebPushToSubscribers(
+    env,
+    {
+      title: `Man Night cancelled (${dayDateLabel})`,
+      body: `${actor.name} cancelled ${updated.host_label}'s night${reasonText}. ${updated.host_label}'s turn moves to next week.`,
+      tag: `night-cancel-${dinnerId}`,
+      url: env.APP_URL,
+      dinnerId,
+    },
+    'all',
+  );
+
+  return {
+    dinner: updated,
+    calendar: { synced: cal.synced, reason: cal.reason },
+    push,
+  };
+}
+
+export async function restoreNight(
+  env: Env,
+  dinnerId: number,
+  actor: Pick<UserRow, 'slug' | 'name'>,
+): Promise<{
+  dinner: DinnerRow;
+  calendar: { synced: boolean; reason?: string };
+  push: { sent: number; failed: number; removed: number };
+}> {
+  const dinner = await env.DB.prepare('SELECT * FROM dinners WHERE id = ?').bind(dinnerId).first<DinnerRow>();
+  if (!dinner) throw new Error('Dinner not found');
+  if (dinner.status !== 'cancelled') throw new Error('This night is not cancelled');
+
+  const prev = dinner.cancelled_prev_status as DinnerStatus | null | undefined;
+  const restoredStatus: DinnerStatus = prev && RESTORABLE_STATUSES.has(prev) ? prev : 'scheduled';
+
+  const futureDinners =
+    (
+      await env.DB.prepare(
+        `SELECT * FROM dinners
+         WHERE is_historical = 0
+           AND status NOT IN ('completed', 'cancelled')
+           AND dinner_date > ?
+         ORDER BY dinner_date ASC`,
+      )
+        .bind(dinner.dinner_date)
+        .all<DinnerRow>()
+    ).results ?? [];
+
+  const rotUsers =
+    (await env.DB.prepare('SELECT * FROM users WHERE is_rotation = 1 ORDER BY rotation_order ASC').all<UserRow>())
+      .results ?? [];
+
+  // Shift future hosts back 1 week so the restored dinner takes its original slot
+  for (let i = 0; i < futureDinners.length; i++) {
+    const target = futureDinners[i];
+    if (i + 1 < futureDinners.length) {
+      const nextSource = futureDinners[i + 1];
+      await updateDinnerHost(env.DB, target, nextSource.host_slug, nextSource.host_label);
+    } else if (rotUsers.length > 0) {
+      const idx = rotUsers.findIndex((u) => u.slug === target.host_slug);
+      const nextUser = rotUsers[(idx >= 0 ? idx + 1 : 0) % rotUsers.length];
+      await updateDinnerHost(env.DB, target, nextUser.slug, nextUser.name);
+    }
+  }
+
+  await env.DB.prepare(
+    `UPDATE dinners
+     SET status = ?,
+         cancelled_at = NULL,
+         cancelled_by = NULL,
+         cancel_reason = '',
+         cancelled_prev_status = NULL,
+         cancelled_archived_at = NULL,
+         updated_at = datetime('now')
+     WHERE id = ?`,
+  )
+    .bind(restoredStatus, dinnerId)
+    .run();
+
+  const updated = (await env.DB.prepare('SELECT * FROM dinners WHERE id = ?').bind(dinnerId).first<DinnerRow>())!;
+
+  let cal: { synced: boolean; reason?: string };
+  if (updated.restaurant_id && updated.status === 'place_locked') {
+    const place = await env.DB.prepare('SELECT * FROM restaurants WHERE id = ?')
+      .bind(updated.restaurant_id)
+      .first<RestaurantRow>();
+    cal = place
+      ? await syncLockedPlaceToCalendar(env, updated, place, `Restored by ${actor.name}.`)
+      : await restoreCalendarForNight(env, updated);
+  } else {
+    cal = await restoreCalendarForNight(env, updated);
+  }
+
+  const dateLabel = formatShortDate(updated.dinner_date);
+  const dayDateLabel = `${updated.day_of_week}, ${dateLabel}`;
+  const push = await sendWebPushToSubscribers(
+    env,
+    {
+      title: `Man Night is back on! (${dayDateLabel})`,
+      body: `${actor.name} restored ${updated.host_label}'s night for ${dayDateLabel}.`,
+      tag: `night-restore-${dinnerId}`,
+      url: env.APP_URL,
+      dinnerId,
+    },
+    'all',
+  );
+
+  return {
+    dinner: updated,
+    calendar: { synced: cal.synced, reason: cal.reason },
+    push,
+  };
 }
 
 export async function computeDinnerHeadcount(db: D1Database, dinnerId: number) {
@@ -1038,6 +1259,9 @@ export async function castRsvp(
   if (!dinner) throw new Error('Dinner not found');
   if (dinner.is_historical === 1) {
     throw new Error('Attendance and sellout tracking started with the app and cannot be modified on pre-app historical dinners');
+  }
+  if (dinner.status === 'cancelled') {
+    throw new Error('This night has been cancelled');
   }
   if (dinner.status === 'scheduled') {
     const active = await getActiveDinner(db);
@@ -1192,6 +1416,7 @@ export async function applyRotationOverride(
 ): Promise<DinnerRow> {
   const dinner = await db.prepare('SELECT * FROM dinners WHERE id = ?').bind(dinnerId).first<DinnerRow>();
   if (!dinner) throw new Error('Dinner not found');
+  if (dinner.status === 'cancelled') throw new Error('This night has been cancelled');
 
   const rotUsers = (
     await db.prepare('SELECT * FROM users WHERE is_rotation = 1 ORDER BY rotation_order ASC').all<UserRow>()
@@ -1269,6 +1494,7 @@ export async function backfillDinnerPlace(
 ): Promise<{ dinner: DinnerRow; restaurant: RestaurantRow }> {
   const dinner = await db.prepare('SELECT * FROM dinners WHERE id = ?').bind(dinnerId).first<DinnerRow>();
   if (!dinner) throw new Error('Dinner not found');
+  if (dinner.status === 'cancelled') throw new Error('This night has been cancelled');
   if (dinner.status !== 'completed') {
     throw new Error('Only completed dinners can be backfilled; use pick-place for upcoming weeks');
   }
@@ -2662,6 +2888,7 @@ export async function getBootstrapPayload(env: Env, currentUser: UserRow) {
                 WHERE rv2.user_slug = u.slug
                   AND rv2.status = 'out'
                   AND d2.is_historical = 0
+                  AND d2.status != 'cancelled'
                   AND (d2.status != 'scheduled' OR d2.id = ?)
                 ORDER BY d2.dinner_date DESC, rv2.updated_at DESC
                 LIMIT 1
@@ -2671,6 +2898,7 @@ export async function getBootstrapPayload(env: Env, currentUser: UserRow) {
        LEFT JOIN dinners d
          ON d.id = rv.dinner_id
         AND d.is_historical = 0
+        AND d.status != 'cancelled'
         AND (d.status != 'scheduled' OR d.id = ?)
        WHERE u.email NOT LIKE '%@history.local'
          AND (u.is_rotation = 1 OR EXISTS (
@@ -2679,6 +2907,7 @@ export async function getBootstrapPayload(env: Env, currentUser: UserRow) {
            WHERE rv3.user_slug = u.slug
              AND rv3.status = 'out'
              AND d3.is_historical = 0
+             AND d3.status != 'cancelled'
              AND (d3.status != 'scheduled' OR d3.id = ?)
          ))
        GROUP BY u.id
@@ -2703,6 +2932,7 @@ export async function getBootstrapPayload(env: Env, currentUser: UserRow) {
        LEFT JOIN restaurants r ON r.id = d.restaurant_id
        WHERE rv.status = 'out'
          AND d.is_historical = 0
+         AND d.status != 'cancelled'
          AND (d.status != 'scheduled' OR d.id = ?)
        ORDER BY d.dinner_date DESC, rv.updated_at DESC, rv.id DESC
        LIMIT 60`,
@@ -2718,6 +2948,7 @@ export async function getBootstrapPayload(env: Env, currentUser: UserRow) {
        FROM dinners d
        LEFT JOIN restaurants r ON r.id = d.restaurant_id
        WHERE d.is_historical = 0
+         AND d.status != 'cancelled'
          AND (d.status != 'scheduled' OR d.id = ?)
        ORDER BY d.dinner_date DESC
        LIMIT 12`,

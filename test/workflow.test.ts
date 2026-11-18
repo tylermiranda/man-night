@@ -30,6 +30,7 @@ const migration0013Sql = readFileSync(resolve(rootDir, 'migrations/0013_appetize
 const migration0014Sql = readFileSync(resolve(rootDir, 'migrations/0014_admin_dashboard.sql'), 'utf8');
 const migration0015Sql = readFileSync(resolve(rootDir, 'migrations/0015_fix_pour_haus_seed_counts.sql'), 'utf8');
 const migration0016Sql = readFileSync(resolve(rootDir, 'migrations/0016_allow_both_night_vote.sql'), 'utf8');
+const migration0017Sql = readFileSync(resolve(rootDir, 'migrations/0017_cancel_night.sql'), 'utf8');
 
 function makeEnv(db: D1Database, overrides: Partial<Env> = {}): Env {
   return {
@@ -74,6 +75,7 @@ describe('Man Night PWA Worker & Seed', () => {
     await db.exec(migration0014Sql);
     await db.exec(migration0015Sql);
     await db.exec(migration0016Sql);
+    await db.exec(migration0017Sql);
     env = makeEnv(db);
   });
 
@@ -1843,15 +1845,17 @@ describe('Man Night PWA Worker & Seed', () => {
   it('tracks What’s New releases, crew idea/bug credits, per-user seen state, and UI wiring (issue #11)', async () => {
     // 1. Changelog integrity
     const seenIds = new Set<string>();
-    expect(WHATS_NEW_RELEASES.length).toBeGreaterThanOrEqual(12);
-    expect(WHATS_NEW_RELEASES[0].id).toBe('2026-11-17-both-night-voting');
-    expect(WHATS_NEW_RELEASES[1].id).toBe('2026-11-16-top-places-poplar-fix');
-    expect(WHATS_NEW_RELEASES[2].id).toBe('2026-11-15-future-pick-notifications');
-    expect(WHATS_NEW_RELEASES[2].issueNumber).toBe(18);
-    expect(WHATS_NEW_RELEASES[3].id).toBe('2026-11-15-appetizers');
-    expect(WHATS_NEW_RELEASES[3].issueNumber).toBe(17);
-    expect(WHATS_NEW_RELEASES[4].id).toBe('2026-11-15-beer-cellar');
-    expect(WHATS_NEW_RELEASES[4].issueNumber).toBe(15);
+    expect(WHATS_NEW_RELEASES.length).toBeGreaterThanOrEqual(13);
+    expect(WHATS_NEW_RELEASES[0].id).toBe('2026-11-18-cancel-night');
+    expect(WHATS_NEW_RELEASES[0].issueNumber).toBe(20);
+    expect(WHATS_NEW_RELEASES[1].id).toBe('2026-11-17-both-night-voting');
+    expect(WHATS_NEW_RELEASES[2].id).toBe('2026-11-16-top-places-poplar-fix');
+    expect(WHATS_NEW_RELEASES[3].id).toBe('2026-11-15-future-pick-notifications');
+    expect(WHATS_NEW_RELEASES[3].issueNumber).toBe(18);
+    expect(WHATS_NEW_RELEASES[4].id).toBe('2026-11-15-appetizers');
+    expect(WHATS_NEW_RELEASES[4].issueNumber).toBe(17);
+    expect(WHATS_NEW_RELEASES[5].id).toBe('2026-11-15-beer-cellar');
+    expect(WHATS_NEW_RELEASES[5].issueNumber).toBe(15);
     expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-15-issue-feature-form' && e.issueNumber === 16)).toBe(true);
     expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-15-favorite-places' && e.issueNumber === 14)).toBe(true);
     expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-15-meal-prices' && e.issueNumber === 13)).toBe(true);
@@ -1938,9 +1942,10 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(bootInit.whatsNew.hasUnseen).toBe(true);
     expect(bootInit.whatsNew.unseenCount).toBe(WHATS_NEW_RELEASES.length);
     expect(bootInit.whatsNew.entries[0].creditLabel).toBe('Idea by Tyler');
-    expect(bootInit.whatsNew.entries[1].creditLabel).toBe('Bug report by Tyler');
+    expect(bootInit.whatsNew.entries[1].creditLabel).toBe('Idea by Tyler');
     expect(bootInit.whatsNew.entries[2].creditLabel).toBe('Bug report by Tyler');
-    expect(bootInit.whatsNew.entries[3].creditLabel).toBe('Idea by Jacob');
+    expect(bootInit.whatsNew.entries[3].creditLabel).toBe('Bug report by Tyler');
+    expect(bootInit.whatsNew.entries[4].creditLabel).toBe('Idea by Jacob');
 
     const getRes = await worker.fetch(makeReq('/api/whats-new'), env);
     expect(getRes.status).toBe(200);
@@ -2946,5 +2951,168 @@ describe('Man Night PWA Worker & Seed', () => {
     const pourHaus = body.places.find((p) => p.name.includes('Pour Haus'));
     expect(pourHaus).toBeDefined();
     expect(pourHaus?.visit_count).toBe(1);
+  });
+
+  it('supports Issue #20: cancelling and restoring a night with push notification, rotation shift, sellout exclusion, and cron rollover', async () => {
+    const pushSpy = vi.spyOn(pushModule, 'sendWebPushToSubscribers').mockResolvedValue({
+      sent: 5,
+      failed: 0,
+      removed: 0,
+    });
+
+    // Populate upcoming schedule so we can verify rotation shifts
+    await runWeeklyCronTick(env, new Date('2026-11-15T18:00:00Z'));
+    await runWeeklyCronTick(env, new Date('2026-11-15T18:05:00Z'));
+
+    // Pick a restaurant and log a sellout on this week before cancelling
+    const placesBody = (await (await worker.fetch(makeReq('/api/places'), env)).json()) as {
+      places: RestaurantRow[];
+    };
+    const testPlace = placesBody.places[0];
+
+    const bootBefore = (await (await worker.fetch(makeReq('/api/bootstrap'), env)).json()) as {
+      thisWeek: { dinner: { id: number; dinner_date: string; host_slug: string; status: string } };
+      upcoming: Array<{ id: number; dinner_date: string; host_slug: string }>;
+    };
+    const activeId = bootBefore.thisWeek.dinner.id;
+    const activeHost = bootBefore.thisWeek.dinner.host_slug;
+    const nextHostsBefore = bootBefore.upcoming.map((u) => u.host_slug);
+    expect(nextHostsBefore.length).toBeGreaterThanOrEqual(2);
+
+    await worker.fetch(
+      makeReq('/api/week/pick-place', 'POST', {
+        dinnerId: activeId,
+        restaurantId: testPlace.id,
+        dayOfWeek: 'Tuesday',
+        keepNightVote: false,
+      }),
+      env,
+    );
+    await worker.fetch(
+      makeReq('/api/week/rsvp', 'POST', { dinnerId: activeId, status: 'out', note: 'Before cancel' }),
+      env,
+    );
+
+    // Confirm sellout appears before cancellation
+    const bootPreCancel = (await (await worker.fetch(makeReq('/api/bootstrap'), env)).json()) as {
+      selloutStats: Array<{ user_slug: string; sellout_count: number }>;
+    };
+    expect(bootPreCancel.selloutStats.find((s) => s.user_slug === 'tyler')?.sellout_count).toBe(1);
+
+    // 1. Any crew member (e.g. Heath) cancels the night with a reason
+    pushSpy.mockClear();
+    const cancelRes = await worker.fetch(
+      makeReq(
+        '/api/week/cancel',
+        'POST',
+        { dinnerId: activeId, reason: 'Thanksgiving week travel' },
+        { 'Cf-Access-Authenticated-User-Email': 'heath.thome@gmail.com' },
+      ),
+      env,
+    );
+    expect(cancelRes.status).toBe(200);
+    const cancelBody = (await cancelRes.json()) as {
+      ok: boolean;
+      dinner: { status: string; cancelled_by: string; cancel_reason: string; cancelled_prev_status: string };
+      push: { sent: number };
+    };
+    expect(cancelBody.ok).toBe(true);
+    expect(cancelBody.dinner.status).toBe('cancelled');
+    expect(cancelBody.dinner.cancelled_by).toBe('heath');
+    expect(cancelBody.dinner.cancel_reason).toBe('Thanksgiving week travel');
+    expect(cancelBody.dinner.cancelled_prev_status).toBe('place_locked');
+
+    // Push alert sent to all subscribers ('all')
+    expect(pushSpy).toHaveBeenCalledTimes(1);
+    expect(pushSpy.mock.calls[0][1].title).toContain('Man Night cancelled');
+    expect(pushSpy.mock.calls[0][1].body).toContain('Heath');
+    expect(pushSpy.mock.calls[0][1].body).toContain('Thanksgiving week travel');
+    expect(pushSpy.mock.calls[0][2]).toBe('all');
+
+    // 2. Cancelled night stays on This Week, upcoming hosts shifted forward 1 week, and sellout is excluded
+    const bootCancelled = (await (await worker.fetch(makeReq('/api/bootstrap'), env)).json()) as {
+      thisWeek: { dinner: { id: number; status: string; host_slug: string; cancel_reason: string } };
+      upcoming: Array<{ id: number; host_slug: string }>;
+      selloutStats: Array<{ user_slug: string; sellout_count: number }>;
+      recentSellouts: Array<{ dinner_id: number }>;
+    };
+    expect(bootCancelled.thisWeek.dinner.id).toBe(activeId);
+    expect(bootCancelled.thisWeek.dinner.status).toBe('cancelled');
+    expect(bootCancelled.thisWeek.dinner.host_slug).toBe(activeHost);
+    expect(bootCancelled.upcoming[0].host_slug).toBe(activeHost);
+    expect(bootCancelled.upcoming[1].host_slug).toBe(nextHostsBefore[0]);
+    expect(bootCancelled.selloutStats.find((s) => s.user_slug === 'tyler')?.sellout_count).toBe(0);
+    expect(bootCancelled.recentSellouts.some((r) => r.dinner_id === activeId)).toBe(false);
+
+    // 3. Mutations (RSVP, night vote, pick place, pass/swap) are blocked while cancelled
+    const blockedRsvp = await worker.fetch(
+      makeReq('/api/week/rsvp', 'POST', { dinnerId: activeId, status: 'in' }),
+      env,
+    );
+    expect(blockedRsvp.status).toBe(400);
+
+    const blockedVote = await worker.fetch(
+      makeReq('/api/week/vote-night', 'POST', { dinnerId: activeId, choice: 'tuesday' }),
+      env,
+    );
+    expect(blockedVote.status).toBe(400);
+
+    const blockedLucky = await worker.fetch(
+      makeReq('/api/week/lucky', 'POST', { dinnerId: activeId, mode: 'pick', commit: false }),
+      env,
+    );
+    expect(blockedLucky.status).toBe(400);
+
+    // 4. Cron does NOT send reminders or mark cancelled dinner completed on dinner date
+    const sameDayTick = await runWeeklyCronTick(env, new Date('2026-11-18T02:00:00Z')); // Nov 17 8:00 PM CST
+    expect(sameDayTick.actions).not.toContain('completed:2026-W47');
+    expect(sameDayTick.actions).not.toContain('archived_cancelled:2026-W47');
+
+    // 5. Restoring the night restores its previous status, shifts hosts back, and notifies crew
+    pushSpy.mockClear();
+    const restoreRes = await worker.fetch(makeReq('/api/week/restore', 'POST', { dinnerId: activeId }), env);
+    expect(restoreRes.status).toBe(200);
+    const restoreBody = (await restoreRes.json()) as {
+      ok: boolean;
+      dinner: { status: string; cancelled_at: string | null };
+    };
+    expect(restoreBody.dinner.status).toBe('place_locked');
+    expect(restoreBody.dinner.cancelled_at).toBeNull();
+    expect(pushSpy).toHaveBeenCalledTimes(1);
+    expect(pushSpy.mock.calls[0][1].title).toContain('Man Night is back on!');
+
+    const bootRestored = (await (await worker.fetch(makeReq('/api/bootstrap'), env)).json()) as {
+      upcoming: Array<{ host_slug: string }>;
+      selloutStats: Array<{ user_slug: string; sellout_count: number }>;
+    };
+    expect(bootRestored.upcoming[0].host_slug).toBe(nextHostsBefore[0]);
+    expect(bootRestored.upcoming[1].host_slug).toBe(nextHostsBefore[1]);
+    expect(bootRestored.selloutStats.find((s) => s.user_slug === 'tyler')?.sellout_count).toBe(1);
+
+    // 6. Cancel again and verify cron rolls This Week forward once dinner_date passes
+    await worker.fetch(
+      makeReq('/api/week/cancel', 'POST', { dinnerId: activeId, reason: 'Cancelled for real' }),
+      env,
+    );
+    const nextDayTick = await runWeeklyCronTick(env, new Date('2026-11-18T18:00:00Z')); // Nov 18 12:00 PM CST
+    expect(nextDayTick.actions).toContain('archived_cancelled:2026-W47');
+
+    const bootAfterRollover = (await (await worker.fetch(makeReq('/api/bootstrap'), env)).json()) as {
+      thisWeek: { dinner: { id: number; week_key: string; host_slug: string } };
+    };
+    expect(bootAfterRollover.thisWeek.dinner.id).not.toBe(activeId);
+    expect(bootAfterRollover.thisWeek.dinner.host_slug).toBe(activeHost);
+
+    // 7. Changelog, UI wiring, and CACHE_NAME verification
+    const entry20 = WHATS_NEW_RELEASES.find((e) => e.issueNumber === 20);
+    expect(entry20).toBeDefined();
+    expect(entry20?.creditSlug).toBe('tyler');
+    const appJs = readFileSync(resolve(rootDir, 'public/app.js'), 'utf8');
+    expect(appJs).toContain('open-cancel-night');
+    expect(appJs).toContain('restore-night');
+    expect(appJs).toContain('/api/week/cancel');
+    expect(appJs).toContain('/api/week/restore');
+    const swJs = readFileSync(resolve(rootDir, 'public/sw.js'), 'utf8');
+    expect(swJs).toMatch(/const CACHE_NAME = 'man-night-shell-v\d+'/);
   });
 });

@@ -278,5 +278,29 @@ export async function runWeeklyCronTick(env: Env, now = new Date()): Promise<{ a
     }
   }
 
+  // 7. Roll past cancelled dinners off This Week once their dinner_date has passed
+  const pastCancelled =
+    (
+      await env.DB.prepare(
+        `SELECT * FROM dinners
+         WHERE is_historical = 0
+           AND status = 'cancelled'
+           AND cancelled_archived_at IS NULL
+           AND dinner_date < ?
+         ORDER BY dinner_date ASC`,
+      )
+        .bind(clock.dateStr)
+        .all<DinnerRow>()
+    ).results ?? [];
+
+  for (const cancelled of pastCancelled) {
+    await env.DB.prepare(
+      "UPDATE dinners SET cancelled_archived_at = datetime('now'), updated_at = datetime('now') WHERE id = ?",
+    )
+      .bind(cancelled.id)
+      .run();
+    actions.push(`archived_cancelled:${cancelled.week_key}`);
+  }
+
   return { actions };
 }

@@ -85,6 +85,36 @@ function addTwoHours(timeHHMM: string): string {
   return `${String(endH).padStart(2, '0')}:${String(Number.isFinite(m) ? m : 30).padStart(2, '0')}:00`;
 }
 
+async function findCalendarEventForDinner(
+  env: Env,
+  token: string,
+  dinner: DinnerRow,
+): Promise<{ event?: { id: string; summary?: string }; errorReason?: string }> {
+  const calendarId = encodeURIComponent(env.GCAL_CALENDAR_ID);
+  const timeMin = encodeURIComponent(`${dinner.dinner_date}T00:00:00-06:00`);
+  const timeMax = encodeURIComponent(`${dinner.dinner_date}T23:59:59-05:00`);
+  const listUrl = `https://www.googleapis.com/calendar/v3/calendars/${calendarId}/events?timeMin=${timeMin}&timeMax=${timeMax}&singleEvents=true`;
+
+  const listResp = await fetch(listUrl, { headers: { Authorization: `Bearer ${token}` } });
+  if (!listResp.ok) {
+    return { errorReason: `calendar_list_${listResp.status}` };
+  }
+  const listData = (await listResp.json()) as {
+    items?: Array<{ id: string; summary?: string; start?: { dateTime?: string; date?: string } }>;
+  };
+  const items = listData.items ?? [];
+  const hostFirst = dinner.host_label.split(/\s+/)[0].replace(/[^a-z]/gi, '').toLowerCase();
+  const match =
+    (dinner.gcal_event_id ? items.find((e) => e.id === dinner.gcal_event_id) : undefined) ||
+    items.find((e) => {
+      const s = (e.summary ?? '').toLowerCase();
+      return s.includes('man night') && (!hostFirst || s.includes(hostFirst));
+    }) ||
+    items.find((e) => (e.summary ?? '').toLowerCase().includes('man night'));
+
+  return { event: match };
+}
+
 export async function syncLockedPlaceToCalendar(
   env: Env,
   dinner: DinnerRow,
@@ -101,35 +131,19 @@ export async function syncLockedPlaceToCalendar(
   const mapsUrl = buildDirectionsUrl(restaurant);
   const description = `${note}\n\nDirections: ${mapsUrl}\nApp: ${env.APP_URL}`;
 
-  const timeMin = encodeURIComponent(`${dinner.dinner_date}T00:00:00-06:00`);
-  const timeMax = encodeURIComponent(`${dinner.dinner_date}T23:59:59-05:00`);
-  const listUrl = `https://www.googleapis.com/calendar/v3/calendars/${calendarId}/events?timeMin=${timeMin}&timeMax=${timeMax}&singleEvents=true`;
-
   try {
-    const listResp = await fetch(listUrl, { headers: { Authorization: `Bearer ${token}` } });
-    if (!listResp.ok) {
-      return { synced: false, reason: `calendar_list_${listResp.status}` };
+    const found = await findCalendarEventForDinner(env, token, dinner);
+    if (found.errorReason) {
+      return { synced: false, reason: found.errorReason };
     }
-    const listData = (await listResp.json()) as {
-      items?: Array<{ id: string; summary?: string; start?: { dateTime?: string; date?: string } }>;
-    };
-    const items = listData.items ?? [];
-    const hostFirst = dinner.host_label.split(/\s+/)[0].replace(/[^a-z]/gi, '').toLowerCase();
-    const match =
-      (dinner.gcal_event_id ? items.find((e) => e.id === dinner.gcal_event_id) : undefined) ||
-      items.find((e) => {
-        const s = (e.summary ?? '').toLowerCase();
-        return s.includes('man night') && (!hostFirst || s.includes(hostFirst));
-      }) ||
-      items.find((e) => (e.summary ?? '').toLowerCase().includes('man night'));
 
     const tz = env.CLUB_TIMEZONE || 'America/Chicago';
     const startDT = `${dinner.dinner_date}T${dinner.start_time || '18:30'}:00`;
     const endDT = `${dinner.dinner_date}T${addTwoHours(dinner.start_time || '18:30')}`;
 
-    if (match) {
+    if (found.event) {
       const patchResp = await fetch(
-        `https://www.googleapis.com/calendar/v3/calendars/${calendarId}/events/${encodeURIComponent(match.id)}`,
+        `https://www.googleapis.com/calendar/v3/calendars/${calendarId}/events/${encodeURIComponent(found.event.id)}`,
         {
           method: 'PATCH',
           headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -137,7 +151,7 @@ export async function syncLockedPlaceToCalendar(
         },
       );
       if (!patchResp.ok) return { synced: false, reason: `calendar_patch_${patchResp.status}` };
-      return { synced: true, eventId: match.id };
+      return { synced: true, eventId: found.event.id };
     }
 
     const createResp = await fetch(`https://www.googleapis.com/calendar/v3/calendars/${calendarId}/events`, {
@@ -154,6 +168,79 @@ export async function syncLockedPlaceToCalendar(
     if (!createResp.ok) return { synced: false, reason: `calendar_create_${createResp.status}` };
     const created = (await createResp.json()) as { id: string };
     return { synced: true, eventId: created.id };
+  } catch (err) {
+    return { synced: false, reason: err instanceof Error ? err.message : 'calendar_error' };
+  }
+}
+
+export async function syncCancelledNightToCalendar(
+  env: Env,
+  dinner: DinnerRow,
+  cancelledByName: string,
+  reason: string,
+): Promise<{ synced: boolean; eventId?: string; reason?: string }> {
+  const token = await getGoogleCalendarToken(env);
+  if (!token) {
+    return { synced: false, reason: 'service_account_unconfigured' };
+  }
+  const calendarId = encodeURIComponent(env.GCAL_CALENDAR_ID);
+  try {
+    const found = await findCalendarEventForDinner(env, token, dinner);
+    if (found.errorReason) {
+      return { synced: false, reason: found.errorReason };
+    }
+    if (!found.event) {
+      return { synced: false, reason: 'no_matching_event' };
+    }
+    const baseSummary = (found.event.summary || `Man Night @ ${dinner.host_label}'s`).replace(/^\[CANCELLED\]\s*/i, '');
+    const summary = `[CANCELLED] ${baseSummary}`;
+    const description = `Man Night cancelled by ${cancelledByName}${reason ? `: ${reason}` : ''}.\n\nApp: ${env.APP_URL}`;
+
+    const patchResp = await fetch(
+      `https://www.googleapis.com/calendar/v3/calendars/${calendarId}/events/${encodeURIComponent(found.event.id)}`,
+      {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ summary, description }),
+      },
+    );
+    if (!patchResp.ok) return { synced: false, reason: `calendar_patch_${patchResp.status}` };
+    return { synced: true, eventId: found.event.id };
+  } catch (err) {
+    return { synced: false, reason: err instanceof Error ? err.message : 'calendar_error' };
+  }
+}
+
+export async function restoreCalendarForNight(
+  env: Env,
+  dinner: DinnerRow,
+): Promise<{ synced: boolean; eventId?: string; reason?: string }> {
+  const token = await getGoogleCalendarToken(env);
+  if (!token) {
+    return { synced: false, reason: 'service_account_unconfigured' };
+  }
+  const calendarId = encodeURIComponent(env.GCAL_CALENDAR_ID);
+  try {
+    const found = await findCalendarEventForDinner(env, token, dinner);
+    if (found.errorReason) {
+      return { synced: false, reason: found.errorReason };
+    }
+    if (!found.event) {
+      return { synced: false, reason: 'no_matching_event' };
+    }
+    const cleanSummary = (found.event.summary || `Man Night @ ${dinner.host_label}'s`).replace(/^\[CANCELLED\]\s*/i, '');
+    const description = `App: ${env.APP_URL}`;
+
+    const patchResp = await fetch(
+      `https://www.googleapis.com/calendar/v3/calendars/${calendarId}/events/${encodeURIComponent(found.event.id)}`,
+      {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ summary: cleanSummary, description }),
+      },
+    );
+    if (!patchResp.ok) return { synced: false, reason: `calendar_patch_${patchResp.status}` };
+    return { synced: true, eventId: found.event.id };
   } catch (err) {
     return { synced: false, reason: err instanceof Error ? err.message : 'calendar_error' };
   }

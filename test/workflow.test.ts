@@ -321,6 +321,8 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(whPayload.occurredAt).toBeTruthy();
     expect(whPayload.data.issue_number).toBe(42);
     expect(whPayload.data.repo).toBe('tylermiranda/man-night');
+    expect(whPayload.data.requires_approval).toBe(false);
+    expect(whPayload.data.labels).toContain('auto-fix');
 
     const listRes = await worker.fetch(makeReq('/api/issues'), env);
     expect(listRes.status).toBe(200);
@@ -403,7 +405,9 @@ describe('Man Night PWA Worker & Seed', () => {
     const aiOffTopicData = (await aiOffTopicRes.json()) as { error: string };
     expect(aiOffTopicData.error).toBe('Issue rejected: Cryptocurrency tracking is outside the dinner club remit.');
 
-    // 3. Cloudflare Workers AI accepts relevant feature request, but gates 'auto-fix' label
+    // 3. Cloudflare Workers AI accepts relevant feature request, but gates 'auto-fix' label and flags requires_approval in webhook
+    env.OPENBOT_WEBHOOK_URL = 'https://signal.openbot.run/v1/webhooks/d91a1bad-eadf-44b9-9ee2-cefd7f37ac4f';
+    env.OPENBOT_WEBHOOK_SECRET = 'whsec_dGVzdGtleTEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU=';
     mockAiRun.mockResolvedValueOnce({
       response: JSON.stringify({ relevant: true }),
     });
@@ -416,7 +420,12 @@ describe('Man Night PWA Worker & Seed', () => {
       env,
     );
     expect(relevantFeatureRes.status).toBe(201);
-    expect(fetchMock).toHaveBeenCalled();
+    const featureResBody = (await relevantFeatureRes.json()) as {
+      issue: { requires_approval: boolean; webhook_status: string };
+    };
+    expect(featureResBody.issue.requires_approval).toBe(true);
+    expect(featureResBody.issue.webhook_status).toBe('github_and_openbot_notified');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     const featureCallBody = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
     expect(featureCallBody.labels).toContain('user-reported');
     expect(featureCallBody.labels).toContain('feature');
@@ -424,6 +433,13 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(featureCallBody.labels).toContain('needs-review');
     expect(featureCallBody.labels).not.toContain('auto-fix');
     expect(featureCallBody.body).toContain('_Submitted as a feature request for review._');
+
+    const featureWhPayload = JSON.parse(String(fetchMock.mock.calls[1][1]?.body));
+    expect(featureWhPayload.data.category).toBe('feature');
+    expect(featureWhPayload.data.requires_approval).toBe(true);
+    expect(featureWhPayload.data.labels).toContain('feature-request');
+    expect(featureWhPayload.data.labels).toContain('needs-review');
+    expect(featureWhPayload.data.labels).not.toContain('auto-fix');
 
     // 4. Graceful fallback when Workers AI errors/times out on legitimate bug report
     fetchMock.mockClear();

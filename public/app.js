@@ -3073,14 +3073,17 @@ function showIssueSubmitted(issue) {
   const link = issue.github_issue_url
     ? `<a class="btn btn-primary btn-sm" href="${esc(issue.github_issue_url)}" target="_blank" rel="noopener">View GitHub issue #${issue.github_issue_number} ↗</a>`
     : '';
+  const isFeature = issue.category === 'feature' || Boolean(issue.requires_approval);
   openModal(`
     <div style="text-align:center;padding:8px 4px;">
       <div style="font-size:34px;margin-bottom:8px;" aria-hidden="true">✅</div>
-      <h2 class="hero-title" style="font-size:20px;margin-bottom:6px;">Thanks — it’s queued</h2>
+      <h2 class="hero-title" style="font-size:20px;margin-bottom:6px;">${isFeature ? 'Thanks — sent for review' : 'Thanks — it’s queued'}</h2>
       <p class="hero-sub" style="margin-bottom:14px;">
         ${
           issue.github_issue_url
-            ? `Opened GitHub issue #${issue.github_issue_number}. OpenBot picks it up, fixes it, and redeploys automatically.`
+            ? isFeature
+              ? `Opened GitHub issue #${issue.github_issue_number} for review. Tyler is notified in OpenBot to approve it before it’s built.`
+              : `Opened GitHub issue #${issue.github_issue_number}. OpenBot picks it up, fixes it, and redeploys automatically.`
             : `Saved as report #${issue.id} (${esc(issue.webhook_status)}).`
         }
       </p>

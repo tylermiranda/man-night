@@ -2286,15 +2286,16 @@ export async function createIssueReport(
   let githubIssueUrl: string | null = null;
   let webhookStatus = env.GITHUB_TOKEN ? 'pending' : 'no_github_token';
 
+  const isFeature = category === 'feature';
+  const issueLabels = ['user-reported', category];
+  if (isFeature) {
+    issueLabels.push('feature-request', 'needs-review');
+  } else {
+    issueLabels.push('auto-fix');
+  }
+
   if (env.GITHUB_TOKEN && env.GITHUB_REPO) {
     const screenshotUrl = `${(env.APP_URL || '').replace(/\/+$/, '')}/api/issues/${reportId}/screenshot`;
-    const isFeature = category === 'feature';
-    const issueLabels = ['user-reported', category];
-    if (isFeature) {
-      issueLabels.push('feature-request', 'needs-review');
-    } else {
-      issueLabels.push('auto-fix');
-    }
 
     const issueBody = [
       `Reported from **Man Night PWA** by **${reporter.name}** (\`${reporter.email}\`)`,
@@ -2346,6 +2347,8 @@ export async function createIssueReport(
       issue_url: githubIssueUrl,
       title,
       category,
+      labels: issueLabels,
+      requires_approval: isFeature,
       reporter: reporter.slug,
       page_context: pageContext,
     };
@@ -2382,6 +2385,7 @@ export async function createIssueReport(
     id: reportId,
     title,
     category,
+    requires_approval: isFeature,
     github_issue_number: githubIssueNumber,
     github_issue_url: githubIssueUrl,
     webhook_status: webhookStatus,

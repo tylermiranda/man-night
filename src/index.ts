@@ -4,6 +4,7 @@ import { runWeeklyCronTick } from './cron';
 import { sendWebPushToSubscribers } from './push';
 import type { Env, LuckyPool, RestaurantRow } from './types';
 import {
+  addDinnerComment,
   applyRotationOverride,
   backfillDinnerPlace,
   cancelNight,
@@ -16,12 +17,14 @@ import {
   createPlacePoll,
   createRestaurant,
   deleteBeer,
+  deleteDinnerComment,
   deleteMealPhoto,
   drawLuckyPlaces,
   getActiveDinner,
   getBeerPhotoBinary,
   getBootstrapPayload,
   getCentralDateStr,
+  getDinnerComments,
   getDinnerReviews,
   getIssueReportScreenshot,
   getMealPhotoBinary,
@@ -79,6 +82,7 @@ function getFriendlyFeatureName(path: string, method: string): string {
   if (path === '/api/week/poll') return 'Place Poll';
   if (path === '/api/week/rsvp') return 'RSVP';
   if (path === '/api/week/time') return 'Change Dinner Time';
+  if (path === '/api/week/comment' || path === '/api/week/comments') return 'Night Comment';
   if (path === '/api/dinners' && method === 'GET') return 'View Dinners';
   if (path === '/api/places' && method === 'GET') return 'View Places';
   if (path === '/api/beers') return 'Beers';
@@ -1308,6 +1312,53 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
       if (!dinner) return json({ error: 'No active dinner found' }, 404);
       const res = await updateDinnerStartTime(env, dinner.id, body.startTime, user);
       return json({ ok: true, ...res });
+    }
+
+    if (path === '/api/week/comments' && method === 'GET') {
+      const dinnerIdParam = url.searchParams.get('dinnerId');
+      const dinner = dinnerIdParam
+        ? await env.DB.prepare('SELECT id FROM dinners WHERE id = ?').bind(Number(dinnerIdParam)).first<{ id: number }>()
+        : await getActiveDinner(env.DB);
+      if (!dinner) return json({ error: 'Dinner not found' }, 404);
+      const comments = await getDinnerComments(env.DB, dinner.id);
+      return json({ ok: true, dinnerId: dinner.id, comments });
+    }
+
+    if (path === '/api/week/comment' && method === 'POST') {
+      const body = await readJson<{ dinnerId?: number; body?: unknown }>(request);
+      if (typeof body.body !== 'string') {
+        return json({ error: 'Comment body must be a string' }, 400);
+      }
+      const dinner = body.dinnerId
+        ? await env.DB.prepare('SELECT id FROM dinners WHERE id = ?').bind(body.dinnerId).first<{ id: number }>()
+        : await getActiveDinner(env.DB);
+      if (!dinner) return json({ error: 'No active dinner found' }, 404);
+      const res = await addDinnerComment(env, dinner.id, user, body.body);
+      return json({ ok: true, ...res }, 201);
+    }
+
+    if (path === '/api/week/comment' && method === 'DELETE') {
+      let commentId = Number(url.searchParams.get('id') || 0);
+      if (!commentId) {
+        try {
+          const body = await readJson<{ commentId?: number }>(request);
+          commentId = Number(body.commentId || 0);
+        } catch {
+          commentId = 0;
+        }
+      }
+      if (!Number.isInteger(commentId) || commentId <= 0) {
+        return json({ error: 'Valid commentId is required' }, 400);
+      }
+      try {
+        const res = await deleteDinnerComment(env.DB, commentId, user.slug);
+        return json({ ok: true, ...res });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Failed to delete comment';
+        if (msg.startsWith('Forbidden')) return json({ error: msg }, 403);
+        if (msg.includes('not found')) return json({ error: msg }, 404);
+        return json({ error: msg }, 400);
+      }
     }
 
     // Controlled admin/preview triggers for manual workflow advancement if the picker/group triggers early

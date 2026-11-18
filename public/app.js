@@ -29,6 +29,8 @@ const state = {
   rsvpExcuseDinnerId: null,
   extraGuestNamesDraft: null,
   extraGuestNamesDinnerId: null,
+  commentDraft: '',
+  commentDinnerId: null,
   selloutModalDinnerId: null,
   pollCandidateIds: [],
   pollSearchQuery: '',
@@ -209,6 +211,135 @@ function starsText(score) {
 function fmtPrice(amount) {
   if (amount == null || amount === '' || isNaN(Number(amount))) return '';
   return `$${Number(amount).toFixed(2)}`;
+}
+
+function fmtCommentTime(iso) {
+  if (!iso) return '';
+  const normalized = iso.includes('T') ? iso : `${iso.replace(' ', 'T')}Z`;
+  const dt = new Date(normalized);
+  if (isNaN(dt.getTime())) return String(iso);
+  const diffSec = Math.floor((Date.now() - dt.getTime()) / 1000);
+  if (diffSec < 60) return 'Just now';
+  if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`;
+  if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h ago`;
+  return dt.toLocaleString('en-US', {
+    timeZone: 'America/Chicago',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
+
+function getTaggableUsers() {
+  return (state.bootstrap?.users || []).filter((u) => u && u.is_active !== 0);
+}
+
+function findCommentMentionToken(text, cursorPos) {
+  const before = String(text || '').slice(0, cursorPos);
+  const match = /(?:^|[\s(\[{"',;:])@([a-zA-Z0-9_-]*)$/.exec(before);
+  if (!match) return null;
+  const query = (match[1] || '').toLowerCase();
+  const atIndex = before.lastIndexOf('@');
+  if (atIndex < 0) return null;
+  return { start: atIndex, end: cursorPos, query };
+}
+
+function renderCommentBody(body) {
+  const raw = String(body || '');
+  const users = getTaggableUsers();
+  const knownTokens = new Set();
+  for (const u of users) {
+    if (u.slug) knownTokens.add(String(u.slug).toLowerCase());
+    if (u.name) {
+      knownTokens.add(String(u.name).toLowerCase());
+      const first = String(u.name).trim().split(/\s+/)[0];
+      if (first) knownTokens.add(first.toLowerCase());
+    }
+  }
+  const re = /(^|[\s(\[{"',;:])(@([a-zA-Z0-9_-]{1,32}))(?=$|[\s.,!?;:)\]}"'])/g;
+  let out = '';
+  let lastIndex = 0;
+  for (const m of raw.matchAll(re)) {
+    const idx = m.index ?? 0;
+    const prefix = m[1] || '';
+    const fullAt = m[2] || '';
+    const token = (m[3] || '').toLowerCase();
+    out += esc(raw.slice(lastIndex, idx + prefix.length));
+    if (knownTokens.has(token)) {
+      out += `<span class="mention-tag">${esc(fullAt)}</span>`;
+    } else {
+      out += esc(fullAt);
+    }
+    lastIndex = idx + prefix.length + fullAt.length;
+  }
+  out += esc(raw.slice(lastIndex));
+  return out.replace(/\n/g, '<br>');
+}
+
+function updateCommentMentionMenu() {
+  const menu = document.getElementById('comment-mention-menu');
+  const input = document.getElementById('week-comment-input');
+  if (!menu || !input) return;
+  const cursor = typeof input.selectionStart === 'number' ? input.selectionStart : input.value.length;
+  const activeToken = findCommentMentionToken(input.value, cursor);
+  if (!activeToken) {
+    menu.classList.add('hidden');
+    menu.innerHTML = '';
+    return;
+  }
+  const q = activeToken.query;
+  const matches = getTaggableUsers().filter((u) => {
+    const name = String(u.name || '').toLowerCase();
+    const slug = String(u.slug || '').toLowerCase();
+    return !q || name.startsWith(q) || slug.startsWith(q);
+  });
+  if (matches.length === 0) {
+    menu.classList.add('hidden');
+    menu.innerHTML = '';
+    return;
+  }
+  menu.innerHTML = matches
+    .map(
+      (u) => `
+        <button type="button" class="mention-menu-item" data-action="pick-mention" data-name="${esc(u.name)}">
+          ${avatarHtml(u.slug, u.name, 'sm')}
+          <span>@${esc(u.name)}</span>
+        </button>
+      `,
+    )
+    .join('');
+  menu.classList.remove('hidden');
+}
+
+function insertMentionIntoComment(name, replaceActiveToken) {
+  const input = document.getElementById('week-comment-input');
+  if (!input || !name) return;
+  const val = input.value;
+  const cursor = typeof input.selectionStart === 'number' ? input.selectionStart : val.length;
+  let start = cursor;
+  let end = cursor;
+  if (replaceActiveToken) {
+    const tok = findCommentMentionToken(val, cursor);
+    if (tok) {
+      start = tok.start;
+      end = tok.end;
+    }
+  }
+  const needsLeadingSpace = start > 0 && !/[\s(\[{"']/.test(val[start - 1]);
+  const insertText = `${needsLeadingSpace ? ' ' : ''}@${name} `;
+  const nextVal = val.slice(0, start) + insertText + val.slice(end);
+  input.value = nextVal.slice(0, 500);
+  state.commentDinnerId = state.bootstrap?.thisWeek?.dinner?.id ?? null;
+  state.commentDraft = input.value;
+  const nextPos = Math.min(input.value.length, start + insertText.length);
+  input.focus();
+  input.setSelectionRange(nextPos, nextPos);
+  const menu = document.getElementById('comment-mention-menu');
+  if (menu) {
+    menu.classList.add('hidden');
+    menu.innerHTML = '';
+  }
 }
 
 function renderReviewItem(r, showDate = false) {
@@ -777,6 +908,10 @@ function renderWeekView() {
     state.extraGuestNamesDinnerId = d.id;
     state.extraGuestNamesDraft = null;
   }
+  if (state.commentDinnerId !== d.id) {
+    state.commentDinnerId = d.id;
+    state.commentDraft = '';
+  }
   const tueCount = tw.nightVotes.filter((v) => v.choice === 'tuesday' || v.choice === 'both').length;
   const wedCount = tw.nightVotes.filter((v) => v.choice === 'wednesday' || v.choice === 'both').length;
   const bothCount = tw.nightVotes.filter((v) => v.choice === 'both').length;
@@ -1173,6 +1308,57 @@ function renderWeekView() {
     </div>
   `;
 
+  const thisWeekComments = tw.comments || [];
+  const taggableUsers = getTaggableUsers();
+  const commentsListHtml = thisWeekComments.length
+    ? `<div class="comment-list">
+        ${thisWeekComments
+          .map((c) => {
+            const authorName = c.user_name || (b.users || []).find((x) => x.slug === c.user_slug)?.name || c.user_slug;
+            const canDelete = c.user_slug === me.slug;
+            return `
+              <div class="comment-item">
+                <div class="comment-item-head">
+                  <div class="comment-author">
+                    ${avatarHtml(c.user_slug, authorName, 'sm')}
+                    <span class="comment-author-name">${esc(authorName)}</span>
+                    <span class="comment-time">${esc(fmtCommentTime(c.created_at))}</span>
+                  </div>
+                  ${canDelete ? `<button type="button" class="comment-del-btn" data-action="delete-comment" data-comment-id="${Number(c.id)}" title="Delete comment" aria-label="Delete comment">✕</button>` : ''}
+                </div>
+                <div class="comment-body">${renderCommentBody(c.body)}</div>
+              </div>
+            `;
+          })
+          .join('')}
+      </div>`
+    : `<p class="hero-sub" style="margin:0 0 10px;font-size:13px;">No comments yet — say what’s up or tag someone with <span class="mention-tag">@Name</span> to ping them.</p>`;
+
+  const commentsCard = `
+    <div class="card">
+      <div class="card-kicker">
+        <span>Crew comments${thisWeekComments.length ? ` (${thisWeekComments.length})` : ''}</span>
+        <span style="font-size:11px;color:var(--muted);">Only @tagged crew get notified</span>
+      </div>
+      ${commentsListHtml}
+      <div class="comment-composer">
+        <div id="comment-mention-menu" class="mention-menu hidden" role="listbox" aria-label="Tag crew member"></div>
+        <div class="comment-input-row">
+          <textarea id="week-comment-input" class="textarea comment-textarea" rows="2" maxlength="500" placeholder="Add a comment… (e.g. See you guys there! or Get the Italian loafer! @Tyler)">${esc(state.commentDraft || '')}</textarea>
+          <button type="button" class="btn btn-primary btn-sm" data-action="post-comment" data-dinner-id="${d.id}">Post</button>
+        </div>
+        ${
+          taggableUsers.length
+            ? `<div class="comment-tag-bar">
+                <span class="comment-tag-label">Tag:</span>
+                ${taggableUsers.map((u) => `<button type="button" class="mention-chip" data-action="insert-mention" data-name="${esc(u.name)}">@${esc(u.name)}</button>`).join('')}
+              </div>`
+            : ''
+        }
+      </div>
+    </div>
+  `;
+
   const thisWeekPhotos = tw.photos || [];
   const weekPhotosCard = `
     <div class="card">
@@ -1389,6 +1575,7 @@ function renderWeekView() {
         </section>
         ${locationCardHtml}
         ${!isCancelled ? rsvpCard : ''}
+        ${commentsCard}
         ${!isCancelled ? weekPhotosCard : ''}
       </div>
       <aside class="stack">
@@ -3992,6 +4179,55 @@ document.addEventListener('click', async (e) => {
       state.rsvpExcuseDraft = null;
       toast(noteVal.trim() ? 'Sellout excuse saved!' : 'Excuse cleared');
       await refreshBootstrap();
+    } else if (action === 'insert-mention') {
+      insertMentionIntoComment(actEl.dataset.name || '', false);
+    } else if (action === 'pick-mention') {
+      insertMentionIntoComment(actEl.dataset.name || '', true);
+    } else if (action === 'post-comment') {
+      const tw = state.bootstrap?.thisWeek;
+      const dinnerId = Number(actEl.dataset.dinnerId || tw?.dinner?.id || 0);
+      if (!dinnerId) return;
+      const inputEl = document.getElementById('week-comment-input');
+      const rawText = inputEl ? inputEl.value : (state.commentDraft || '');
+      if (!rawText.trim()) {
+        toast('Write a comment first');
+        inputEl?.focus();
+        return;
+      }
+      actEl.disabled = true;
+      try {
+        const res = await api('/api/week/comment', {
+          method: 'POST',
+          body: JSON.stringify({ dinnerId, body: rawText }),
+        });
+        state.commentDraft = '';
+        if (state.bootstrap?.thisWeek?.dinner?.id === dinnerId) {
+          state.bootstrap.thisWeek.comments = res.comments || [];
+        }
+        render();
+        const tagged = Array.isArray(res.notifiedSlugs) ? res.notifiedSlugs : [];
+        if (tagged.length > 0) {
+          const users = state.bootstrap?.users || [];
+          const names = tagged
+            .map((s) => users.find((u) => u.slug === s)?.name || s)
+            .map((n) => `@${n}`)
+            .join(', ');
+          toast(res.pushResult?.sent > 0 ? `Comment posted · Notified ${names}` : `Comment posted · Tagged ${names} (no push set up)`);
+        } else {
+          toast('Comment posted');
+        }
+      } finally {
+        actEl.disabled = false;
+      }
+    } else if (action === 'delete-comment') {
+      const commentId = Number(actEl.dataset.commentId);
+      if (!commentId) return;
+      const res = await api(`/api/week/comment?id=${commentId}`, { method: 'DELETE' });
+      if (state.bootstrap?.thisWeek && res.dinnerId === state.bootstrap.thisWeek.dinner?.id) {
+        state.bootstrap.thisWeek.comments = res.comments || [];
+      }
+      render();
+      toast('Comment deleted');
     } else if (action === 'open-sellout-modal') {
       openSelloutModal(actEl.dataset.dinnerId ? Number(actEl.dataset.dinnerId) : null);
     } else if (action === 'toggle-member-sellout') {
@@ -4735,6 +4971,10 @@ document.addEventListener('input', (e) => {
   } else if (e.target.id === 'rsvp-extra-names') {
     state.extraGuestNamesDinnerId = state.bootstrap?.thisWeek?.dinner?.id ?? null;
     state.extraGuestNamesDraft = e.target.value;
+  } else if (e.target.id === 'week-comment-input') {
+    state.commentDinnerId = state.bootstrap?.thisWeek?.dinner?.id ?? null;
+    state.commentDraft = e.target.value;
+    updateCommentMentionMenu();
   } else if (e.target.id === 'picker-q') {
     const btn = document.querySelector('[data-action="picker-create-and-use"]');
     renderPickerOptions(btn?.dataset.mode || 'pick', btn?.dataset.dinnerId || '', e.target.value);
@@ -4773,6 +5013,23 @@ document.addEventListener('keydown', (e) => {
   } else if (e.target.id === 'rsvp-extra-names' && e.key === 'Enter') {
     e.preventDefault();
     document.querySelector('[data-action="save-extra-names"]')?.click();
+  } else if (e.target.id === 'week-comment-input') {
+    const menu = document.getElementById('comment-mention-menu');
+    const menuOpen = menu && !menu.classList.contains('hidden');
+    if (menuOpen && e.key === 'Escape') {
+      e.preventDefault();
+      menu.classList.add('hidden');
+      menu.innerHTML = '';
+    } else if (menuOpen && (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey))) {
+      const firstItem = menu.querySelector('.mention-menu-item');
+      if (firstItem) {
+        e.preventDefault();
+        insertMentionIntoComment(firstItem.dataset.name || '', true);
+      }
+    } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      document.querySelector('[data-action="post-comment"]')?.click();
+    }
   }
 });
 

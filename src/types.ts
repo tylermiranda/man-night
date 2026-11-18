@@ -33,6 +33,7 @@ export interface UserRow {
   walkthrough_seen_at: string | null;
   whats_new_seen_id: string | null;
   whats_new_seen_at: string | null;
+  is_active?: number;
 }
 
 export interface RestaurantRow {
@@ -297,4 +298,14 @@ export interface PushPayload {
   directionsUrl?: string;
   actions?: Array<{ action: string; title: string }>;
   dinnerId?: number;
+}
+
+export interface DinnerCommentViewRow {
+  id: number;
+  dinner_id: number;
+  user_slug: string;
+  user_name: string | null;
+  body: string;
+  mentioned_slugs: string[];
+  created_at: string;
 }

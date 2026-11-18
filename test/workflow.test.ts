@@ -32,6 +32,7 @@ const migration0015Sql = readFileSync(resolve(rootDir, 'migrations/0015_fix_pour
 const migration0016Sql = readFileSync(resolve(rootDir, 'migrations/0016_allow_both_night_vote.sql'), 'utf8');
 const migration0017Sql = readFileSync(resolve(rootDir, 'migrations/0017_cancel_night.sql'), 'utf8');
 const migration0018Sql = readFileSync(resolve(rootDir, 'migrations/0018_extra_guest_names.sql'), 'utf8');
+const migration0019Sql = readFileSync(resolve(rootDir, 'migrations/0019_dinner_comments.sql'), 'utf8');
 
 function makeEnv(db: D1Database, overrides: Partial<Env> = {}): Env {
   return {
@@ -78,6 +79,7 @@ describe('Man Night PWA Worker & Seed', () => {
     await db.exec(migration0016Sql);
     await db.exec(migration0017Sql);
     await db.exec(migration0018Sql);
+    await db.exec(migration0019Sql);
     env = makeEnv(db);
   });
 
@@ -1863,21 +1865,23 @@ describe('Man Night PWA Worker & Seed', () => {
   it('tracks What’s New releases, crew idea/bug credits, per-user seen state, and UI wiring (issue #11)', async () => {
     // 1. Changelog integrity
     const seenIds = new Set<string>();
-    expect(WHATS_NEW_RELEASES.length).toBeGreaterThanOrEqual(15);
-    expect(WHATS_NEW_RELEASES[0].id).toBe('2026-11-18-extra-guest-names');
-    expect(WHATS_NEW_RELEASES[0].issueNumber).toBe(22);
-    expect(WHATS_NEW_RELEASES[1].id).toBe('2026-11-18-change-time');
-    expect(WHATS_NEW_RELEASES[1].issueNumber).toBe(21);
-    expect(WHATS_NEW_RELEASES[2].id).toBe('2026-11-18-cancel-night');
-    expect(WHATS_NEW_RELEASES[2].issueNumber).toBe(20);
-    expect(WHATS_NEW_RELEASES[3].id).toBe('2026-11-17-both-night-voting');
-    expect(WHATS_NEW_RELEASES[4].id).toBe('2026-11-16-top-places-poplar-fix');
-    expect(WHATS_NEW_RELEASES[5].id).toBe('2026-11-15-future-pick-notifications');
-    expect(WHATS_NEW_RELEASES[5].issueNumber).toBe(18);
-    expect(WHATS_NEW_RELEASES[6].id).toBe('2026-11-15-appetizers');
-    expect(WHATS_NEW_RELEASES[6].issueNumber).toBe(17);
-    expect(WHATS_NEW_RELEASES[7].id).toBe('2026-11-15-beer-cellar');
-    expect(WHATS_NEW_RELEASES[7].issueNumber).toBe(15);
+    expect(WHATS_NEW_RELEASES.length).toBeGreaterThanOrEqual(16);
+    expect(WHATS_NEW_RELEASES[0].id).toBe('2026-11-18-night-comments');
+    expect(WHATS_NEW_RELEASES[0].issueNumber).toBe(23);
+    expect(WHATS_NEW_RELEASES[1].id).toBe('2026-11-18-extra-guest-names');
+    expect(WHATS_NEW_RELEASES[1].issueNumber).toBe(22);
+    expect(WHATS_NEW_RELEASES[2].id).toBe('2026-11-18-change-time');
+    expect(WHATS_NEW_RELEASES[2].issueNumber).toBe(21);
+    expect(WHATS_NEW_RELEASES[3].id).toBe('2026-11-18-cancel-night');
+    expect(WHATS_NEW_RELEASES[3].issueNumber).toBe(20);
+    expect(WHATS_NEW_RELEASES[4].id).toBe('2026-11-17-both-night-voting');
+    expect(WHATS_NEW_RELEASES[5].id).toBe('2026-11-16-top-places-poplar-fix');
+    expect(WHATS_NEW_RELEASES[6].id).toBe('2026-11-15-future-pick-notifications');
+    expect(WHATS_NEW_RELEASES[6].issueNumber).toBe(18);
+    expect(WHATS_NEW_RELEASES[7].id).toBe('2026-11-15-appetizers');
+    expect(WHATS_NEW_RELEASES[7].issueNumber).toBe(17);
+    expect(WHATS_NEW_RELEASES[8].id).toBe('2026-11-15-beer-cellar');
+    expect(WHATS_NEW_RELEASES[8].issueNumber).toBe(15);
     expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-15-issue-feature-form' && e.issueNumber === 16)).toBe(true);
     expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-15-favorite-places' && e.issueNumber === 14)).toBe(true);
     expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-15-meal-prices' && e.issueNumber === 13)).toBe(true);
@@ -1967,9 +1971,10 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(bootInit.whatsNew.entries[1].creditLabel).toBe('Idea by Tyler');
     expect(bootInit.whatsNew.entries[2].creditLabel).toBe('Idea by Tyler');
     expect(bootInit.whatsNew.entries[3].creditLabel).toBe('Idea by Tyler');
-    expect(bootInit.whatsNew.entries[4].creditLabel).toBe('Bug report by Tyler');
+    expect(bootInit.whatsNew.entries[4].creditLabel).toBe('Idea by Tyler');
     expect(bootInit.whatsNew.entries[5].creditLabel).toBe('Bug report by Tyler');
-    expect(bootInit.whatsNew.entries[6].creditLabel).toBe('Idea by Jacob');
+    expect(bootInit.whatsNew.entries[6].creditLabel).toBe('Bug report by Tyler');
+    expect(bootInit.whatsNew.entries[7].creditLabel).toBe('Idea by Jacob');
 
     const getRes = await worker.fetch(makeReq('/api/whats-new'), env);
     expect(getRes.status).toBe(200);
@@ -3343,5 +3348,186 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(appJs).toContain('extra_guest_names');
     const swJs = readFileSync(resolve(rootDir, 'public/sw.js'), 'utf8');
     expect(swJs).toMatch(/const CACHE_NAME = 'man-night-shell-v\d+'/);
+  });
+
+  it('supports Issue #23: dinner comments with @mention tagging and targeted push notifications', async () => {
+    const pushSpy = vi.spyOn(pushModule, 'sendWebPushToSubscribers').mockResolvedValue({
+      sent: 1,
+      failed: 0,
+      removed: 0,
+    });
+
+    const boot = (await (await worker.fetch(makeReq('/api/bootstrap'), env)).json()) as {
+      thisWeek: { dinner: { id: number }; comments: unknown[] };
+      users: Array<{ slug: string; name: string; is_active?: number }>;
+    };
+    const dinnerId = boot.thisWeek.dinner.id;
+    expect(Array.isArray(boot.thisWeek.comments)).toBe(true);
+    expect(boot.users.find((u) => u.slug === 'tyler')?.is_active).toBe(1);
+    expect(boot.users.find((u) => u.slug === 'don')?.is_active).toBe(0);
+
+    // 1. Validation rejects non-string, empty, and oversized comments
+    const badTypeRes = await worker.fetch(
+      makeReq('/api/week/comment', 'POST', { dinnerId, body: 123 }),
+      env,
+    );
+    expect(badTypeRes.status).toBe(400);
+
+    const emptyRes = await worker.fetch(
+      makeReq('/api/week/comment', 'POST', { dinnerId, body: '   ' }),
+      env,
+    );
+    expect(emptyRes.status).toBe(400);
+
+    const longRes = await worker.fetch(
+      makeReq('/api/week/comment', 'POST', { dinnerId, body: 'a'.repeat(501) }),
+      env,
+    );
+    expect(longRes.status).toBe(400);
+
+    // 2. Posting a comment without @mentions sends NO push notification
+    const noTagRes = await worker.fetch(
+      makeReq('/api/week/comment', 'POST', { dinnerId, body: 'See you guys there! Email me bob@tyler.com' }),
+      env,
+    );
+    expect(noTagRes.status).toBe(201);
+    const noTagData = (await noTagRes.json()) as {
+      comment: { id: number; body: string; mentioned_slugs: string[] };
+      notifiedSlugs: string[];
+    };
+    expect(noTagData.comment.mentioned_slugs).toEqual([]);
+    expect(noTagData.notifiedSlugs).toEqual([]);
+    expect(pushSpy).not.toHaveBeenCalled();
+
+    // 3. Chuck posts a comment tagging @Tyler and @jacob (with punctuation) -> only those two are targeted
+    const tagRes = await worker.fetch(
+      makeReq(
+        '/api/week/comment',
+        'POST',
+        { dinnerId, body: 'Get the Italian loafer! @Tyler, also ping @jacob!' },
+        { 'Cf-Access-Authenticated-User-Email': 'bigheadwillie@gmail.com' },
+      ),
+      env,
+    );
+    expect(tagRes.status).toBe(201);
+    const tagData = (await tagRes.json()) as {
+      comment: { id: number; user_slug: string; mentioned_slugs: string[] };
+      comments: Array<{ id: number; body: string }>;
+      notifiedSlugs: string[];
+    };
+    expect(tagData.comment.user_slug).toBe('chuck');
+    expect(tagData.comment.mentioned_slugs).toEqual(['tyler', 'jacob']);
+    expect(tagData.notifiedSlugs).toEqual(['tyler', 'jacob']);
+    expect(tagData.comments.length).toBe(2);
+    expect(pushSpy).toHaveBeenCalledTimes(1);
+    expect(pushSpy.mock.calls[0][1].title).toContain('Chuck tagged you');
+    expect(pushSpy.mock.calls[0][1].body).toContain('Get the Italian loafer!');
+    expect(pushSpy.mock.calls[0][2]).toBe('all');
+    expect(pushSpy.mock.calls[0][3]).toEqual(['tyler', 'jacob']);
+    pushSpy.mockRestore();
+
+    // 4. Real push helper only dispatches to tagged user who actually has a push subscription
+    const toB64u = (b: Uint8Array) =>
+      Buffer.from(b).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    const uaPair = (await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, [
+      'deriveBits',
+    ])) as CryptoKeyPair;
+    const uaPubRaw = new Uint8Array((await crypto.subtle.exportKey('raw', uaPair.publicKey)) as ArrayBuffer);
+    const uaAuth = toB64u(crypto.getRandomValues(new Uint8Array(16)));
+    const vapidPair = (await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, [
+      'sign',
+      'verify',
+    ])) as CryptoKeyPair;
+    const vapidJwk = (await crypto.subtle.exportKey('jwk', vapidPair.privateKey)) as JsonWebKey;
+    const vapidPubRaw = new Uint8Array((await crypto.subtle.exportKey('raw', vapidPair.publicKey)) as ArrayBuffer);
+    env.VAPID_PUBLIC_KEY = toB64u(vapidPubRaw);
+    env.VAPID_PRIVATE_KEY = vapidJwk.d!;
+
+    await env.DB.prepare(
+      `INSERT INTO push_subscriptions (user_slug, endpoint, p256dh, auth, user_agent)
+       VALUES ('jacob', 'https://push.example/jacob', ?, ?, 'Test'),
+              ('eric', 'https://push.example/eric', ?, ?, 'Test')`,
+    )
+      .bind(toB64u(uaPubRaw), uaAuth, toB64u(uaPubRaw), uaAuth)
+      .run();
+
+    const dispatchedUrls: string[] = [];
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : input instanceof Request ? input.url : String(input);
+      dispatchedUrls.push(url);
+      return new Response('', { status: 201 });
+    });
+
+    // Tagging @Jacob notifies ONLY Jacob (never Eric)
+    const jacobTagRes = await worker.fetch(
+      makeReq('/api/week/comment', 'POST', { dinnerId, body: 'Saving a seat for you @Jacob!' }),
+      env,
+    );
+    expect(jacobTagRes.status).toBe(201);
+    const jacobTagData = (await jacobTagRes.json()) as {
+      notifiedSlugs: string[];
+      pushResult: { sent: number };
+    };
+    expect(jacobTagData.notifiedSlugs).toEqual(['jacob']);
+    expect(jacobTagData.pushResult.sent).toBe(1);
+    expect(dispatchedUrls).toEqual(['https://push.example/jacob']);
+
+    // Tagging @Heath (no push subscription registered) sends nothing
+    const untaggedUserRes = await worker.fetch(
+      makeReq('/api/week/comment', 'POST', { dinnerId, body: 'Hey @Heath!' }),
+      env,
+    );
+    expect(untaggedUserRes.status).toBe(201);
+    const untaggedUserData = (await untaggedUserRes.json()) as {
+      notifiedSlugs: string[];
+      pushResult: { sent: number };
+    };
+    expect(untaggedUserData.notifiedSlugs).toEqual(['heath']);
+    expect(untaggedUserData.pushResult.sent).toBe(0);
+    expect(dispatchedUrls).toEqual(['https://push.example/jacob']);
+    fetchSpy.mockRestore();
+
+    // 5. Bootstrap & GET /api/week/comments expose all comments in chronological order
+    const listRes = await worker.fetch(makeReq(`/api/week/comments?dinnerId=${dinnerId}`), env);
+    expect(listRes.status).toBe(200);
+    const listData = (await listRes.json()) as { comments: Array<{ id: number; body: string }> };
+    expect(listData.comments.length).toBe(4);
+
+    const bootAfter = (await (await worker.fetch(makeReq('/api/bootstrap'), env)).json()) as {
+      thisWeek: { comments: Array<{ id: number; body: string }> };
+    };
+    expect(bootAfter.thisWeek.comments.length).toBe(4);
+
+    // 6. Author can delete own comment; another user gets 403
+    const forbiddenDel = await worker.fetch(
+      makeReq(`/api/week/comment?id=${tagData.comment.id}`, 'DELETE'),
+      env,
+    );
+    expect(forbiddenDel.status).toBe(403);
+
+    const okDel = await worker.fetch(
+      makeReq(
+        `/api/week/comment?id=${tagData.comment.id}`,
+        'DELETE',
+        undefined,
+        { 'Cf-Access-Authenticated-User-Email': 'bigheadwillie@gmail.com' },
+      ),
+      env,
+    );
+    expect(okDel.status).toBe(200);
+    const okDelData = (await okDel.json()) as { comments: Array<{ id: number }> };
+    expect(okDelData.comments.some((c) => c.id === tagData.comment.id)).toBe(false);
+
+    // 7. Changelog, UI wiring, and CACHE_NAME verification
+    const entry23 = WHATS_NEW_RELEASES.find((e) => e.issueNumber === 23);
+    expect(entry23).toBeDefined();
+    expect(entry23?.creditSlug).toBe('tyler');
+    const appJs = readFileSync(resolve(rootDir, 'public/app.js'), 'utf8');
+    expect(appJs).toContain('week-comment-input');
+    expect(appJs).toContain('post-comment');
+    expect(appJs).toContain('delete-comment');
+    expect(appJs).toContain('insert-mention');
+    const swJs = readFileSync(resolve(rootDir, 'public/sw.js'), 'utf8');
+    expect(swJs).toContain("man-night-shell-v23");
   });
 });

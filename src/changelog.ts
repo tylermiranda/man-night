@@ -11,6 +11,18 @@ import type { WhatsNewEntry, WhatsNewPayload, WhatsNewViewEntry } from './types'
  */
 export const WHATS_NEW_RELEASES: readonly WhatsNewEntry[] = [
   {
+    id: '2026-11-18-night-comments',
+    date: '2026-11-18',
+    kind: 'feature',
+    title: '💬 Night Comments & @Mentions',
+    summary:
+      'You can now drop comments right on this week’s Man Night pick and tag crew members with @Name (e.g. @Tyler). Only tagged crew members with notifications enabled receive a push alert.',
+    creditSlug: 'tyler',
+    creditName: 'Tyler',
+    creditRole: 'idea',
+    issueNumber: 23,
+  },
+  {
     id: '2026-11-18-extra-guest-names',
     date: '2026-11-18',
     kind: 'feature',

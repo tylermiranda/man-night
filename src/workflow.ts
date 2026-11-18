@@ -12,6 +12,7 @@ import type {
   BeerListPayload,
   BeerStats,
   BeerViewRow,
+  DinnerCommentViewRow,
   DinnerRow,
   DinnerStatus,
   Env,
@@ -1496,6 +1497,172 @@ export async function castRsvp(
   return computeDinnerHeadcount(db, dinnerId);
 }
 
+const COMMENT_MENTION_RE = /(?:^|[\s(\[{"',;:])@([a-zA-Z0-9_-]{1,32})(?=$|[\s.,!?;:)\]}"'])/g;
+
+export function parseCommentMentions(
+  body: string,
+  users: Array<{ slug: string; name: string }>,
+): string[] {
+  const byToken = new Map<string, string>();
+  for (const u of users) {
+    const slug = String(u.slug || '').trim();
+    const name = String(u.name || '').trim();
+    if (!slug) continue;
+    byToken.set(slug.toLowerCase(), slug);
+    if (name) {
+      byToken.set(name.toLowerCase(), slug);
+      const firstName = name.split(/\s+/)[0];
+      if (firstName) byToken.set(firstName.toLowerCase(), slug);
+    }
+  }
+
+  const found: string[] = [];
+  const seen = new Set<string>();
+  for (const match of body.matchAll(COMMENT_MENTION_RE)) {
+    const token = (match[1] || '').toLowerCase();
+    const matchedSlug = byToken.get(token);
+    if (matchedSlug && !seen.has(matchedSlug)) {
+      seen.add(matchedSlug);
+      found.push(matchedSlug);
+    }
+  }
+  return found;
+}
+
+export async function getDinnerComments(db: D1Database, dinnerId: number): Promise<DinnerCommentViewRow[]> {
+  const rows = (
+    await db
+      .prepare(
+        `SELECT c.id, c.dinner_id, c.user_slug, u.name AS user_name, c.body, c.mentioned_slugs, c.created_at
+         FROM dinner_comments c
+         LEFT JOIN users u ON u.slug = c.user_slug
+         WHERE c.dinner_id = ?
+         ORDER BY c.created_at ASC, c.id ASC`,
+      )
+      .bind(dinnerId)
+      .all<{
+        id: number;
+        dinner_id: number;
+        user_slug: string;
+        user_name: string | null;
+        body: string;
+        mentioned_slugs: string;
+        created_at: string;
+      }>()
+  ).results ?? [];
+
+  return rows.map((r) => {
+    let mentioned: string[] = [];
+    try {
+      const parsed = JSON.parse(r.mentioned_slugs);
+      if (Array.isArray(parsed)) {
+        mentioned = parsed.filter((s): s is string => typeof s === 'string' && s.length > 0);
+      }
+    } catch {
+      mentioned = [];
+    }
+    return {
+      id: Number(r.id),
+      dinner_id: Number(r.dinner_id),
+      user_slug: r.user_slug,
+      user_name: r.user_name ?? null,
+      body: r.body,
+      mentioned_slugs: mentioned,
+      created_at: r.created_at,
+    };
+  });
+}
+
+export async function addDinnerComment(
+  env: Env,
+  dinnerId: number,
+  author: UserRow,
+  rawBody: string,
+): Promise<{
+  comment: DinnerCommentViewRow;
+  comments: DinnerCommentViewRow[];
+  notifiedSlugs: string[];
+  pushResult: { sent: number; failed: number; removed: number };
+}> {
+  const cleanBody = String(rawBody || '').trim();
+  if (!cleanBody) {
+    throw new Error('Comment cannot be empty');
+  }
+  if (cleanBody.length > 500) {
+    throw new Error('Comment must be 500 characters or fewer');
+  }
+
+  const dinner = await env.DB.prepare(
+    `SELECT d.id, d.dinner_date, d.day_of_week, r.name AS restaurant_name
+     FROM dinners d
+     LEFT JOIN restaurants r ON r.id = d.restaurant_id
+     WHERE d.id = ?`,
+  )
+    .bind(dinnerId)
+    .first<{ id: number; dinner_date: string; day_of_week: string; restaurant_name: string | null }>();
+  if (!dinner) {
+    throw new Error('Dinner not found');
+  }
+
+  const crewUsers = (
+    await env.DB.prepare("SELECT slug, name FROM users WHERE email NOT LIKE '%@history.local'")
+      .all<{ slug: string; name: string }>()
+  ).results ?? [];
+
+  const mentionedSlugs = parseCommentMentions(cleanBody, crewUsers);
+
+  const ins = await env.DB.prepare(
+    `INSERT INTO dinner_comments (dinner_id, user_slug, body, mentioned_slugs)
+     VALUES (?, ?, ?, ?)`,
+  )
+    .bind(dinnerId, author.slug, cleanBody, JSON.stringify(mentionedSlugs))
+    .run();
+
+  const commentId = Number(ins.meta.last_row_id);
+
+  let pushResult = { sent: 0, failed: 0, removed: 0 };
+  if (mentionedSlugs.length > 0) {
+    const contextLabel = dinner.restaurant_name || `${dinner.day_of_week} ${formatShortDate(dinner.dinner_date)}`;
+    const snippet = cleanBody.length > 160 ? `${cleanBody.slice(0, 157)}…` : cleanBody;
+    pushResult = await sendWebPushToSubscribers(
+      env,
+      {
+        title: `💬 ${author.name} tagged you (${contextLabel})`,
+        body: `“${snippet}”`,
+        tag: `dinner-comment-${dinnerId}-${commentId}`,
+        url: env.APP_URL,
+        dinnerId,
+      },
+      'all',
+      mentionedSlugs,
+    );
+  }
+
+  const comments = await getDinnerComments(env.DB, dinnerId);
+  const comment = comments.find((c) => c.id === commentId) ?? comments[comments.length - 1];
+  return { comment, comments, notifiedSlugs: mentionedSlugs, pushResult };
+}
+
+export async function deleteDinnerComment(
+  db: D1Database,
+  commentId: number,
+  userSlug: string,
+): Promise<{ deleted: true; id: number; dinnerId: number; comments: DinnerCommentViewRow[] }> {
+  const existing = await db
+    .prepare('SELECT id, dinner_id, user_slug FROM dinner_comments WHERE id = ?')
+    .bind(commentId)
+    .first<{ id: number; dinner_id: number; user_slug: string }>();
+  if (!existing) {
+    throw new Error('Comment not found');
+  }
+  if (existing.user_slug !== userSlug) {
+    throw new Error('Forbidden: you can only delete your own comments');
+  }
+  await db.prepare('DELETE FROM dinner_comments WHERE id = ?').bind(commentId).run();
+  const comments = await getDinnerComments(db, Number(existing.dinner_id));
+  return { deleted: true, id: commentId, dinnerId: Number(existing.dinner_id), comments };
+}
+
 export function parseMealPrice(input: unknown): number | null {
   if (input === undefined || input === null || input === '') return null;
   const rawNum = typeof input === 'string'
@@ -2857,8 +3024,12 @@ export async function getBootstrapPayload(env: Env, currentUser: UserRow) {
   const todayStr = getCentralDateStr(new Date(), env.CLUB_TIMEZONE || 'America/Chicago');
   const active = await getActiveDinner(env.DB);
   const users = (
-    await env.DB.prepare('SELECT id, slug, name, avatar_class, initials, is_rotation, rotation_order FROM users ORDER BY COALESCE(rotation_order, 99), id')
-      .all<UserRow>()
+    await env.DB.prepare(
+      `SELECT id, slug, name, avatar_class, initials, is_rotation, rotation_order,
+              CASE WHEN email NOT LIKE '%@history.local' THEN 1 ELSE 0 END AS is_active
+       FROM users
+       ORDER BY COALESCE(rotation_order, 99), id`,
+    ).all<UserRow>()
   ).results ?? [];
 
   let activePlace: RestaurantRow | null = null;
@@ -2879,6 +3050,7 @@ export async function getBootstrapPayload(env: Env, currentUser: UserRow) {
   let headcount: Awaited<ReturnType<typeof computeDinnerHeadcount>> | null = null;
   let ratings: Array<{ user_slug: string; score: number; dish: string; appetizer?: string; comment: string; price?: number | null }> = [];
   let activePhotos: MealPhotoViewRow[] = [];
+  let activeComments: DinnerCommentViewRow[] = [];
 
   if (active) {
     if (active.restaurant_id) {
@@ -2908,6 +3080,7 @@ export async function getBootstrapPayload(env: Env, currentUser: UserRow) {
     headcount = await computeDinnerHeadcount(env.DB, active.id);
     ratings = (await env.DB.prepare('SELECT user_slug, score, dish, appetizer, comment, price FROM ratings WHERE dinner_id = ?').bind(active.id).all()).results as typeof ratings;
     activePhotos = await getDinnerPhotos(env.DB, active.id);
+    activeComments = await getDinnerComments(env.DB, active.id);
 
     const ids = parseIdListJson(active.noon_draw_ids);
     if (ids.length > 0) {
@@ -3155,6 +3328,7 @@ export async function getBootstrapPayload(env: Env, currentUser: UserRow) {
           headcount,
           ratings,
           photos: activePhotos,
+          comments: activeComments,
         }
       : null,
     upcoming,

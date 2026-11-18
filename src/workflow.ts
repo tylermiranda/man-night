@@ -1339,9 +1339,9 @@ export async function computeDinnerHeadcount(db: D1Database, dinnerId: number) {
   const rsvpRows =
     (
       await db
-        .prepare('SELECT user_slug, status, extra_guests FROM rsvps WHERE dinner_id = ?')
+        .prepare('SELECT user_slug, status, extra_guests, extra_guest_names FROM rsvps WHERE dinner_id = ?')
         .bind(dinnerId)
-        .all<{ user_slug: string; status: string; extra_guests: number | null }>()
+        .all<{ user_slug: string; status: string; extra_guests: number | null; extra_guest_names: string | null }>()
     ).results ?? [];
 
   const activeUsers =
@@ -1356,6 +1356,7 @@ export async function computeDinnerHeadcount(db: D1Database, dinnerId: number) {
   let lateMembers = 0;
   let outMembers = 0;
   let extraGuests = 0;
+  const extraGuestNames: string[] = [];
   const answeredActive = new Set<string>();
 
   for (const r of rsvpRows) {
@@ -1365,7 +1366,11 @@ export async function computeDinnerHeadcount(db: D1Database, dinnerId: number) {
     if (r.status === 'in' || r.status === 'late') {
       goingMembers++;
       if (r.status === 'late') lateMembers++;
-      extraGuests += Math.max(0, Number(r.extra_guests) || 0);
+      const count = Math.max(0, Number(r.extra_guests) || 0);
+      extraGuests += count;
+      if (count > 0 && r.extra_guest_names && r.extra_guest_names.trim()) {
+        extraGuestNames.push(r.extra_guest_names.trim());
+      }
     } else if (r.status === 'out') {
       outMembers++;
     }
@@ -1376,6 +1381,7 @@ export async function computeDinnerHeadcount(db: D1Database, dinnerId: number) {
     lateMembers,
     outMembers,
     extraGuests,
+    extraGuestNames,
     totalGoing: goingMembers + extraGuests,
     activeCrewCount: activeUsers.length,
     unansweredCount: Math.max(0, activeUsers.length - answeredActive.size),
@@ -1391,6 +1397,7 @@ export async function castRsvp(
   note?: string,
   recordedBy?: string,
   extraGuests?: number,
+  extraGuestNames?: string,
 ) {
   const dinner = await db.prepare('SELECT * FROM dinners WHERE id = ?').bind(dinnerId).first<DinnerRow>();
   if (!dinner) throw new Error('Dinner not found');
@@ -1425,13 +1432,14 @@ export async function castRsvp(
     const cleanNote = hasNote ? note.trim().slice(0, 140) : '';
     await db
       .prepare(
-        `INSERT INTO rsvps (dinner_id, user_slug, status, eta_minutes, extra_guests, note, recorded_by, updated_at)
-         VALUES (?, ?, 'out', NULL, 0, ?, ?, datetime('now'))
+        `INSERT INTO rsvps (dinner_id, user_slug, status, eta_minutes, extra_guests, extra_guest_names, note, recorded_by, updated_at)
+         VALUES (?, ?, 'out', NULL, 0, '', ?, ?, datetime('now'))
          ON CONFLICT(dinner_id, user_slug)
          DO UPDATE SET
            status = 'out',
            eta_minutes = NULL,
            extra_guests = 0,
+           extra_guest_names = '',
            note = CASE WHEN ? = 1 THEN excluded.note ELSE CASE WHEN rsvps.status = 'out' THEN rsvps.note ELSE '' END END,
            recorded_by = excluded.recorded_by,
            updated_at = datetime('now')`,
@@ -1447,16 +1455,23 @@ export async function castRsvp(
   const eta = status === 'late' ? (hasEta ? etaMinutes : 15) : null;
   const hasExtra = typeof extraGuests === 'number' && Number.isFinite(extraGuests);
   const cleanExtra = hasExtra ? Math.max(0, Math.min(20, Math.trunc(extraGuests))) : 0;
+  const hasExtraNames = typeof extraGuestNames === 'string';
+  const cleanExtraNames = hasExtraNames ? extraGuestNames.trim().slice(0, 200) : '';
 
   await db
     .prepare(
-      `INSERT INTO rsvps (dinner_id, user_slug, status, eta_minutes, extra_guests, note, recorded_by, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      `INSERT INTO rsvps (dinner_id, user_slug, status, eta_minutes, extra_guests, extra_guest_names, note, recorded_by, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
        ON CONFLICT(dinner_id, user_slug)
        DO UPDATE SET
          status = excluded.status,
          eta_minutes = CASE WHEN excluded.status = 'late' THEN CASE WHEN ? = 1 THEN excluded.eta_minutes ELSE COALESCE(rsvps.eta_minutes, 15) END ELSE NULL END,
          extra_guests = CASE WHEN ? = 1 THEN excluded.extra_guests ELSE CASE WHEN rsvps.status = 'out' THEN 0 ELSE rsvps.extra_guests END END,
+         extra_guest_names = CASE
+           WHEN ? = 1 AND excluded.extra_guests = 0 THEN ''
+           WHEN ? = 1 THEN excluded.extra_guest_names
+           ELSE CASE WHEN rsvps.status = 'out' THEN '' ELSE rsvps.extra_guest_names END
+         END,
          note = CASE WHEN ? = 1 THEN excluded.note ELSE rsvps.note END,
          recorded_by = excluded.recorded_by,
          updated_at = datetime('now')`,
@@ -1467,10 +1482,13 @@ export async function castRsvp(
       status,
       eta,
       cleanExtra,
+      cleanExtra > 0 ? cleanExtraNames : '',
       cleanNote,
       actor,
       hasEta ? 1 : 0,
       hasExtra ? 1 : 0,
+      hasExtra ? 1 : 0,
+      hasExtraNames ? 1 : 0,
       hasNote ? 1 : 0,
     )
     .run();
@@ -2853,6 +2871,7 @@ export async function getBootstrapPayload(env: Env, currentUser: UserRow) {
     status: string;
     eta_minutes: number | null;
     extra_guests: number;
+    extra_guest_names: string;
     note: string;
     recorded_by: string | null;
     updated_at: string;
@@ -2877,7 +2896,7 @@ export async function getBootstrapPayload(env: Env, currentUser: UserRow) {
     noonVotes = (await env.DB.prepare('SELECT user_slug, restaurant_id FROM noon_votes WHERE dinner_id = ?').bind(active.id).all()).results as typeof noonVotes;
     rsvps = (
       await env.DB.prepare(
-        `SELECT r.user_slug, u.name AS user_name, r.status, r.eta_minutes, r.extra_guests, r.note, r.recorded_by, r.updated_at
+        `SELECT r.user_slug, u.name AS user_name, r.status, r.eta_minutes, r.extra_guests, r.extra_guest_names, r.note, r.recorded_by, r.updated_at
          FROM rsvps r
          LEFT JOIN users u ON u.slug = r.user_slug
          WHERE r.dinner_id = ?

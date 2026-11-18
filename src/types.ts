@@ -254,6 +254,7 @@ export interface DinnerHeadcount {
   lateMembers: number;
   outMembers: number;
   extraGuests: number;
+  extraGuestNames?: string[];
   totalGoing: number;
   activeCrewCount: number;
   unansweredCount: number;

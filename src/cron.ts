@@ -40,12 +40,16 @@ export function buildPreEventHeadcountPayload(
   const totalLabel = `${headcount.totalGoing} ${headcount.totalGoing === 1 ? 'person' : 'people'} going in 5 min`;
   const membersPart = `${headcount.goingMembers} ${headcount.goingMembers === 1 ? 'member' : 'members'}`;
   const extraPart = headcount.extraGuests > 0 ? ` + ${headcount.extraGuests} extra` : '';
+  const extraNamesPart =
+    headcount.extraGuests > 0 && headcount.extraGuestNames && headcount.extraGuestNames.length > 0
+      ? ` (${headcount.extraGuestNames.join(', ')})`
+      : '';
   const latePart = headcount.lateMembers > 0 ? ` (${headcount.lateMembers} running late)` : '';
   const unansweredPart = headcount.unansweredCount > 0 ? ` · ${headcount.unansweredCount} unanswered` : '';
   const placeLine = place.address || place.name;
   return {
     title: `${totalLabel} — ${place.name}`,
-    body: `${membersPart}${extraPart}${latePart}${unansweredPart} · ${placeLine} · Tap for Google Maps directions`,
+    body: `${membersPart}${extraPart}${extraNamesPart}${latePart}${unansweredPart} · ${placeLine} · Tap for Google Maps directions`,
     tag: `pre-event-${dinnerId}`,
     url: mapsUrl,
     directionsUrl: mapsUrl,

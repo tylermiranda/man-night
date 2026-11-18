@@ -1194,6 +1194,7 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
         etaMinutes?: number | null;
         note?: string;
         extraGuests?: unknown;
+        extraGuestNames?: unknown;
       }>(request);
       if (!['in', 'late', 'out', 'clear'].includes(body.status)) {
         return json({ error: 'Invalid RSVP status' }, 400);
@@ -1210,6 +1211,13 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
         }
         extraGuests = body.extraGuests;
       }
+      let extraGuestNames: string | undefined;
+      if (body.extraGuestNames !== undefined && body.extraGuestNames !== null) {
+        if (typeof body.extraGuestNames !== 'string') {
+          return json({ error: 'extraGuestNames must be a string' }, 400);
+        }
+        extraGuestNames = body.extraGuestNames;
+      }
       const dinner = body.dinnerId
         ? await env.DB.prepare('SELECT id FROM dinners WHERE id = ?').bind(body.dinnerId).first<{ id: number }>()
         : await getActiveDinner(env.DB);
@@ -1224,6 +1232,7 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
         body.note,
         user.slug,
         extraGuests,
+        extraGuestNames,
       );
       return json({ ok: true, headcount });
     }

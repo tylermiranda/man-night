@@ -27,6 +27,8 @@ const state = {
   focusNightReason: false,
   rsvpExcuseDraft: null,
   rsvpExcuseDinnerId: null,
+  extraGuestNamesDraft: null,
+  extraGuestNamesDinnerId: null,
   selloutModalDinnerId: null,
   pollCandidateIds: [],
   pollSearchQuery: '',
@@ -771,6 +773,10 @@ function renderWeekView() {
     state.rsvpExcuseDinnerId = d.id;
     state.rsvpExcuseDraft = null;
   }
+  if (state.extraGuestNamesDinnerId !== d.id) {
+    state.extraGuestNamesDinnerId = d.id;
+    state.extraGuestNamesDraft = null;
+  }
   const tueCount = tw.nightVotes.filter((v) => v.choice === 'tuesday' || v.choice === 'both').length;
   const wedCount = tw.nightVotes.filter((v) => v.choice === 'wednesday' || v.choice === 'both').length;
   const bothCount = tw.nightVotes.filter((v) => v.choice === 'both').length;
@@ -784,6 +790,9 @@ function renderWeekView() {
   const myRsvp = myRsvpRow?.status;
   const savedRsvpExcuse = (myRsvpRow?.note || '').trim();
   const draftRsvpExcuse = state.rsvpExcuseDraft !== null ? state.rsvpExcuseDraft : (myRsvpRow?.note || '');
+  const savedExtraGuestNames = (myRsvpRow?.extra_guest_names || '').trim();
+  const draftExtraGuestNames =
+    state.extraGuestNamesDraft !== null ? state.extraGuestNamesDraft : (myRsvpRow?.extra_guest_names || '');
 
   const isCancelled = d.status === 'cancelled';
   const nightOpen = !isCancelled && !d.night_locked_at && (d.status === 'scheduled' || d.status === 'night_poll');
@@ -1072,8 +1081,12 @@ function renderWeekView() {
       const cls = r.status === 'in' ? 'ok' : r.status === 'late' ? 'late' : 'out';
       const label = r.status === 'in' ? 'In' : r.status === 'late' ? `Late ${r.eta_minutes || 15}m` : 'Sold out';
       const extra = r.status !== 'out' ? Math.max(0, Number(r.extra_guests) || 0) : 0;
-      const extraLabel = extra > 0 ? ` · +${extra}` : '';
-      const tip = r.note ? `${displayName}: ${r.note}` : '';
+      const extraNames = extra > 0 && r.extra_guest_names ? String(r.extra_guest_names).trim() : '';
+      const extraLabel = extra > 0 ? (extraNames ? ` · +${extra} (${esc(extraNames)})` : ` · +${extra}`) : '';
+      const tipParts = [];
+      if (extraNames) tipParts.push(`+${extra}: ${extraNames}`);
+      if (r.note) tipParts.push(r.note);
+      const tip = tipParts.length ? `${displayName}: ${tipParts.join(' · ')}` : '';
       return `<span class="chip ${cls}"${tip ? ` title="${esc(tip)}"` : ''}>${avatarHtml(r.user_slug, displayName, 'sm')} ${esc(displayName)} · ${label}${extraLabel}</span>`;
     })
     .join('');
@@ -1108,6 +1121,22 @@ function renderWeekView() {
             ${myExtraGuests > 0 ? '<button type="button" class="btn btn-outline btn-sm" data-action="set-extra-guests" data-value="0">Clear</button>' : ''}
           </div>
         </div>
+        ${
+          myExtraGuests > 0
+            ? `
+              <div class="rsvp-extra-names-box">
+                <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12px;font-weight:700;margin-bottom:6px;">
+                  <span>Guest name(s) <span style="font-weight:500;color:var(--muted);">(optional · visible to crew)</span></span>
+                  ${savedExtraGuestNames ? '<span class="badge badge-ok">✓ Saved</span>' : ''}
+                </div>
+                <div class="rsvp-extra-names-row">
+                  <input id="rsvp-extra-names" class="input" type="text" maxlength="200" placeholder="${myExtraGuests === 1 ? 'Who are you bringing? (e.g. Dave)' : 'Who are you bringing? (e.g. Dave, Mike)'}" value="${esc(draftExtraGuestNames)}" />
+                  <button type="button" class="btn btn-outline btn-sm" data-action="save-extra-names">Save</button>
+                </div>
+              </div>
+            `
+            : ''
+        }
       `
       : '';
 
@@ -3868,11 +3897,17 @@ document.addEventListener('click', async (e) => {
       if (actEl.dataset.status === 'out' && state.rsvpExcuseDraft !== null) {
         payload.note = state.rsvpExcuseDraft;
       }
+      if (actEl.dataset.status !== 'out' && state.extraGuestNamesDraft !== null) {
+        payload.extraGuestNames = state.extraGuestNamesDraft;
+      }
       await api('/api/week/rsvp', {
         method: 'POST',
         body: JSON.stringify(payload),
       });
       state.rsvpExcuseDraft = null;
+      if (actEl.dataset.status === 'out') {
+        state.extraGuestNamesDraft = null;
+      }
       toast(actEl.dataset.status === 'out' ? 'Marked sold out for this week' : 'RSVP updated');
       await refreshBootstrap();
     } else if (action === 'set-extra-guests') {
@@ -3890,10 +3925,46 @@ document.addEventListener('click', async (e) => {
       );
       if (myRsvpRow && nextExtra === curExtra) return;
       const targetStatus = myRsvpRow?.status === 'late' ? 'late' : 'in';
+      const namesInput = document.getElementById('rsvp-extra-names');
+      const draftNames = namesInput ? namesInput.value : state.extraGuestNamesDraft;
       const payload = {
         dinnerId: tw.dinner.id,
         status: targetStatus,
         extraGuests: nextExtra,
+      };
+      if (nextExtra === 0) {
+        payload.extraGuestNames = '';
+      } else if (draftNames !== null && draftNames !== undefined) {
+        payload.extraGuestNames = draftNames;
+      }
+      if (targetStatus === 'late') {
+        payload.etaMinutes = myRsvpRow?.eta_minutes || 15;
+      }
+      await api('/api/week/rsvp', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      if (nextExtra === 0) {
+        state.extraGuestNamesDraft = null;
+      }
+      toast(nextExtra > 0 ? `Updated extra people: +${nextExtra}` : 'Cleared extra people');
+      await refreshBootstrap();
+    } else if (action === 'save-extra-names') {
+      const tw = state.bootstrap?.thisWeek;
+      const me = state.bootstrap?.user;
+      if (!tw?.dinner || !me) return;
+      const myRsvpRow = (tw.rsvps || []).find((r) => r.user_slug === me.slug);
+      if (myRsvpRow?.status === 'out') return;
+      const curExtra = myRsvpRow ? Math.max(0, Number(myRsvpRow.extra_guests) || 0) : 0;
+      if (curExtra <= 0) return;
+      const inputEl = document.getElementById('rsvp-extra-names');
+      const namesVal = inputEl ? inputEl.value : (state.extraGuestNamesDraft || '');
+      const targetStatus = myRsvpRow?.status === 'late' ? 'late' : 'in';
+      const payload = {
+        dinnerId: tw.dinner.id,
+        status: targetStatus,
+        extraGuests: curExtra,
+        extraGuestNames: namesVal,
       };
       if (targetStatus === 'late') {
         payload.etaMinutes = myRsvpRow?.eta_minutes || 15;
@@ -3902,7 +3973,8 @@ document.addEventListener('click', async (e) => {
         method: 'POST',
         body: JSON.stringify(payload),
       });
-      toast(nextExtra > 0 ? `Updated extra people: +${nextExtra}` : 'Cleared extra people');
+      state.extraGuestNamesDraft = null;
+      toast(namesVal.trim() ? 'Guest name(s) saved!' : 'Guest name(s) cleared');
       await refreshBootstrap();
     } else if (action === 'save-rsvp-note') {
       const tw = state.bootstrap?.thisWeek;
@@ -4660,6 +4732,9 @@ document.addEventListener('input', (e) => {
   } else if (e.target.id === 'rsvp-out-note') {
     state.rsvpExcuseDinnerId = state.bootstrap?.thisWeek?.dinner?.id ?? null;
     state.rsvpExcuseDraft = e.target.value;
+  } else if (e.target.id === 'rsvp-extra-names') {
+    state.extraGuestNamesDinnerId = state.bootstrap?.thisWeek?.dinner?.id ?? null;
+    state.extraGuestNamesDraft = e.target.value;
   } else if (e.target.id === 'picker-q') {
     const btn = document.querySelector('[data-action="picker-create-and-use"]');
     renderPickerOptions(btn?.dataset.mode || 'pick', btn?.dataset.dinnerId || '', e.target.value);
@@ -4695,6 +4770,9 @@ document.addEventListener('keydown', (e) => {
   } else if (e.target.id === 'rsvp-out-note' && e.key === 'Enter') {
     e.preventDefault();
     document.querySelector('[data-action="save-rsvp-note"]')?.click();
+  } else if (e.target.id === 'rsvp-extra-names' && e.key === 'Enter') {
+    e.preventDefault();
+    document.querySelector('[data-action="save-extra-names"]')?.click();
   }
 });
 

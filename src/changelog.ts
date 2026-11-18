@@ -11,6 +11,18 @@ import type { WhatsNewEntry, WhatsNewPayload, WhatsNewViewEntry } from './types'
  */
 export const WHATS_NEW_RELEASES: readonly WhatsNewEntry[] = [
   {
+    id: '2026-11-18-extra-guest-names',
+    date: '2026-11-18',
+    kind: 'feature',
+    title: '👥 Name Your Extra Guests',
+    summary:
+      'When adding extra people to your RSVP, you can now enter who you are bringing. Guest names show up on attendance chips and in the 5-minute headcount push notification.',
+    creditSlug: 'tyler',
+    creditName: 'Tyler',
+    creditRole: 'idea',
+    issueNumber: 22,
+  },
+  {
     id: '2026-11-18-change-time',
     date: '2026-11-18',
     kind: 'feature',

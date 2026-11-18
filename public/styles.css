@@ -699,7 +699,9 @@ a:hover {
 .chip {
   display: inline-flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
+  max-width: 100%;
   padding: 5px 10px 5px 6px;
   border-radius: 999px;
   background: var(--surf);
@@ -1609,7 +1611,8 @@ html[data-theme="dark"] .badge-shame {
   background: var(--surf);
 }
 
-.rsvp-excuse-box {
+.rsvp-excuse-box,
+.rsvp-extra-names-box {
   margin-top: 10px;
   padding: 10px 12px;
   border-radius: 10px;
@@ -1617,14 +1620,16 @@ html[data-theme="dark"] .badge-shame {
   border: 1px solid var(--line);
 }
 
-.rsvp-excuse-row {
+.rsvp-excuse-row,
+.rsvp-extra-names-row {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
 }
 
-.rsvp-excuse-row .input {
+.rsvp-excuse-row .input,
+.rsvp-extra-names-row .input {
   flex: 1 1 200px;
   min-height: 36px;
   padding: 7px 10px;

@@ -31,6 +31,7 @@ const migration0014Sql = readFileSync(resolve(rootDir, 'migrations/0014_admin_da
 const migration0015Sql = readFileSync(resolve(rootDir, 'migrations/0015_fix_pour_haus_seed_counts.sql'), 'utf8');
 const migration0016Sql = readFileSync(resolve(rootDir, 'migrations/0016_allow_both_night_vote.sql'), 'utf8');
 const migration0017Sql = readFileSync(resolve(rootDir, 'migrations/0017_cancel_night.sql'), 'utf8');
+const migration0018Sql = readFileSync(resolve(rootDir, 'migrations/0018_extra_guest_names.sql'), 'utf8');
 
 function makeEnv(db: D1Database, overrides: Partial<Env> = {}): Env {
   return {
@@ -76,6 +77,7 @@ describe('Man Night PWA Worker & Seed', () => {
     await db.exec(migration0015Sql);
     await db.exec(migration0016Sql);
     await db.exec(migration0017Sql);
+    await db.exec(migration0018Sql);
     env = makeEnv(db);
   });
 
@@ -1861,19 +1863,21 @@ describe('Man Night PWA Worker & Seed', () => {
   it('tracks What’s New releases, crew idea/bug credits, per-user seen state, and UI wiring (issue #11)', async () => {
     // 1. Changelog integrity
     const seenIds = new Set<string>();
-    expect(WHATS_NEW_RELEASES.length).toBeGreaterThanOrEqual(14);
-    expect(WHATS_NEW_RELEASES[0].id).toBe('2026-11-18-change-time');
-    expect(WHATS_NEW_RELEASES[0].issueNumber).toBe(21);
-    expect(WHATS_NEW_RELEASES[1].id).toBe('2026-11-18-cancel-night');
-    expect(WHATS_NEW_RELEASES[1].issueNumber).toBe(20);
-    expect(WHATS_NEW_RELEASES[2].id).toBe('2026-11-17-both-night-voting');
-    expect(WHATS_NEW_RELEASES[3].id).toBe('2026-11-16-top-places-poplar-fix');
-    expect(WHATS_NEW_RELEASES[4].id).toBe('2026-11-15-future-pick-notifications');
-    expect(WHATS_NEW_RELEASES[4].issueNumber).toBe(18);
-    expect(WHATS_NEW_RELEASES[5].id).toBe('2026-11-15-appetizers');
-    expect(WHATS_NEW_RELEASES[5].issueNumber).toBe(17);
-    expect(WHATS_NEW_RELEASES[6].id).toBe('2026-11-15-beer-cellar');
-    expect(WHATS_NEW_RELEASES[6].issueNumber).toBe(15);
+    expect(WHATS_NEW_RELEASES.length).toBeGreaterThanOrEqual(15);
+    expect(WHATS_NEW_RELEASES[0].id).toBe('2026-11-18-extra-guest-names');
+    expect(WHATS_NEW_RELEASES[0].issueNumber).toBe(22);
+    expect(WHATS_NEW_RELEASES[1].id).toBe('2026-11-18-change-time');
+    expect(WHATS_NEW_RELEASES[1].issueNumber).toBe(21);
+    expect(WHATS_NEW_RELEASES[2].id).toBe('2026-11-18-cancel-night');
+    expect(WHATS_NEW_RELEASES[2].issueNumber).toBe(20);
+    expect(WHATS_NEW_RELEASES[3].id).toBe('2026-11-17-both-night-voting');
+    expect(WHATS_NEW_RELEASES[4].id).toBe('2026-11-16-top-places-poplar-fix');
+    expect(WHATS_NEW_RELEASES[5].id).toBe('2026-11-15-future-pick-notifications');
+    expect(WHATS_NEW_RELEASES[5].issueNumber).toBe(18);
+    expect(WHATS_NEW_RELEASES[6].id).toBe('2026-11-15-appetizers');
+    expect(WHATS_NEW_RELEASES[6].issueNumber).toBe(17);
+    expect(WHATS_NEW_RELEASES[7].id).toBe('2026-11-15-beer-cellar');
+    expect(WHATS_NEW_RELEASES[7].issueNumber).toBe(15);
     expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-15-issue-feature-form' && e.issueNumber === 16)).toBe(true);
     expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-15-favorite-places' && e.issueNumber === 14)).toBe(true);
     expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-15-meal-prices' && e.issueNumber === 13)).toBe(true);
@@ -1962,9 +1966,10 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(bootInit.whatsNew.entries[0].creditLabel).toBe('Idea by Tyler');
     expect(bootInit.whatsNew.entries[1].creditLabel).toBe('Idea by Tyler');
     expect(bootInit.whatsNew.entries[2].creditLabel).toBe('Idea by Tyler');
-    expect(bootInit.whatsNew.entries[3].creditLabel).toBe('Bug report by Tyler');
+    expect(bootInit.whatsNew.entries[3].creditLabel).toBe('Idea by Tyler');
     expect(bootInit.whatsNew.entries[4].creditLabel).toBe('Bug report by Tyler');
-    expect(bootInit.whatsNew.entries[5].creditLabel).toBe('Idea by Jacob');
+    expect(bootInit.whatsNew.entries[5].creditLabel).toBe('Bug report by Tyler');
+    expect(bootInit.whatsNew.entries[6].creditLabel).toBe('Idea by Jacob');
 
     const getRes = await worker.fetch(makeReq('/api/whats-new'), env);
     expect(getRes.status).toBe(200);
@@ -3236,6 +3241,106 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(appJs).toContain('open-change-time');
     expect(appJs).toContain('/api/week/time');
     expect(appJs).toContain('fmtTime(');
+    const swJs = readFileSync(resolve(rootDir, 'public/sw.js'), 'utf8');
+    expect(swJs).toMatch(/const CACHE_NAME = 'man-night-shell-v\d+'/);
+  });
+
+  it('supports Issue #22: entering, persisting, clearing, and displaying extra guest names on RSVPs and headcount', async () => {
+    const boot = (await (await worker.fetch(makeReq('/api/bootstrap'), env)).json()) as {
+      thisWeek: { dinner: { id: number } };
+    };
+    const dinnerId = boot.thisWeek.dinner.id;
+
+    // 1. Rejects non-string extraGuestNames
+    const badRes = await worker.fetch(
+      makeReq('/api/week/rsvp', 'POST', { dinnerId, status: 'in', extraGuests: 1, extraGuestNames: 123 }),
+      env,
+    );
+    expect(badRes.status).toBe(400);
+
+    // 2. Tyler adds +2 extra people with names
+    const r1 = await worker.fetch(
+      makeReq('/api/week/rsvp', 'POST', {
+        dinnerId,
+        status: 'in',
+        extraGuests: 2,
+        extraGuestNames: '  Dave, Mike  ',
+      }),
+      env,
+    );
+    expect(r1.status).toBe(200);
+    const d1 = (await r1.json()) as {
+      headcount: { extraGuests: number; extraGuestNames: string[]; totalGoing: number };
+    };
+    expect(d1.headcount.extraGuests).toBe(2);
+    expect(d1.headcount.extraGuestNames).toEqual(['Dave, Mike']);
+    expect(d1.headcount.totalGoing).toBe(3);
+
+    // 3. Switching In -> Late without extraGuestNames preserves existing count and names
+    const r2 = await worker.fetch(
+      makeReq('/api/week/rsvp', 'POST', { dinnerId, status: 'late', etaMinutes: 10 }),
+      env,
+    );
+    const d2 = (await r2.json()) as {
+      headcount: { extraGuests: number; extraGuestNames: string[] };
+    };
+    expect(d2.headcount.extraGuests).toBe(2);
+    expect(d2.headcount.extraGuestNames).toEqual(['Dave, Mike']);
+
+    // 4. Bootstrap exposes extra_guest_names on the RSVP row and pre-event push includes names
+    const bootAfter = (await (await worker.fetch(makeReq('/api/bootstrap'), env)).json()) as {
+      thisWeek: {
+        rsvps: Array<{ user_slug: string; extra_guests: number; extra_guest_names: string }>;
+        headcount: { extraGuests: number; extraGuestNames: string[]; totalGoing: number; goingMembers: number; lateMembers: number; outMembers: number; activeCrewCount: number; unansweredCount: number };
+      };
+    };
+    const tylerRsvp = bootAfter.thisWeek.rsvps.find((r) => r.user_slug === 'tyler');
+    expect(tylerRsvp?.extra_guests).toBe(2);
+    expect(tylerRsvp?.extra_guest_names).toBe('Dave, Mike');
+
+    const place = await env.DB.prepare('SELECT * FROM restaurants LIMIT 1').first<RestaurantRow>();
+    const pushPayload = buildPreEventHeadcountPayload(
+      dinnerId,
+      place!,
+      bootAfter.thisWeek.headcount,
+      'https://maps.google.com',
+    );
+    expect(pushPayload.body).toContain('1 member + 2 extra (Dave, Mike)');
+
+    // 5. Clearing extraGuests to 0 clears extra_guest_names automatically
+    const r3 = await worker.fetch(
+      makeReq('/api/week/rsvp', 'POST', { dinnerId, status: 'in', extraGuests: 0 }),
+      env,
+    );
+    const d3 = (await r3.json()) as {
+      headcount: { extraGuests: number; extraGuestNames: string[] };
+    };
+    expect(d3.headcount.extraGuests).toBe(0);
+    expect(d3.headcount.extraGuestNames).toEqual([]);
+
+    // 6. Switching to Out clears both extra_guests and extra_guest_names
+    await worker.fetch(
+      makeReq('/api/week/rsvp', 'POST', { dinnerId, status: 'in', extraGuests: 1, extraGuestNames: 'Sam' }),
+      env,
+    );
+    const rOut = await worker.fetch(
+      makeReq('/api/week/rsvp', 'POST', { dinnerId, status: 'out' }),
+      env,
+    );
+    const dOut = (await rOut.json()) as {
+      headcount: { extraGuests: number; extraGuestNames: string[] };
+    };
+    expect(dOut.headcount.extraGuests).toBe(0);
+    expect(dOut.headcount.extraGuestNames).toEqual([]);
+
+    // 7. Changelog, UI wiring, and CACHE_NAME verification
+    const entry22 = WHATS_NEW_RELEASES.find((e) => e.issueNumber === 22);
+    expect(entry22).toBeDefined();
+    expect(entry22?.creditSlug).toBe('tyler');
+    const appJs = readFileSync(resolve(rootDir, 'public/app.js'), 'utf8');
+    expect(appJs).toContain('rsvp-extra-names');
+    expect(appJs).toContain('save-extra-names');
+    expect(appJs).toContain('extra_guest_names');
     const swJs = readFileSync(resolve(rootDir, 'public/sw.js'), 'utf8');
     expect(swJs).toMatch(/const CACHE_NAME = 'man-night-shell-v\d+'/);
   });

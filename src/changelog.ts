@@ -11,6 +11,17 @@ import type { WhatsNewEntry, WhatsNewPayload, WhatsNewViewEntry } from './types'
  */
 export const WHATS_NEW_RELEASES: readonly WhatsNewEntry[] = [
   {
+    id: '2026-11-18-gcal-sync-fixes',
+    date: '2026-11-18',
+    kind: 'fix',
+    title: '📅 Reliable Google Calendar Sync',
+    summary:
+      'Fixed Google Calendar syncing when nights shift between Tuesday and Wednesday, when hosts pass or swap, and when places are picked in advance—updating the existing calendar invite in place instead of leaving stale events.',
+    creditSlug: 'tyler',
+    creditName: 'Tyler',
+    creditRole: 'bug_report',
+  },
+  {
     id: '2026-11-18-night-comments',
     date: '2026-11-18',
     kind: 'feature',

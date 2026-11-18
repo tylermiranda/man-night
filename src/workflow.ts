@@ -1,10 +1,8 @@
 import { buildWhatsNewPayload } from './changelog';
 import {
   buildDirectionsUrl,
-  restoreCalendarForNight,
-  syncCancelledNightToCalendar,
-  syncLockedPlaceToCalendar,
-  syncStartTimeToCalendar,
+  syncDinnerToCalendar,
+  type CalendarSyncOptions,
 } from './gcal';
 import { sendWebPushToSubscribers } from './push';
 import type {
@@ -455,6 +453,63 @@ async function syncRatingsForDinnerPlace(
   }
 }
 
+async function syncCalendarAndPersistEventId(
+  env: Env,
+  dinner: DinnerRow,
+  restaurant: RestaurantRow | null,
+  options: CalendarSyncOptions = {},
+): Promise<{ synced: boolean; eventId?: string; reason?: string }> {
+  const cal = await syncDinnerToCalendar(env, dinner, restaurant, options);
+  if (cal.eventId && cal.eventId !== dinner.gcal_event_id) {
+    await env.DB.prepare('UPDATE dinners SET gcal_event_id = ? WHERE id = ?').bind(cal.eventId, dinner.id).run();
+    dinner.gcal_event_id = cal.eventId;
+  }
+  return cal;
+}
+
+export async function syncCurrentAndUpcomingCalendar(env: Env): Promise<
+  Array<{
+    dinnerId: number;
+    weekKey: string;
+    dinnerDate: string;
+    status: string;
+    synced: boolean;
+    eventId?: string;
+    reason?: string;
+  }>
+> {
+  const rows =
+    (
+      await env.DB.prepare(
+        `SELECT * FROM dinners
+         WHERE is_historical = 0
+           AND cancelled_archived_at IS NULL
+           AND status != 'completed'
+         ORDER BY dinner_date ASC`,
+      ).all<DinnerRow>()
+    ).results ?? [];
+
+  const results = [];
+  for (const dinner of rows) {
+    const place = dinner.restaurant_id
+      ? await env.DB.prepare('SELECT * FROM restaurants WHERE id = ?').bind(dinner.restaurant_id).first<RestaurantRow>()
+      : null;
+    const cal = await syncCalendarAndPersistEventId(env, dinner, place, {
+      createIfMissing: Boolean(place) || dinner.status !== 'scheduled',
+    });
+    results.push({
+      dinnerId: dinner.id,
+      weekKey: dinner.week_key,
+      dinnerDate: dinner.dinner_date,
+      status: dinner.status,
+      synced: cal.synced,
+      eventId: cal.eventId,
+      reason: cal.reason,
+    });
+  }
+  return results;
+}
+
 /**
  * Locks the dinner night. Tuesday wins ties per Man Night rules.
  */
@@ -509,21 +564,19 @@ export async function lockNight(env: Env, dinnerId: number): Promise<DinnerRow |
 
   const updated = await env.DB.prepare('SELECT * FROM dinners WHERE id = ?').bind(dinnerId).first<DinnerRow>();
   let lockedPlace: RestaurantRow | null = null;
-  if (updated && updated.restaurant_id) {
-    lockedPlace = await env.DB.prepare('SELECT * FROM restaurants WHERE id = ?')
-      .bind(updated.restaurant_id)
-      .first<RestaurantRow>();
-    if (lockedPlace) {
-      const cal = await syncLockedPlaceToCalendar(
-        env,
-        updated,
-        lockedPlace,
-        `Night vote locked (${winningDay} ${newDate}); place picked in advance by ${updated.host_label}.`,
-      );
-      if (cal.eventId) {
-        await env.DB.prepare('UPDATE dinners SET gcal_event_id = ? WHERE id = ?').bind(cal.eventId, dinnerId).run();
-      }
+  if (updated) {
+    if (updated.restaurant_id) {
+      lockedPlace = await env.DB.prepare('SELECT * FROM restaurants WHERE id = ?')
+        .bind(updated.restaurant_id)
+        .first<RestaurantRow>();
     }
+    const calNote = lockedPlace
+      ? `Night vote locked (${winningDay} ${newDate}); place picked in advance by ${updated.host_label}.`
+      : `Night vote locked (${winningDay} ${newDate}).`;
+    await syncCalendarAndPersistEventId(env, updated, lockedPlace, {
+      note: calNote,
+      createIfMissing: true,
+    });
   }
 
   const timeLabel = formatTime12h(updated?.start_time || '18:30');
@@ -608,6 +661,11 @@ export async function lockPlace(
       .first<RestaurantRow>())!;
     const updated = (await env.DB.prepare('SELECT * FROM dinners WHERE id = ?').bind(dinnerId).first<DinnerRow>())!;
 
+    const cal = await syncCalendarAndPersistEventId(env, updated, updatedRestaurant, {
+      note: `Picked in advance by ${updated.host_label} for ${updated.day_of_week} ${updated.dinner_date} (Tue/Wed vote stays open).`,
+      createIfMissing: true,
+    });
+
     const isFuture = await isFutureDinner(env.DB, updated, env.CLUB_TIMEZONE);
     const dateLabel = formatShortDate(updated.dinner_date);
     const dayDateLabel = `${updated.day_of_week}, ${dateLabel}`;
@@ -631,7 +689,7 @@ export async function lockPlace(
       'notify_place',
     );
 
-    return { dinner: updated, restaurant: updatedRestaurant, calendar: { synced: false, reason: 'awaiting_night_vote' } };
+    return { dinner: updated, restaurant: updatedRestaurant, calendar: { synced: cal.synced, reason: cal.reason } };
   }
 
   const targetDay: 'Tuesday' | 'Wednesday' =
@@ -703,10 +761,10 @@ export async function lockPlace(
         ? `Picked via ${updated.host_label}'s poll for ${updated.day_of_week} ${updated.dinner_date}.`
         : `Picked in advance by ${updated.host_label} for ${updated.day_of_week} ${updated.dinner_date} (no vote).`);
 
-  const cal = await syncLockedPlaceToCalendar(env, updated, updatedRestaurant, note);
-  if (cal.eventId) {
-    await env.DB.prepare('UPDATE dinners SET gcal_event_id = ? WHERE id = ?').bind(cal.eventId, dinnerId).run();
-  }
+  const cal = await syncCalendarAndPersistEventId(env, updated, updatedRestaurant, {
+    note,
+    createIfMissing: true,
+  });
 
   const mapsUrl = buildDirectionsUrl(updatedRestaurant);
   const viaText =
@@ -854,6 +912,12 @@ export async function createPlacePoll(
     .run();
 
   const updated = (await env.DB.prepare('SELECT * FROM dinners WHERE id = ?').bind(dinnerId).first<DinnerRow>())!;
+  if (existing.restaurant_id || existing.dinner_date !== updated.dinner_date || updated.gcal_event_id) {
+    await syncCalendarAndPersistEventId(env, updated, null, {
+      note: `${updated.host_label} opened a place poll (${candidates.map((c) => c.name).join(', ')}).`,
+      createIfMissing: false,
+    });
+  }
   const isFuture = await isFutureDinner(env.DB, updated, env.CLUB_TIMEZONE);
   const dateLabel = formatShortDate(updated.dinner_date);
   const dayDateLabel = `${updated.day_of_week}, ${dateLabel}`;
@@ -1131,7 +1195,20 @@ export async function cancelNight(
   await ensureNextScheduledDinner(env.DB);
 
   const updated = (await env.DB.prepare('SELECT * FROM dinners WHERE id = ?').bind(dinnerId).first<DinnerRow>())!;
-  const cal = await syncCancelledNightToCalendar(env, updated, actor.name, cleanReason);
+  const cal = await syncCalendarAndPersistEventId(env, updated, null, {
+    cancelledByName: actor.name,
+    cancelReason: cleanReason,
+    createIfMissing: false,
+  });
+
+  for (const future of futureDinners) {
+    const refreshed = await env.DB.prepare('SELECT * FROM dinners WHERE id = ?').bind(future.id).first<DinnerRow>();
+    if (!refreshed) continue;
+    const futurePlace = refreshed.restaurant_id
+      ? await env.DB.prepare('SELECT * FROM restaurants WHERE id = ?').bind(refreshed.restaurant_id).first<RestaurantRow>()
+      : null;
+    await syncCalendarAndPersistEventId(env, refreshed, futurePlace, { createIfMissing: false });
+  }
 
   const dateLabel = formatShortDate(updated.dinner_date);
   const dayDateLabel = `${updated.day_of_week}, ${dateLabel}`;
@@ -1217,16 +1294,21 @@ export async function restoreNight(
 
   const updated = (await env.DB.prepare('SELECT * FROM dinners WHERE id = ?').bind(dinnerId).first<DinnerRow>())!;
 
-  let cal: { synced: boolean; reason?: string };
-  if (updated.restaurant_id && updated.status === 'place_locked') {
-    const place = await env.DB.prepare('SELECT * FROM restaurants WHERE id = ?')
-      .bind(updated.restaurant_id)
-      .first<RestaurantRow>();
-    cal = place
-      ? await syncLockedPlaceToCalendar(env, updated, place, `Restored by ${actor.name}.`)
-      : await restoreCalendarForNight(env, updated);
-  } else {
-    cal = await restoreCalendarForNight(env, updated);
+  const restoredPlace = updated.restaurant_id
+    ? await env.DB.prepare('SELECT * FROM restaurants WHERE id = ?').bind(updated.restaurant_id).first<RestaurantRow>()
+    : null;
+  const cal = await syncCalendarAndPersistEventId(env, updated, restoredPlace, {
+    note: restoredPlace ? `Restored by ${actor.name}.` : undefined,
+    createIfMissing: Boolean(restoredPlace),
+  });
+
+  for (const future of futureDinners) {
+    const refreshed = await env.DB.prepare('SELECT * FROM dinners WHERE id = ?').bind(future.id).first<DinnerRow>();
+    if (!refreshed) continue;
+    const futurePlace = refreshed.restaurant_id
+      ? await env.DB.prepare('SELECT * FROM restaurants WHERE id = ?').bind(refreshed.restaurant_id).first<RestaurantRow>()
+      : null;
+    await syncCalendarAndPersistEventId(env, refreshed, futurePlace, { createIfMissing: false });
   }
 
   const dateLabel = formatShortDate(updated.dinner_date);
@@ -1305,11 +1387,12 @@ export async function updateDinnerStartTime(
     .run();
 
   const updated = (await env.DB.prepare('SELECT * FROM dinners WHERE id = ?').bind(dinnerId).first<DinnerRow>())!;
-  const cal = await syncStartTimeToCalendar(env, updated);
-  if (cal.eventId && !updated.gcal_event_id) {
-    await env.DB.prepare('UPDATE dinners SET gcal_event_id = ? WHERE id = ?').bind(cal.eventId, dinnerId).run();
-    updated.gcal_event_id = cal.eventId;
-  }
+  const place = updated.restaurant_id
+    ? await env.DB.prepare('SELECT * FROM restaurants WHERE id = ?').bind(updated.restaurant_id).first<RestaurantRow>()
+    : null;
+  const cal = await syncCalendarAndPersistEventId(env, updated, place, {
+    createIfMissing: Boolean(place) || updated.status !== 'scheduled',
+  });
 
   const dateLabel = formatShortDate(updated.dinner_date);
   const dayDateLabel = `${updated.day_of_week}, ${dateLabel}`;
@@ -1735,6 +1818,7 @@ export async function applyRotationOverride(
   action: 'pass' | 'swap',
   targetSlug: string | null,
   actorSlug: string,
+  env?: Env,
 ): Promise<DinnerRow> {
   const dinner = await db.prepare('SELECT * FROM dinners WHERE id = ?').bind(dinnerId).first<DinnerRow>();
   if (!dinner) throw new Error('Dinner not found');
@@ -1751,6 +1835,7 @@ export async function applyRotationOverride(
     toUser = rotUsers[(idx >= 0 ? idx + 1 : 0) % rotUsers.length];
   }
 
+  let swappedFutureId: number | null = null;
   if (action === 'swap') {
     const futureTarget = await db
       .prepare(
@@ -1763,17 +1848,12 @@ export async function applyRotationOverride(
 
     if (futureTarget) {
       const fromUser = rotUsers.find((u) => u.slug === fromSlug);
-      await db
-        .prepare("UPDATE dinners SET host_slug = ?, host_label = ?, updated_at = datetime('now') WHERE id = ?")
-        .bind(fromSlug, fromUser?.name ?? dinner.host_label, futureTarget.id)
-        .run();
+      await updateDinnerHost(db, futureTarget, fromSlug, fromUser?.name ?? dinner.host_label);
+      swappedFutureId = futureTarget.id;
     }
   }
 
-  await db
-    .prepare("UPDATE dinners SET host_slug = ?, host_label = ?, updated_at = datetime('now') WHERE id = ?")
-    .bind(toUser.slug, toUser.name, dinner.id)
-    .run();
+  await updateDinnerHost(db, dinner, toUser.slug, toUser.name);
 
   await db
     .prepare(
@@ -1782,7 +1862,20 @@ export async function applyRotationOverride(
     .bind(dinner.id, action, fromSlug, toUser.slug, actorSlug)
     .run();
 
-  return (await db.prepare('SELECT * FROM dinners WHERE id = ?').bind(dinner.id).first<DinnerRow>())!;
+  const updated = (await db.prepare('SELECT * FROM dinners WHERE id = ?').bind(dinner.id).first<DinnerRow>())!;
+
+  if (env) {
+    for (const idToSync of swappedFutureId ? [dinner.id, swappedFutureId] : [dinner.id]) {
+      const row = idToSync === dinner.id ? updated : await db.prepare('SELECT * FROM dinners WHERE id = ?').bind(idToSync).first<DinnerRow>();
+      if (!row) continue;
+      const place = row.restaurant_id
+        ? await db.prepare('SELECT * FROM restaurants WHERE id = ?').bind(row.restaurant_id).first<RestaurantRow>()
+        : null;
+      await syncCalendarAndPersistEventId(env, row, place, { createIfMissing: false });
+    }
+  }
+
+  return updated;
 }
 
 export async function createRestaurant(

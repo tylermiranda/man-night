@@ -1,3 +1,4 @@
+import { generateKeyPairSync } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -1866,22 +1867,16 @@ describe('Man Night PWA Worker & Seed', () => {
     // 1. Changelog integrity
     const seenIds = new Set<string>();
     expect(WHATS_NEW_RELEASES.length).toBeGreaterThanOrEqual(16);
-    expect(WHATS_NEW_RELEASES[0].id).toBe('2026-11-18-night-comments');
-    expect(WHATS_NEW_RELEASES[0].issueNumber).toBe(23);
-    expect(WHATS_NEW_RELEASES[1].id).toBe('2026-11-18-extra-guest-names');
-    expect(WHATS_NEW_RELEASES[1].issueNumber).toBe(22);
-    expect(WHATS_NEW_RELEASES[2].id).toBe('2026-11-18-change-time');
-    expect(WHATS_NEW_RELEASES[2].issueNumber).toBe(21);
-    expect(WHATS_NEW_RELEASES[3].id).toBe('2026-11-18-cancel-night');
-    expect(WHATS_NEW_RELEASES[3].issueNumber).toBe(20);
-    expect(WHATS_NEW_RELEASES[4].id).toBe('2026-11-17-both-night-voting');
-    expect(WHATS_NEW_RELEASES[5].id).toBe('2026-11-16-top-places-poplar-fix');
-    expect(WHATS_NEW_RELEASES[6].id).toBe('2026-11-15-future-pick-notifications');
-    expect(WHATS_NEW_RELEASES[6].issueNumber).toBe(18);
-    expect(WHATS_NEW_RELEASES[7].id).toBe('2026-11-15-appetizers');
-    expect(WHATS_NEW_RELEASES[7].issueNumber).toBe(17);
-    expect(WHATS_NEW_RELEASES[8].id).toBe('2026-11-15-beer-cellar');
-    expect(WHATS_NEW_RELEASES[8].issueNumber).toBe(15);
+    expect(WHATS_NEW_RELEASES[0].id).toBe('2026-11-18-gcal-sync-fixes');
+    expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-18-night-comments' && e.issueNumber === 23)).toBe(true);
+    expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-18-extra-guest-names' && e.issueNumber === 22)).toBe(true);
+    expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-18-change-time' && e.issueNumber === 21)).toBe(true);
+    expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-18-cancel-night' && e.issueNumber === 20)).toBe(true);
+    expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-17-both-night-voting')).toBe(true);
+    expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-16-top-places-poplar-fix')).toBe(true);
+    expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-15-future-pick-notifications' && e.issueNumber === 18)).toBe(true);
+    expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-15-appetizers' && e.issueNumber === 17)).toBe(true);
+    expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-15-beer-cellar' && e.issueNumber === 15)).toBe(true);
     expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-15-issue-feature-form' && e.issueNumber === 16)).toBe(true);
     expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-15-favorite-places' && e.issueNumber === 14)).toBe(true);
     expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-15-meal-prices' && e.issueNumber === 13)).toBe(true);
@@ -1967,14 +1962,16 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(bootInit.whatsNew.seenId).toBeNull();
     expect(bootInit.whatsNew.hasUnseen).toBe(true);
     expect(bootInit.whatsNew.unseenCount).toBe(WHATS_NEW_RELEASES.length);
-    expect(bootInit.whatsNew.entries[0].creditLabel).toBe('Idea by Tyler');
-    expect(bootInit.whatsNew.entries[1].creditLabel).toBe('Idea by Tyler');
-    expect(bootInit.whatsNew.entries[2].creditLabel).toBe('Idea by Tyler');
-    expect(bootInit.whatsNew.entries[3].creditLabel).toBe('Idea by Tyler');
-    expect(bootInit.whatsNew.entries[4].creditLabel).toBe('Idea by Tyler');
-    expect(bootInit.whatsNew.entries[5].creditLabel).toBe('Bug report by Tyler');
-    expect(bootInit.whatsNew.entries[6].creditLabel).toBe('Bug report by Tyler');
-    expect(bootInit.whatsNew.entries[7].creditLabel).toBe('Idea by Jacob');
+    const creditById = new Map(bootInit.whatsNew.entries.map((e) => [e.id, e.creditLabel]));
+    expect(creditById.get('2026-11-18-gcal-sync-fixes')).toBe('Bug report by Tyler');
+    expect(creditById.get('2026-11-18-night-comments')).toBe('Idea by Tyler');
+    expect(creditById.get('2026-11-18-extra-guest-names')).toBe('Idea by Tyler');
+    expect(creditById.get('2026-11-18-change-time')).toBe('Idea by Tyler');
+    expect(creditById.get('2026-11-18-cancel-night')).toBe('Idea by Tyler');
+    expect(creditById.get('2026-11-17-both-night-voting')).toBe('Idea by Tyler');
+    expect(creditById.get('2026-11-16-top-places-poplar-fix')).toBe('Bug report by Tyler');
+    expect(creditById.get('2026-11-15-future-pick-notifications')).toBe('Bug report by Tyler');
+    expect(creditById.get('2026-11-15-appetizers')).toBe('Idea by Jacob');
 
     const getRes = await worker.fetch(makeReq('/api/whats-new'), env);
     expect(getRes.status).toBe(200);
@@ -3528,6 +3525,159 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(appJs).toContain('delete-comment');
     expect(appJs).toContain('insert-mention');
     const swJs = readFileSync(resolve(rootDir, 'public/sw.js'), 'utf8');
-    expect(swJs).toContain("man-night-shell-v23");
+    expect(swJs).toMatch(/const CACHE_NAME = 'man-night-shell-v\d+'/);
+  });
+
+  it('patches existing recurring Google Calendar events across Tue/Wed shifts, host changes, and advance picks', async () => {
+    const { privateKey } = generateKeyPairSync('rsa', {
+      modulusLength: 2048,
+      privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+      publicKeyEncoding: { type: 'spki', format: 'pem' },
+    });
+
+    const gcalEnv: Env = {
+      ...env,
+      GCAL_SERVICE_ACCOUNT_EMAIL: 'man-night-cal@questly-b4e95.iam.gserviceaccount.com',
+      GCAL_PRIVATE_KEY: privateKey,
+    };
+
+    const gcalEvents: Record<
+      string,
+      { id: string; summary: string; location?: string; description?: string; start: { dateTime: string; timeZone?: string }; end: { dateTime: string; timeZone?: string } }
+    > = {
+      'rec_20261118T003000Z': {
+        id: 'rec_20261118T003000Z',
+        summary: "Man Night @ Eric's",
+        start: { dateTime: '2026-11-17T18:30:00-06:00', timeZone: 'America/Chicago' },
+        end: { dateTime: '2026-11-17T22:00:00-06:00', timeZone: 'America/Chicago' },
+      },
+      'rec_20261125T003000Z': {
+        id: 'rec_20261125T003000Z',
+        summary: "Man Night @ Tyler’s",
+        start: { dateTime: '2026-11-24T18:30:00-06:00', timeZone: 'America/Chicago' },
+        end: { dateTime: '2026-11-24T22:00:00-06:00', timeZone: 'America/Chicago' },
+      },
+    };
+    let createdCount = 0;
+
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : input instanceof Request ? input.url : String(input);
+      const method = (init?.method || 'GET').toUpperCase();
+
+      if (url === 'https://oauth2.googleapis.com/token') {
+        return new Response(JSON.stringify({ access_token: 'mock-gcal-token', expires_in: 3600 }), { status: 200 });
+      }
+
+      if (url.startsWith('https://www.googleapis.com/calendar/v3/calendars/')) {
+        const parsed = new URL(url);
+        const parts = parsed.pathname.split('/');
+        const last = parts[parts.length - 1];
+
+        if (last === 'events' && method === 'GET') {
+          const tMin = Date.parse(parsed.searchParams.get('timeMin') || '');
+          const tMax = Date.parse(parsed.searchParams.get('timeMax') || '');
+          const items = Object.values(gcalEvents).filter((ev) => {
+            const t = Date.parse(ev.start.dateTime.includes('Z') || /[+-]\d{2}:\d{2}$/.test(ev.start.dateTime) ? ev.start.dateTime : `${ev.start.dateTime}-06:00`);
+            return t >= tMin && t <= tMax;
+          });
+          return new Response(JSON.stringify({ items }), { status: 200 });
+        }
+
+        if (last === 'events' && method === 'POST') {
+          createdCount += 1;
+          const body = JSON.parse(String(init?.body || '{}'));
+          const id = `created_${createdCount}`;
+          gcalEvents[id] = { id, ...body };
+          return new Response(JSON.stringify(gcalEvents[id]), { status: 200 });
+        }
+
+        const eventId = decodeURIComponent(last);
+        if (method === 'GET') {
+          const ev = gcalEvents[eventId];
+          return ev ? new Response(JSON.stringify(ev), { status: 200 }) : new Response('Not Found', { status: 404 });
+        }
+
+        if (method === 'PATCH') {
+          const ev = gcalEvents[eventId];
+          if (!ev) return new Response('Not Found', { status: 404 });
+          const patch = JSON.parse(String(init?.body || '{}'));
+          gcalEvents[eventId] = { ...ev, ...patch };
+          return new Response(JSON.stringify(gcalEvents[eventId]), { status: 200 });
+        }
+      }
+
+      return new Response('Unhandled URL', { status: 404 });
+    });
+
+    // 1. Vote Wednesday on 2026-W47 (originally Tuesday 2026-11-17 @ Eric's), then lock night
+    await worker.fetch(makeReq('/api/week/vote-night', 'POST', { choice: 'wednesday' }), gcalEnv);
+    const locked = await lockNight(gcalEnv, (await gcalEnv.DB.prepare("SELECT id FROM dinners WHERE week_key = '2026-W47'").first<{ id: number }>())!.id);
+    expect(locked?.dinner_date).toBe('2026-11-18');
+    expect(locked?.gcal_event_id).toBe('rec_20261118T003000Z');
+    // Existing Tuesday recurring instance was moved to Wednesday in-place (not duplicated)
+    expect(createdCount).toBe(0);
+    expect(gcalEvents['rec_20261118T003000Z'].start.dateTime).toBe('2026-11-18T18:30:00');
+
+    // 2. Host swap/pass to Tyler, pick Poplar, and change start time to 18:00
+    const rotRes = await worker.fetch(
+      makeReq('/api/week/rotation', 'POST', { dinnerId: locked!.id, action: 'pass', targetSlug: 'tyler' }),
+      gcalEnv,
+    );
+    expect(rotRes.status).toBe(200);
+    expect(gcalEvents['rec_20261118T003000Z'].summary).toBe("Man Night @ Tyler's");
+
+    const poplar = await gcalEnv.DB.prepare("SELECT id FROM restaurants WHERE slug = 'poplar'").first<{ id: number }>();
+    const pickRes = await worker.fetch(
+      makeReq('/api/week/pick-place', 'POST', { dinnerId: locked!.id, restaurantId: poplar!.id }),
+      gcalEnv,
+    );
+    expect(pickRes.status).toBe(200);
+    expect(gcalEvents['rec_20261118T003000Z'].summary).toBe("Man Night @ Tyler's. Dinner @ Poplar");
+    expect(gcalEvents['rec_20261118T003000Z'].location).toContain('Poplar');
+
+    const timeRes = await worker.fetch(
+      makeReq('/api/week/time', 'POST', { dinnerId: locked!.id, startTime: '18:00' }),
+      gcalEnv,
+    );
+    expect(timeRes.status).toBe(200);
+    expect(gcalEvents['rec_20261118T003000Z'].start.dateTime).toBe('2026-11-18T18:00:00');
+    expect(gcalEvents['rec_20261118T003000Z'].end.dateTime).toBe('2026-11-18T20:00:00');
+    expect(createdCount).toBe(0);
+
+    // 3. Advance pick on next week's scheduled dinner (2026-11-24) immediately updates Google Calendar too
+    const nextDinner = await gcalEnv.DB.prepare("SELECT id FROM dinners WHERE week_key = '2026-W48'").first<{ id: number }>();
+    const wbc = await gcalEnv.DB.prepare("SELECT id FROM restaurants WHERE name LIKE '%Wichita Brewing%' LIMIT 1").first<{ id: number }>();
+    expect(nextDinner).toBeTruthy();
+    expect(wbc).toBeTruthy();
+    const advRes = await worker.fetch(
+      makeReq('/api/week/pick-place', 'POST', {
+        dinnerId: nextDinner!.id,
+        restaurantId: wbc!.id,
+        keepNightVote: true,
+      }),
+      gcalEnv,
+    );
+    expect(advRes.status).toBe(200);
+    const advData = (await advRes.json()) as { calendar: { synced: boolean }; dinner: { status: string; gcal_event_id: string | null } };
+    expect(advData.dinner.status).toBe('scheduled');
+    expect(advData.calendar.synced).toBe(true);
+    expect(advData.dinner.gcal_event_id).toBe('rec_20261125T003000Z');
+    expect(gcalEvents['rec_20261125T003000Z'].summary).toContain("Man Night @ Tyler's. Dinner @ Wichita Brewing");
+
+    // 4. POST /admin/sync-calendar is gated to admin and reconciles current & upcoming dinners
+    const nonAdminSync = await worker.fetch(
+      makeReq('/admin/sync-calendar', 'POST', undefined, { 'Cf-Access-Authenticated-User-Email': 'storme2@gmail.com' }),
+      gcalEnv,
+    );
+    expect(nonAdminSync.status).toBe(403);
+
+    const adminSync = await worker.fetch(makeReq('/admin/sync-calendar', 'POST'), gcalEnv);
+    expect(adminSync.status).toBe(200);
+    const syncData = (await adminSync.json()) as { ok: boolean; results: Array<{ weekKey: string; synced: boolean }> };
+    expect(syncData.ok).toBe(true);
+    expect(syncData.results.find((r) => r.weekKey === '2026-W47')?.synced).toBe(true);
+    expect(syncData.results.find((r) => r.weekKey === '2026-W48')?.synced).toBe(true);
+
+    fetchSpy.mockRestore();
   });
 });

@@ -38,6 +38,7 @@ import {
   safeRestaurantSelectSql,
   setDinnerMealPrice,
   submitRating,
+  syncCurrentAndUpcomingCalendar,
   updateBeer,
   updateDinnerStartTime,
   uploadMealPhoto,
@@ -664,6 +665,16 @@ async function handleAdminRequest(request: Request, env: Env, user: { email: str
   const path = url.pathname;
   const method = request.method.toUpperCase();
 
+  // POST /admin/sync-calendar -> sync current and upcoming non-completed dinners to Google Calendar
+  if (path === '/admin/sync-calendar' && method === 'POST') {
+    try {
+      const results = await syncCurrentAndUpcomingCalendar(env);
+      return json({ ok: true, results });
+    } catch (err) {
+      return json({ ok: false, error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  }
+
   // POST /admin/clear -> clear all logs (admin only)
   if (path === '/admin/clear' && method === 'POST') {
     try {
@@ -1280,7 +1291,7 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
         ? await env.DB.prepare('SELECT id FROM dinners WHERE id = ?').bind(body.dinnerId).first<{ id: number }>()
         : await getActiveDinner(env.DB);
       if (!dinner) return json({ error: 'No active dinner found' }, 404);
-      const updated = await applyRotationOverride(env.DB, dinner.id, body.action, body.targetSlug ?? null, user.slug);
+      const updated = await applyRotationOverride(env.DB, dinner.id, body.action, body.targetSlug ?? null, user.slug, env);
       return json({ ok: true, dinner: updated });
     }
 

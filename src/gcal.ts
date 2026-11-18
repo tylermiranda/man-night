@@ -79,10 +79,27 @@ export function formatCalendarSummary(hostLabel: string, placeName: string): str
   return `Man Night @ ${possessive}. Dinner @ ${placeName}`;
 }
 
-function addTwoHours(timeHHMM: string): string {
-  const [h, m] = timeHHMM.split(':').map((n) => parseInt(n, 10));
-  const endH = ((Number.isFinite(h) ? h : 18) + 2) % 24;
-  return `${String(endH).padStart(2, '0')}:${String(Number.isFinite(m) ? m : 30).padStart(2, '0')}:00`;
+function addDaysIso(isoDate: string, days: number): string {
+  const [y, m, d] = isoDate.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d + days));
+  return dt.toISOString().slice(0, 10);
+}
+
+function computeEventWindow(dinnerDate: string, startTime: string): { startDT: string; endDT: string } {
+  const raw = startTime || '18:30';
+  const [rawH, rawM] = raw.split(':').map((n) => parseInt(n, 10));
+  const h = Number.isFinite(rawH) && rawH >= 0 && rawH <= 23 ? rawH : 18;
+  const m = Number.isFinite(rawM) && rawM >= 0 && rawM <= 59 ? rawM : 30;
+  const totalEndMin = h * 60 + m + 120;
+  const dayOffset = Math.floor(totalEndMin / 1440);
+  const endMin = totalEndMin % 1440;
+  const endH = Math.floor(endMin / 60);
+  const endM = endMin % 60;
+  const endDate = dayOffset > 0 ? addDaysIso(dinnerDate, dayOffset) : dinnerDate;
+  return {
+    startDT: `${dinnerDate}T${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:00`,
+    endDT: `${endDate}T${String(endH).padStart(2, '0')}:${String(endM).padStart(2, '0')}:00`,
+  };
 }
 
 async function findCalendarEventForDinner(
@@ -138,8 +155,7 @@ export async function syncLockedPlaceToCalendar(
     }
 
     const tz = env.CLUB_TIMEZONE || 'America/Chicago';
-    const startDT = `${dinner.dinner_date}T${dinner.start_time || '18:30'}:00`;
-    const endDT = `${dinner.dinner_date}T${addTwoHours(dinner.start_time || '18:30')}`;
+    const { startDT, endDT } = computeEventWindow(dinner.dinner_date, dinner.start_time || '18:30');
 
     if (found.event) {
       const patchResp = await fetch(
@@ -147,7 +163,13 @@ export async function syncLockedPlaceToCalendar(
         {
           method: 'PATCH',
           headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ summary, location, description }),
+          body: JSON.stringify({
+            summary,
+            location,
+            description,
+            start: { dateTime: startDT, timeZone: tz },
+            end: { dateTime: endDT, timeZone: tz },
+          }),
         },
       );
       if (!patchResp.ok) return { synced: false, reason: `calendar_patch_${patchResp.status}` };
@@ -237,6 +259,43 @@ export async function restoreCalendarForNight(
         method: 'PATCH',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ summary: cleanSummary, description }),
+      },
+    );
+    if (!patchResp.ok) return { synced: false, reason: `calendar_patch_${patchResp.status}` };
+    return { synced: true, eventId: found.event.id };
+  } catch (err) {
+    return { synced: false, reason: err instanceof Error ? err.message : 'calendar_error' };
+  }
+}
+
+export async function syncStartTimeToCalendar(
+  env: Env,
+  dinner: DinnerRow,
+): Promise<{ synced: boolean; eventId?: string; reason?: string }> {
+  const token = await getGoogleCalendarToken(env);
+  if (!token) {
+    return { synced: false, reason: 'service_account_unconfigured' };
+  }
+  const calendarId = encodeURIComponent(env.GCAL_CALENDAR_ID);
+  try {
+    const found = await findCalendarEventForDinner(env, token, dinner);
+    if (found.errorReason) {
+      return { synced: false, reason: found.errorReason };
+    }
+    if (!found.event) {
+      return { synced: false, reason: 'no_matching_event' };
+    }
+    const tz = env.CLUB_TIMEZONE || 'America/Chicago';
+    const { startDT, endDT } = computeEventWindow(dinner.dinner_date, dinner.start_time || '18:30');
+    const patchResp = await fetch(
+      `https://www.googleapis.com/calendar/v3/calendars/${calendarId}/events/${encodeURIComponent(found.event.id)}`,
+      {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          start: { dateTime: startDT, timeZone: tz },
+          end: { dateTime: endDT, timeZone: tz },
+        }),
       },
     );
     if (!patchResp.ok) return { synced: false, reason: `calendar_patch_${patchResp.status}` };

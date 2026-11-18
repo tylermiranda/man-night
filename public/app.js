@@ -133,6 +133,17 @@ function fmtShortDate(iso) {
   return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
 }
 
+function fmtTime(hhmm) {
+  const raw = String(hhmm || '18:30').trim();
+  const match = /^(\d{1,2}):(\d{2})$/.exec(raw);
+  if (!match) return raw || '6:30 PM';
+  const h = Number(match[1]);
+  const m = Number(match[2]);
+  const period = h >= 12 ? 'PM' : 'AM';
+  const hour12 = h % 12 === 0 ? 12 : h % 12;
+  return `${hour12}:${String(m).padStart(2, '0')} ${period}`;
+}
+
 function monthLabel(iso) {
   const [y, m, d] = iso.split('-').map(Number);
   const dt = new Date(Date.UTC(y, m - 1, d));
@@ -876,8 +887,8 @@ function renderWeekView() {
       <h1 class="hero-title">Tuesday or Wednesday?</h1>
       <p class="hero-sub">${
         d.status === 'scheduled'
-          ? 'Early voting open · Official poll Sunday 10:00 AM · Locks Monday 12:00 PM · Tuesday wins ties'
-          : 'Locks Monday at 12:00 PM · Tuesday wins ties · 6:30 PM'
+          ? `Early voting open · Official poll Sunday 10:00 AM · Locks Monday 12:00 PM · Tuesday wins ties · ${fmtTime(d.start_time)}`
+          : `Locks Monday at 12:00 PM · Tuesday wins ties · ${fmtTime(d.start_time)}`
       }</p>
       <div class="vote-list">
         <button class="vote-option ${myNight === 'tuesday' ? 'selected' : ''}" data-action="vote-night" data-choice="tuesday">
@@ -940,6 +951,7 @@ function renderWeekView() {
             <a class="btn btn-primary" href="${esc(tw.directions_url)}" target="_blank" rel="noopener">Directions in Google Maps</a>
             <button class="btn btn-outline" data-action="open-picker" data-dinner-id="${d.id}" data-day="${esc(d.day_of_week)}" data-host="${esc(d.host_label)}" data-date="${esc(d.dinner_date)}" data-night-open="1">Change place</button>
             <button class="btn btn-secondary" data-action="open-poll-builder" data-dinner-id="${d.id}">Switch to poll</button>
+            <button class="btn btn-secondary" data-action="open-change-time" data-dinner-id="${d.id}">Change time</button>
             <button class="btn btn-secondary" data-action="open-cancel-night" data-dinner-id="${d.id}">Cancel night</button>
           </div>
         </section>
@@ -958,6 +970,7 @@ function renderWeekView() {
             <button class="btn btn-primary btn-sm" data-action="close-place-poll" data-dinner-id="${d.id}">Lock winning place</button>
             <button class="btn btn-outline btn-sm" data-action="open-poll-builder" data-dinner-id="${d.id}">Edit poll</button>
             <button class="btn btn-secondary btn-sm" data-action="open-picker" data-dinner-id="${d.id}" data-day="${esc(d.day_of_week)}" data-host="${esc(d.host_label)}" data-date="${esc(d.dinner_date)}" data-night-open="1">Pick 1 spot instead</button>
+            <button class="btn btn-secondary btn-sm" data-action="open-change-time" data-dinner-id="${d.id}">Change time</button>
             <button class="btn btn-secondary btn-sm" data-action="open-cancel-night" data-dinner-id="${d.id}">Cancel night</button>
           </div>
         </section>
@@ -981,6 +994,7 @@ function renderWeekView() {
             <button class="btn btn-lucky" data-action="open-lucky" data-dinner-id="${d.id}" data-day="${esc(d.day_of_week)}" data-host="${esc(d.host_label)}" data-date="${esc(d.dinner_date)}" data-night-open="1">🎲 I’m Feeling Lucky</button>
             <button class="btn btn-outline" data-action="open-poll-builder" data-dinner-id="${d.id}">Create place poll</button>
             <button class="btn btn-secondary" data-action="open-pass-swap">Pass / Swap turn</button>
+            <button class="btn btn-secondary" data-action="open-change-time" data-dinner-id="${d.id}">Change time</button>
             <button class="btn btn-secondary" data-action="open-cancel-night" data-dinner-id="${d.id}">Cancel night</button>
           </div>
         </section>
@@ -989,7 +1003,7 @@ function renderWeekView() {
   } else if (d.status === 'awaiting_pick') {
     bodyHtml = `
       <h1 class="hero-title">Waiting on ${esc(d.host_label)}</h1>
-      <p class="hero-sub">${esc(d.day_of_week)} · ${fmtDate(d.dinner_date)} · 6:30 PM. If nothing is picked by 12:00 PM on ${esc(d.day_of_week)}, the app draws 4 random places (skipping last 8 weeks).</p>
+      <p class="hero-sub">${esc(d.day_of_week)} · ${fmtDate(d.dinner_date)} · ${fmtTime(d.start_time)}. If nothing is picked by 12:00 PM on ${esc(d.day_of_week)}, the app draws 4 random places (skipping last 8 weeks).</p>
       <div class="host-strip">
         ${avatarHtml(d.host_slug, d.host_label, 'lg')}
         <div class="host-strip-text">
@@ -1002,6 +1016,7 @@ function renderWeekView() {
         <button class="btn btn-lucky" data-action="open-lucky" data-dinner-id="${d.id}" data-day="${esc(d.day_of_week)}" data-host="${esc(d.host_label)}" data-date="${esc(d.dinner_date)}">🎲 I’m Feeling Lucky</button>
         <button class="btn btn-outline" data-action="open-poll-builder" data-dinner-id="${d.id}">Create place poll</button>
         <button class="btn btn-secondary" data-action="open-pass-swap">Pass / Swap turn</button>
+        <button class="btn btn-secondary" data-action="open-change-time" data-dinner-id="${d.id}">Change time</button>
         <button class="btn btn-secondary" data-action="open-cancel-night" data-dinner-id="${d.id}">Cancel night</button>
       </div>
       ${renderNightVoteReasons(tw.nightVotes, 'Night vote notes')}
@@ -1012,14 +1027,15 @@ function renderWeekView() {
       <h1 class="hero-title">${isHostPoll ? `${esc(d.host_label)}’s place poll — vote for one` : `${esc(d.host_label)} didn’t pick. Vote for one.`}</h1>
       <p class="hero-sub">${
         isHostPoll
-          ? `For ${esc(d.day_of_week)} · ${fmtDate(d.dinner_date)} · 6:30 PM. Host can lock the winner anytime.`
-          : '4 random spots from history (none visited in last 8 weeks). Closes 4:00 PM; ties break at random.'
+          ? `For ${esc(d.day_of_week)} · ${fmtDate(d.dinner_date)} · ${fmtTime(d.start_time)}. Host can lock the winner anytime.`
+          : `For ${esc(d.day_of_week)} · ${fmtDate(d.dinner_date)} · ${fmtTime(d.start_time)}. 4 random spots from history (none visited in last 8 weeks). Closes 4:00 PM; ties break at random.`
       }</p>
       <div class="vote-list">${renderPlacePollOptions(tw)}</div>
       <div class="btn-row" style="margin-top:12px;">
         <button class="btn btn-primary btn-sm" data-action="close-place-poll" data-dinner-id="${d.id}">Lock winning place</button>
         <button class="btn btn-outline btn-sm" data-action="open-poll-builder" data-dinner-id="${d.id}">Edit poll</button>
         <button class="btn btn-secondary btn-sm" data-action="open-picker" data-dinner-id="${d.id}" data-day="${esc(d.day_of_week)}" data-host="${esc(d.host_label)}" data-date="${esc(d.dinner_date)}">Pick 1 place directly</button>
+        <button class="btn btn-secondary btn-sm" data-action="open-change-time" data-dinner-id="${d.id}">Change time</button>
         <button class="btn btn-secondary btn-sm" data-action="open-cancel-night" data-dinner-id="${d.id}">Cancel night</button>
       </div>
       ${renderNightVoteReasons(tw.nightVotes, 'Night vote notes')}
@@ -1034,13 +1050,14 @@ function renderWeekView() {
           : esc(d.host_label);
     bodyHtml = `
       <h1 class="hero-title">${esc(p.name)}</h1>
-      <p class="hero-sub">${esc(d.day_of_week)} · ${fmtDate(d.dinner_date)} · 6:30 PM · Picked via ${sourceLabel}${p.visit_count ? ` · ${p.visit_count} prior visits` : ''}${p.avg_rating != null ? ` · ★ ${Number(p.avg_rating).toFixed(1)}` : ''}</p>
+      <p class="hero-sub">${esc(d.day_of_week)} · ${fmtDate(d.dinner_date)} · ${fmtTime(d.start_time)} · Picked via ${sourceLabel}${p.visit_count ? ` · ${p.visit_count} prior visits` : ''}${p.avg_rating != null ? ` · ★ ${Number(p.avg_rating).toFixed(1)}` : ''}</p>
       <div style="font-size:13px;color:var(--muted);">${esc(p.address || p.city)}</div>
       <div id="tonight-map" class="minimap"></div>
       <div class="btn-row">
         <a class="btn btn-primary" href="${esc(tw.directions_url)}" target="_blank" rel="noopener">Directions in Google Maps</a>
         <button class="btn btn-outline" data-action="open-picker" data-dinner-id="${d.id}" data-day="${esc(d.day_of_week)}" data-host="${esc(d.host_label)}" data-date="${esc(d.dinner_date)}">Change place</button>
         <button class="btn btn-secondary" data-action="open-poll-builder" data-dinner-id="${d.id}">Switch to poll</button>
+        <button class="btn btn-secondary" data-action="open-change-time" data-dinner-id="${d.id}">Change time</button>
         <button class="btn btn-secondary" data-action="open-cancel-night" data-dinner-id="${d.id}">Cancel night</button>
       </div>
       ${renderNightVoteReasons(tw.nightVotes, 'Night vote notes')}
@@ -1260,6 +1277,7 @@ function renderWeekView() {
           ${badge}
           <button class="link-btn" style="font-size:12px;" data-action="open-picker" data-dinner-id="${u.id}" data-day="${esc(u.day_of_week)}" data-host="${esc(u.host_label)}" data-date="${esc(u.dinner_date)}" data-night-open="${nightFlag}">Change</button>
           <button class="link-btn" style="font-size:12px;" data-action="open-poll-builder" data-dinner-id="${u.id}">Poll</button>
+          <button class="link-btn" style="font-size:12px;" data-action="open-change-time" data-dinner-id="${u.id}">Time</button>
           <button class="link-btn" style="font-size:12px;color:var(--muted);" data-action="open-cancel-night" data-dinner-id="${u.id}">Cancel</button>
         `;
       } else if (pollIds.length >= 2) {
@@ -1267,6 +1285,7 @@ function renderWeekView() {
           <span class="badge badge-red">🗳 Poll (${pollIds.length} spots)</span>
           <button class="link-btn" style="font-size:12px;" data-action="open-poll-builder" data-dinner-id="${u.id}">Edit poll</button>
           <button class="link-btn" style="font-size:12px;" data-action="open-picker" data-dinner-id="${u.id}" data-day="${esc(u.day_of_week)}" data-host="${esc(u.host_label)}" data-date="${esc(u.dinner_date)}" data-night-open="${nightFlag}">Pick</button>
+          <button class="link-btn" style="font-size:12px;" data-action="open-change-time" data-dinner-id="${u.id}">Time</button>
           <button class="link-btn" style="font-size:12px;color:var(--muted);" data-action="open-cancel-night" data-dinner-id="${u.id}">Cancel</button>
         `;
       } else {
@@ -1274,6 +1293,7 @@ function renderWeekView() {
           <button class="btn btn-outline btn-sm" style="min-height:28px;padding:3px 10px;font-size:12px;" data-action="open-picker" data-dinner-id="${u.id}" data-day="${esc(u.day_of_week)}" data-host="${esc(u.host_label)}" data-date="${esc(u.dinner_date)}" data-night-open="${nightFlag}">Pick in advance</button>
           <button class="btn btn-lucky btn-sm" style="min-height:28px;padding:3px 10px;font-size:12px;" data-action="open-lucky" data-dinner-id="${u.id}" data-day="${esc(u.day_of_week)}" data-host="${esc(u.host_label)}" data-date="${esc(u.dinner_date)}" data-night-open="${nightFlag}">🎲 Lucky</button>
           <button class="btn btn-secondary btn-sm" style="min-height:28px;padding:3px 10px;font-size:12px;" data-action="open-poll-builder" data-dinner-id="${u.id}">Poll</button>
+          <button class="link-btn" style="font-size:12px;" data-action="open-change-time" data-dinner-id="${u.id}">Time</button>
           <button class="link-btn" style="font-size:12px;color:var(--muted);" data-action="open-cancel-night" data-dinner-id="${u.id}">Cancel</button>
         `;
       }
@@ -1283,7 +1303,7 @@ function renderWeekView() {
             ${avatarHtml(u.host_slug, u.host_label)}
             <div>
               <div style="font-weight:650;font-size:14px;">${esc(u.host_label)}</div>
-              <div style="font-size:12px;color:var(--muted);">${esc(u.day_of_week)} · ${fmtShortDate(u.dinner_date)}</div>
+              <div style="font-size:12px;color:var(--muted);">${esc(u.day_of_week)} · ${fmtShortDate(u.dinner_date)} · ${fmtTime(u.start_time)}</div>
             </div>
           </div>
           <div style="display:flex;align-items:center;gap:8px;justify-content:flex-end;flex-wrap:wrap;">
@@ -2632,9 +2652,14 @@ async function openPlacePickerModal(mode, dinnerId = null, dinnerDate = null, op
     } else {
       state.pickerAllowKeepNightVote = false;
       state.pickerKeepNightVote = false;
+      const targetDinner =
+        state.bootstrap?.thisWeek?.dinner?.id === dinnerId
+          ? state.bootstrap.thisWeek.dinner
+          : (state.bootstrap?.upcoming || []).find((u) => u.id === dinnerId);
+      const timeLabel = fmtTime(targetDinner?.start_time);
       daySelectorHtml = `
         <div class="host-shortcut-box">
-          <strong>Confirming spot for ${esc(state.pickerDay)}, ${fmtShortDate(dinnerDate)} · 6:30 PM.</strong>
+          <strong>Confirming spot for ${esc(state.pickerDay)}, ${fmtShortDate(dinnerDate)} · ${timeLabel}.</strong>
         </div>
         <div style="font-size:12px;font-weight:700;color:var(--muted);margin-bottom:6px;">Which night?</div>
         <div class="day-toggle-group" id="picker-day-group">
@@ -3131,6 +3156,49 @@ function openReportIssueModal() {
   `);
   renderIssueScreenshotPreview(null);
   refreshRecentIssuesList();
+}
+
+function openChangeTimeModal(dinnerId) {
+  const b = state.bootstrap;
+  const target =
+    b?.thisWeek?.dinner?.id === dinnerId
+      ? b.thisWeek.dinner
+      : (b?.upcoming || []).find((u) => u.id === dinnerId) || b?.thisWeek?.dinner;
+  if (!target) return;
+  const current = target.start_time || '18:30';
+  const presets = [
+    { value: '17:30', label: '5:30 PM' },
+    { value: '18:00', label: '6:00 PM' },
+    { value: '18:30', label: '6:30 PM' },
+    { value: '19:00', label: '7:00 PM' },
+    { value: '19:30', label: '7:30 PM' },
+    { value: '20:00', label: '8:00 PM' },
+  ];
+  openModal(`
+    <h2 class="hero-title" style="font-size:20px;margin-bottom:6px;">Change Dinner Time</h2>
+    <p class="hero-sub" style="margin-bottom:12px;">
+      Adjust start time for <strong>${esc(target.day_of_week)}, ${fmtShortDate(target.dinner_date)}</strong> (${esc(target.host_label)}’s week · currently <strong>${esc(fmtTime(current))}</strong>).
+      Updates reminders, Google Calendar, and notifies the crew.
+    </p>
+    <div class="stack" style="gap:10px;">
+      <div class="btn-row" style="gap:6px;">
+        ${presets
+          .map(
+            (p) =>
+              `<button type="button" class="btn btn-sm ${current === p.value ? 'btn-primary' : 'btn-outline'}" data-action="pick-time-preset" data-time="${p.value}">${p.label}</button>`,
+          )
+          .join('')}
+      </div>
+      <div>
+        <label for="change-time-input" style="display:block;font-size:12px;font-weight:700;color:var(--muted);margin-bottom:4px;">Or pick an exact time</label>
+        <input id="change-time-input" class="input" type="time" value="${esc(current)}" step="300" />
+      </div>
+      <div class="btn-row" style="justify-content:flex-end;margin-top:4px;">
+        <button class="btn btn-secondary btn-sm" data-action="close-modal">Cancel</button>
+        <button id="confirm-change-time-btn" class="btn btn-primary btn-sm" data-action="exec-change-time" data-dinner-id="${target.id}">Update time &amp; notify</button>
+      </div>
+    </div>
+  `);
 }
 
 function openCancelNightModal(dinnerId) {
@@ -4327,6 +4395,39 @@ document.addEventListener('click', async (e) => {
       }
     } else if (action === 'open-pass-swap') {
       openPassSwapModal();
+    } else if (action === 'open-change-time') {
+      openChangeTimeModal(Number(actEl.dataset.dinnerId));
+    } else if (action === 'pick-time-preset') {
+      const val = actEl.dataset.time;
+      const input = document.getElementById('change-time-input');
+      if (input && val) input.value = val;
+      document.querySelectorAll('[data-action="pick-time-preset"]').forEach((btn) => {
+        btn.classList.toggle('btn-primary', btn.dataset.time === val);
+        btn.classList.toggle('btn-outline', btn.dataset.time !== val);
+      });
+    } else if (action === 'exec-change-time') {
+      const dinnerId = Number(actEl.dataset.dinnerId) || state.bootstrap?.thisWeek?.dinner?.id;
+      const input = document.getElementById('change-time-input');
+      const startTime = input ? input.value.trim() : '';
+      if (!startTime) {
+        toast('Choose a start time first');
+        return;
+      }
+      actEl.disabled = true;
+      actEl.textContent = 'Updating…';
+      try {
+        const res = await api('/api/week/time', {
+          method: 'POST',
+          body: JSON.stringify({ dinnerId, startTime }),
+        });
+        closeModal();
+        toast(res.changed ? `Time updated to ${fmtTime(startTime)} & crew notified` : `Time stays ${fmtTime(startTime)}`);
+        await refreshBootstrap();
+      } catch (err) {
+        actEl.disabled = false;
+        actEl.textContent = 'Update time & notify';
+        toast(err?.message || 'Could not update dinner time');
+      }
     } else if (action === 'open-cancel-night') {
       openCancelNightModal(Number(actEl.dataset.dinnerId));
     } else if (action === 'exec-cancel-night') {

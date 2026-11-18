@@ -4,6 +4,7 @@ import {
   restoreCalendarForNight,
   syncCancelledNightToCalendar,
   syncLockedPlaceToCalendar,
+  syncStartTimeToCalendar,
 } from './gcal';
 import { sendWebPushToSubscribers } from './push';
 import type {
@@ -67,6 +68,54 @@ export function formatShortDate(isoDate: string): string {
   const [y, m, d] = isoDate.split('-').map(Number);
   const dt = new Date(Date.UTC(y, m - 1, d));
   return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+}
+
+export function normalizeStartTime(raw: string): string {
+  const trimmed = String(raw || '').trim();
+  const match = /^(\d{1,2}):(\d{2})$/.exec(trimmed);
+  if (!match) {
+    throw new Error('Invalid start time (expected HH:MM)');
+  }
+  const h = Number(match[1]);
+  const m = Number(match[2]);
+  if (!Number.isInteger(h) || !Number.isInteger(m) || h < 0 || h > 23 || m < 0 || m > 59) {
+    throw new Error('Start time must be between 00:00 and 23:59');
+  }
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
+export function formatTime12h(hhmm: string): string {
+  const raw = String(hhmm || '18:30').trim();
+  const match = /^(\d{1,2}):(\d{2})$/.exec(raw);
+  if (!match) return raw || '6:30 PM';
+  const h = Number(match[1]);
+  const m = Number(match[2]);
+  const period = h >= 12 ? 'PM' : 'AM';
+  const hour12 = h % 12 === 0 ? 12 : h % 12;
+  return `${hour12}:${String(m).padStart(2, '0')} ${period}`;
+}
+
+function parseHHMMToMinutes(hhmm: string): number {
+  const [h, m] = String(hhmm || '18:30')
+    .split(':')
+    .map((n) => parseInt(n, 10));
+  return (Number.isFinite(h) ? h : 18) * 60 + (Number.isFinite(m) ? m : 30);
+}
+
+function getCentralMinutesOfDay(now = new Date(), timeZone = 'America/Chicago'): number {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    hour12: false,
+    hour: '2-digit',
+    minute: '2-digit',
+  }).formatToParts(now);
+  const map: Record<string, string> = {};
+  for (const p of parts) {
+    if (p.type !== 'literal') map[p.type] = p.value;
+  }
+  const hour = Number(map.hour) % 24;
+  const minute = Number(map.minute);
+  return hour * 60 + minute;
 }
 
 export async function isFutureDinner(
@@ -476,10 +525,11 @@ export async function lockNight(env: Env, dinnerId: number): Promise<DinnerRow |
     }
   }
 
+  const timeLabel = formatTime12h(updated?.start_time || '18:30');
   const pushBody = lockedPlace
-    ? `${updated?.host_label} picked ${lockedPlace.name} · ${winningDay} ${updated?.start_time}`
+    ? `${updated?.host_label} picked ${lockedPlace.name} · ${winningDay} ${timeLabel}`
     : nextStatus === 'noon_vote'
-      ? `Vote on ${updated?.host_label}'s place poll for ${winningDay} ${updated?.start_time}`
+      ? `Vote on ${updated?.host_label}'s place poll for ${winningDay} ${timeLabel}`
       : `Waiting on ${updated?.host_label} to pick by noon on ${winningDay}`;
 
   await sendWebPushToSubscribers(
@@ -673,11 +723,12 @@ export async function lockPlace(
     ? `Place locked: ${updatedRestaurant.name} (${dateLabel})`
     : `Place locked: ${updatedRestaurant.name}`;
 
+  const timeLabel = formatTime12h(updated.start_time || '18:30');
   const pushBody = isFuture
-    ? `${updated.host_label} locked ${updatedRestaurant.name} in advance for ${dayDateLabel} — no vote needed`
+    ? `${updated.host_label} locked ${updatedRestaurant.name} in advance for ${dayDateLabel} · ${timeLabel} — no vote needed`
     : wasEarlyAdvanceLock
-      ? `${updated.host_label} picked ${updatedRestaurant.name} for ${updated.day_of_week} (${dateLabel}) — no vote needed`
-      : `${updated.day_of_week} 6:30 PM · ${viaText}`;
+      ? `${updated.host_label} picked ${updatedRestaurant.name} for ${updated.day_of_week} (${dateLabel}) · ${timeLabel} — no vote needed`
+      : `${updated.day_of_week} ${timeLabel} · ${viaText}`;
 
   await sendWebPushToSubscribers(
     env,
@@ -1193,6 +1244,92 @@ export async function restoreNight(
 
   return {
     dinner: updated,
+    calendar: { synced: cal.synced, reason: cal.reason },
+    push,
+  };
+}
+
+export async function updateDinnerStartTime(
+  env: Env,
+  dinnerId: number,
+  rawStartTime: string,
+  actor: Pick<UserRow, 'slug' | 'name'>,
+): Promise<{
+  dinner: DinnerRow;
+  changed: boolean;
+  calendar: { synced: boolean; reason?: string };
+  push: { sent: number; failed: number; removed: number };
+}> {
+  const nextTime = normalizeStartTime(rawStartTime);
+  const dinner = await env.DB.prepare('SELECT * FROM dinners WHERE id = ?').bind(dinnerId).first<DinnerRow>();
+  if (!dinner) throw new Error('Dinner not found');
+  if (dinner.is_historical === 1 || dinner.status === 'completed') {
+    throw new Error('Completed dinners cannot have their time changed');
+  }
+  if (dinner.status === 'cancelled') {
+    throw new Error('This night has been cancelled');
+  }
+
+  const tz = env.CLUB_TIMEZONE || 'America/Chicago';
+  const todayStr = getCentralDateStr(new Date(), tz);
+  const active = await getActiveDinner(env.DB);
+  if (dinner.id !== active?.id && dinner.dinner_date < todayStr) {
+    throw new Error('Only current or future dinners can have their time changed');
+  }
+
+  const prevTime = dinner.start_time || '18:30';
+  if (prevTime === nextTime) {
+    return {
+      dinner,
+      changed: false,
+      calendar: { synced: false, reason: 'unchanged' },
+      push: { sent: 0, failed: 0, removed: 0 },
+    };
+  }
+
+  const nowMinutes = getCentralMinutesOfDay(new Date(), tz);
+  const newStartMin = parseHHMMToMinutes(nextTime);
+  const resetReminder = todayStr < dinner.dinner_date || (todayStr === dinner.dinner_date && nowMinutes < newStartMin - 30);
+  const resetPreEvent = todayStr < dinner.dinner_date || (todayStr === dinner.dinner_date && nowMinutes < newStartMin - 5);
+
+  await env.DB.prepare(
+    `UPDATE dinners
+     SET start_time = ?,
+         reminder_sent_at = CASE WHEN ? = 1 THEN NULL ELSE reminder_sent_at END,
+         pre_event_sent_at = CASE WHEN ? = 1 THEN NULL ELSE pre_event_sent_at END,
+         updated_at = datetime('now')
+     WHERE id = ?`,
+  )
+    .bind(nextTime, resetReminder ? 1 : 0, resetPreEvent ? 1 : 0, dinnerId)
+    .run();
+
+  const updated = (await env.DB.prepare('SELECT * FROM dinners WHERE id = ?').bind(dinnerId).first<DinnerRow>())!;
+  const cal = await syncStartTimeToCalendar(env, updated);
+  if (cal.eventId && !updated.gcal_event_id) {
+    await env.DB.prepare('UPDATE dinners SET gcal_event_id = ? WHERE id = ?').bind(cal.eventId, dinnerId).run();
+    updated.gcal_event_id = cal.eventId;
+  }
+
+  const dateLabel = formatShortDate(updated.dinner_date);
+  const dayDateLabel = `${updated.day_of_week}, ${dateLabel}`;
+  const oldLabel = formatTime12h(prevTime);
+  const newLabel = formatTime12h(nextTime);
+
+  const push = await sendWebPushToSubscribers(
+    env,
+    {
+      title: `Man Night moved to ${newLabel} (${dateLabel})`,
+      body: `${actor.name} changed ${updated.host_label}'s night (${dayDateLabel}) from ${oldLabel} to ${newLabel}.`,
+      tag: `night-time-${dinnerId}`,
+      url: env.APP_URL,
+      dinnerId,
+    },
+    'all',
+  );
+
+  return {
+    dinner: updated,
+    changed: true,
     calendar: { synced: cal.synced, reason: cal.reason },
     push,
   };

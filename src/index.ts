@@ -36,6 +36,7 @@ import {
   setDinnerMealPrice,
   submitRating,
   updateBeer,
+  updateDinnerStartTime,
   uploadMealPhoto,
 } from './workflow';
 
@@ -77,6 +78,7 @@ function getFriendlyFeatureName(path: string, method: string): string {
   if (path === '/api/week/pick') return 'Advance Pick (Host)';
   if (path === '/api/week/poll') return 'Place Poll';
   if (path === '/api/week/rsvp') return 'RSVP';
+  if (path === '/api/week/time') return 'Change Dinner Time';
   if (path === '/api/dinners' && method === 'GET') return 'View Dinners';
   if (path === '/api/places' && method === 'GET') return 'View Places';
   if (path === '/api/beers') return 'Beers';
@@ -1286,6 +1288,16 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
         : await getActiveDinner(env.DB);
       if (!dinner) return json({ error: 'No active dinner found' }, 404);
       const res = await restoreNight(env, dinner.id, user);
+      return json({ ok: true, ...res });
+    }
+
+    if (path === '/api/week/time' && method === 'POST') {
+      const body = await readJson<{ dinnerId?: number; startTime: string }>(request);
+      const dinner = body.dinnerId
+        ? await env.DB.prepare('SELECT id FROM dinners WHERE id = ?').bind(body.dinnerId).first<{ id: number }>()
+        : await getActiveDinner(env.DB);
+      if (!dinner) return json({ error: 'No active dinner found' }, 404);
+      const res = await updateDinnerStartTime(env, dinner.id, body.startTime, user);
       return json({ ok: true, ...res });
     }
 

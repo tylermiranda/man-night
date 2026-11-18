@@ -11,6 +11,18 @@ import type { WhatsNewEntry, WhatsNewPayload, WhatsNewViewEntry } from './types'
  */
 export const WHATS_NEW_RELEASES: readonly WhatsNewEntry[] = [
   {
+    id: '2026-11-18-change-time',
+    date: '2026-11-18',
+    kind: 'feature',
+    title: '🕒 Adjustable Dinner Start Time',
+    summary:
+      'Any crew member can now adjust the start time on this week’s or any upcoming Man Night. Updating the time sends a crew push alert, reschedules the 30-minute and 5-minute reminders, and updates Google Calendar.',
+    creditSlug: 'tyler',
+    creditName: 'Tyler',
+    creditRole: 'idea',
+    issueNumber: 21,
+  },
+  {
     id: '2026-11-18-cancel-night',
     date: '2026-11-18',
     kind: 'feature',

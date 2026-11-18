@@ -1861,17 +1861,19 @@ describe('Man Night PWA Worker & Seed', () => {
   it('tracks What’s New releases, crew idea/bug credits, per-user seen state, and UI wiring (issue #11)', async () => {
     // 1. Changelog integrity
     const seenIds = new Set<string>();
-    expect(WHATS_NEW_RELEASES.length).toBeGreaterThanOrEqual(13);
-    expect(WHATS_NEW_RELEASES[0].id).toBe('2026-11-18-cancel-night');
-    expect(WHATS_NEW_RELEASES[0].issueNumber).toBe(20);
-    expect(WHATS_NEW_RELEASES[1].id).toBe('2026-11-17-both-night-voting');
-    expect(WHATS_NEW_RELEASES[2].id).toBe('2026-11-16-top-places-poplar-fix');
-    expect(WHATS_NEW_RELEASES[3].id).toBe('2026-11-15-future-pick-notifications');
-    expect(WHATS_NEW_RELEASES[3].issueNumber).toBe(18);
-    expect(WHATS_NEW_RELEASES[4].id).toBe('2026-11-15-appetizers');
-    expect(WHATS_NEW_RELEASES[4].issueNumber).toBe(17);
-    expect(WHATS_NEW_RELEASES[5].id).toBe('2026-11-15-beer-cellar');
-    expect(WHATS_NEW_RELEASES[5].issueNumber).toBe(15);
+    expect(WHATS_NEW_RELEASES.length).toBeGreaterThanOrEqual(14);
+    expect(WHATS_NEW_RELEASES[0].id).toBe('2026-11-18-change-time');
+    expect(WHATS_NEW_RELEASES[0].issueNumber).toBe(21);
+    expect(WHATS_NEW_RELEASES[1].id).toBe('2026-11-18-cancel-night');
+    expect(WHATS_NEW_RELEASES[1].issueNumber).toBe(20);
+    expect(WHATS_NEW_RELEASES[2].id).toBe('2026-11-17-both-night-voting');
+    expect(WHATS_NEW_RELEASES[3].id).toBe('2026-11-16-top-places-poplar-fix');
+    expect(WHATS_NEW_RELEASES[4].id).toBe('2026-11-15-future-pick-notifications');
+    expect(WHATS_NEW_RELEASES[4].issueNumber).toBe(18);
+    expect(WHATS_NEW_RELEASES[5].id).toBe('2026-11-15-appetizers');
+    expect(WHATS_NEW_RELEASES[5].issueNumber).toBe(17);
+    expect(WHATS_NEW_RELEASES[6].id).toBe('2026-11-15-beer-cellar');
+    expect(WHATS_NEW_RELEASES[6].issueNumber).toBe(15);
     expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-15-issue-feature-form' && e.issueNumber === 16)).toBe(true);
     expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-15-favorite-places' && e.issueNumber === 14)).toBe(true);
     expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-15-meal-prices' && e.issueNumber === 13)).toBe(true);
@@ -1959,9 +1961,10 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(bootInit.whatsNew.unseenCount).toBe(WHATS_NEW_RELEASES.length);
     expect(bootInit.whatsNew.entries[0].creditLabel).toBe('Idea by Tyler');
     expect(bootInit.whatsNew.entries[1].creditLabel).toBe('Idea by Tyler');
-    expect(bootInit.whatsNew.entries[2].creditLabel).toBe('Bug report by Tyler');
+    expect(bootInit.whatsNew.entries[2].creditLabel).toBe('Idea by Tyler');
     expect(bootInit.whatsNew.entries[3].creditLabel).toBe('Bug report by Tyler');
-    expect(bootInit.whatsNew.entries[4].creditLabel).toBe('Idea by Jacob');
+    expect(bootInit.whatsNew.entries[4].creditLabel).toBe('Bug report by Tyler');
+    expect(bootInit.whatsNew.entries[5].creditLabel).toBe('Idea by Jacob');
 
     const getRes = await worker.fetch(makeReq('/api/whats-new'), env);
     expect(getRes.status).toBe(200);
@@ -3128,6 +3131,111 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(appJs).toContain('restore-night');
     expect(appJs).toContain('/api/week/cancel');
     expect(appJs).toContain('/api/week/restore');
+    const swJs = readFileSync(resolve(rootDir, 'public/sw.js'), 'utf8');
+    expect(swJs).toMatch(/const CACHE_NAME = 'man-night-shell-v\d+'/);
+  });
+
+  it('supports Issue #21: adjusting dinner start time on current or future nights with push, cron reminder, and UI wiring', async () => {
+    const pushSpy = vi.spyOn(pushModule, 'sendWebPushToSubscribers').mockResolvedValue({ sent: 1, failed: 0, removed: 0 });
+
+    const boot = (await (await worker.fetch(makeReq('/api/bootstrap'), env)).json()) as {
+      thisWeek: { dinner: { id: number; start_time: string; dinner_date: string; week_key: string } };
+      upcoming: Array<{ id: number; start_time: string; dinner_date: string; week_key: string }>;
+    };
+    const activeId = boot.thisWeek.dinner.id;
+    const futureId = boot.upcoming[0].id;
+    expect(boot.thisWeek.dinner.start_time).toBe('18:30');
+
+    // 1. Rejects invalid time format and completed/cancelled dinners
+    const badRes = await worker.fetch(
+      makeReq('/api/week/time', 'POST', { dinnerId: activeId, startTime: '25:99' }),
+      env,
+    );
+    expect(badRes.status).toBe(400);
+
+    const histDinner = await env.DB.prepare("SELECT id FROM dinners WHERE status = 'completed' LIMIT 1").first<{ id: number }>();
+    const completedRes = await worker.fetch(
+      makeReq('/api/week/time', 'POST', { dinnerId: histDinner!.id, startTime: '19:00' }),
+      env,
+    );
+    expect(completedRes.status).toBe(400);
+
+    // 2. Any crew member (Heath) updates this week's time to 19:15 (7:15 PM)
+    const place = await env.DB.prepare('SELECT id FROM restaurants LIMIT 1').first<{ id: number }>();
+    await env.DB.prepare(
+      "UPDATE dinners SET status = 'place_locked', restaurant_id = ?, reminder_sent_at = datetime('now'), pre_event_sent_at = datetime('now') WHERE id = ?",
+    )
+      .bind(place!.id, activeId)
+      .run();
+
+    const updateRes = await worker.fetch(
+      makeReq(
+        '/api/week/time',
+        'POST',
+        { dinnerId: activeId, startTime: '19:15' },
+        { 'Cf-Access-Authenticated-User-Email': 'heath.thome@gmail.com' },
+      ),
+      env,
+    );
+    expect(updateRes.status).toBe(200);
+    const updateBody = (await updateRes.json()) as {
+      ok: boolean;
+      changed: boolean;
+      dinner: { id: number; start_time: string; reminder_sent_at: string | null; pre_event_sent_at: string | null };
+    };
+    expect(updateBody.ok).toBe(true);
+    expect(updateBody.changed).toBe(true);
+    expect(updateBody.dinner.start_time).toBe('19:15');
+    expect(pushSpy).toHaveBeenCalledTimes(1);
+    expect(pushSpy.mock.calls[0][1].title).toContain('7:15 PM');
+    expect(pushSpy.mock.calls[0][1].body).toContain('Heath');
+    expect(pushSpy.mock.calls[0][1].body).toContain('6:30 PM');
+    expect(pushSpy.mock.calls[0][1].body).toContain('7:15 PM');
+
+    // 3. Re-submitting the same time is a no-op with no duplicate push
+    const noopRes = await worker.fetch(
+      makeReq('/api/week/time', 'POST', { dinnerId: activeId, startTime: '19:15' }),
+      env,
+    );
+    const noopBody = (await noopRes.json()) as { ok: boolean; changed: boolean };
+    expect(noopBody.ok).toBe(true);
+    expect(noopBody.changed).toBe(false);
+    expect(pushSpy).toHaveBeenCalledTimes(1);
+
+    // 4. Cron fires 30-min reminder relative to the new 19:15 start time (18:45 CST = 00:45 UTC next day)
+    await env.DB.prepare('UPDATE dinners SET reminder_sent_at = NULL, pre_event_sent_at = NULL WHERE id = ?')
+      .bind(activeId)
+      .run();
+    const earlyTick = await runWeeklyCronTick(env, new Date('2026-11-18T00:05:00Z')); // Nov 17 18:05 CST (would have fired for 18:30)
+    expect(earlyTick.actions).not.toContain(`sent_reminder:${boot.thisWeek.dinner.week_key}`);
+
+    const shiftedTick = await runWeeklyCronTick(env, new Date('2026-11-18T00:50:00Z')); // Nov 17 18:50 CST (within 30m of 19:15)
+    expect(shiftedTick.actions).toContain(`sent_reminder:${boot.thisWeek.dinner.week_key}`);
+
+    // 5. Updating a future upcoming dinner updates start_time in D1 and bootstrap
+    const futureRes = await worker.fetch(
+      makeReq('/api/week/time', 'POST', { dinnerId: futureId, startTime: '17:45' }),
+      env,
+    );
+    expect(futureRes.status).toBe(200);
+    const futureBody = (await futureRes.json()) as { dinner: { id: number; start_time: string } };
+    expect(futureBody.dinner.start_time).toBe('17:45');
+
+    const bootAfter = (await (await worker.fetch(makeReq('/api/bootstrap'), env)).json()) as {
+      thisWeek: { dinner: { start_time: string } };
+      upcoming: Array<{ id: number; start_time: string }>;
+    };
+    expect(bootAfter.thisWeek.dinner.start_time).toBe('19:15');
+    expect(bootAfter.upcoming.find((u) => u.id === futureId)?.start_time).toBe('17:45');
+
+    // 6. Changelog, UI wiring, and CACHE_NAME verification
+    const entry21 = WHATS_NEW_RELEASES.find((e) => e.issueNumber === 21);
+    expect(entry21).toBeDefined();
+    expect(entry21?.creditSlug).toBe('tyler');
+    const appJs = readFileSync(resolve(rootDir, 'public/app.js'), 'utf8');
+    expect(appJs).toContain('open-change-time');
+    expect(appJs).toContain('/api/week/time');
+    expect(appJs).toContain('fmtTime(');
     const swJs = readFileSync(resolve(rootDir, 'public/sw.js'), 'utf8');
     expect(swJs).toMatch(/const CACHE_NAME = 'man-night-shell-v\d+'/);
   });

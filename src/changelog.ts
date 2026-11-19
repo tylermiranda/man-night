@@ -11,6 +11,17 @@ import type { WhatsNewEntry, WhatsNewPayload, WhatsNewViewEntry } from './types'
  */
 export const WHATS_NEW_RELEASES: readonly WhatsNewEntry[] = [
   {
+    id: '2026-11-19-tuesday-noon-night-lock',
+    date: '2026-11-19',
+    kind: 'feature',
+    title: '⏰ Night Vote Extended to Tuesday Noon',
+    summary:
+      'Tuesday vs. Wednesday night voting now stays open until Tuesday at 12:00 PM CT (instead of locking Monday at noon). Tuesday still wins ties.',
+    creditSlug: 'tyler',
+    creditName: 'Tyler',
+    creditRole: 'idea',
+  },
+  {
     id: '2026-11-18-gcal-sync-fixes',
     date: '2026-11-18',
     kind: 'fix',

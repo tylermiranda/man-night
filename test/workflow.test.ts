@@ -127,7 +127,7 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(stRes.status).toBe(200);
   });
 
-  it('runs Tuesday-first night vote with Monday noon tie-breaking to Tuesday', async () => {
+  it('runs Tuesday-first night vote with Tuesday noon tie-breaking to Tuesday', async () => {
     // Eric votes Wednesday, Tyler votes Tuesday -> 1-1 tie -> Tuesday wins!
     await worker.fetch(
       makeReq('/api/week/vote-night', 'POST', { choice: 'wednesday' }, { 'Cf-Access-Authenticated-User-Email': 'storme2@gmail.com' }),
@@ -135,8 +135,14 @@ describe('Man Night PWA Worker & Seed', () => {
     );
     await worker.fetch(makeReq('/api/week/vote-night', 'POST', { choice: 'tuesday' }), env);
 
-    // Monday 2026-11-16 at 12:05 PM CST (18:05 UTC)
-    const tick = await runWeeklyCronTick(env, new Date('2026-11-16T18:05:00Z'));
+    // Monday 2026-11-16 at 12:05 PM CST (18:05 UTC) and Tuesday 11:55 AM CST (17:55 UTC) must NOT lock yet
+    const monTick = await runWeeklyCronTick(env, new Date('2026-11-16T18:05:00Z'));
+    expect(monTick.actions).not.toContain('locked_night:2026-W47');
+    const tueMorningTick = await runWeeklyCronTick(env, new Date('2026-11-17T17:55:00Z'));
+    expect(tueMorningTick.actions).not.toContain('locked_night:2026-W47');
+
+    // Tuesday 2026-11-17 at 12:05 PM CST (18:05 UTC) locks the night poll and triggers Noon Rule
+    const tick = await runWeeklyCronTick(env, new Date('2026-11-17T18:05:00Z'));
     expect(tick.actions).toContain('locked_night:2026-W47');
 
     const boot = (await (await worker.fetch(makeReq('/api/bootstrap'), env)).json()) as {
@@ -144,7 +150,7 @@ describe('Man Night PWA Worker & Seed', () => {
     };
     expect(boot.thisWeek.dinner.day_of_week).toBe('Tuesday');
     expect(boot.thisWeek.dinner.dinner_date).toBe('2026-11-17');
-    expect(boot.thisWeek.dinner.status).toBe('awaiting_pick');
+    expect(boot.thisWeek.dinner.status).toBe('noon_vote');
   });
 
   it('flips dinner_date to Wednesday when Wednesday wins night vote', async () => {
@@ -157,19 +163,19 @@ describe('Man Night PWA Worker & Seed', () => {
       env,
     );
 
-    await runWeeklyCronTick(env, new Date('2026-11-16T18:05:00Z'));
+    const tick = await runWeeklyCronTick(env, new Date('2026-11-17T18:05:00Z'));
+    expect(tick.actions).toContain('locked_night:2026-W47');
+    expect(tick.actions).not.toContain('opened_noon_draw:2026-W47');
 
     const boot = (await (await worker.fetch(makeReq('/api/bootstrap'), env)).json()) as {
-      thisWeek: { dinner: { day_of_week: string; dinner_date: string } };
+      thisWeek: { dinner: { day_of_week: string; dinner_date: string; status: string } };
     };
     expect(boot.thisWeek.dinner.day_of_week).toBe('Wednesday');
     expect(boot.thisWeek.dinner.dinner_date).toBe('2026-11-18');
+    expect(boot.thisWeek.dinner.status).toBe('awaiting_pick');
   });
 
   it('enforces Noon Rule: draws 4 places skipping last 8 weeks, then locks at 4 PM with random tiebreak', async () => {
-    // Advance Monday noon -> awaiting_pick
-    await runWeeklyCronTick(env, new Date('2026-11-16T18:05:00Z'));
-
     // Find places visited within 8 weeks of 2026-11-17
     const cutoff = addDaysToIsoDate('2026-11-17', -56);
     const draw = await drawFourRandomPlaces(env.DB, '2026-11-17');
@@ -178,8 +184,9 @@ describe('Man Night PWA Worker & Seed', () => {
       expect(!p.last_visited || p.last_visited < cutoff).toBe(true);
     }
 
-    // Tuesday 2026-11-17 at 12:05 PM CST (18:05 UTC) opens noon draw
+    // Tuesday 2026-11-17 at 12:05 PM CST (18:05 UTC) locks night to Tuesday and opens noon draw
     const noonTick = await runWeeklyCronTick(env, new Date('2026-11-17T18:05:00Z'));
+    expect(noonTick.actions).toContain('locked_night:2026-W47');
     expect(noonTick.actions).toContain('opened_noon_draw:2026-W47');
 
     const boot1 = (await (await worker.fetch(makeReq('/api/bootstrap'), env)).json()) as {
@@ -711,9 +718,10 @@ describe('Man Night PWA Worker & Seed', () => {
     );
     expect(v2.status).toBe(200);
 
-    // Monday 2026-11-16 at 12:05 PM CST locks the night to Wednesday and moves straight to place_locked
-    const tick = await runWeeklyCronTick(env, new Date('2026-11-16T18:05:00Z'));
+    // Tuesday 2026-11-17 at 12:05 PM CST locks the night to Wednesday and moves straight to place_locked without noon draw
+    const tick = await runWeeklyCronTick(env, new Date('2026-11-17T18:05:00Z'));
     expect(tick.actions).toContain('locked_night:2026-W47');
+    expect(tick.actions).not.toContain('opened_noon_draw:2026-W47');
 
     const bootAfter = (await (await worker.fetch(makeReq('/api/bootstrap'), env)).json()) as {
       thisWeek: { dinner: { status: string; day_of_week: string; dinner_date: string; restaurant_id: number; noon_draw_ids: string | null } };
@@ -723,10 +731,6 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(bootAfter.thisWeek.dinner.dinner_date).toBe('2026-11-18');
     expect(bootAfter.thisWeek.dinner.restaurant_id).toBe(poplar!.id);
     expect(bootAfter.thisWeek.dinner.noon_draw_ids).toBeNull();
-
-    // Tuesday 12:05 PM CST must NOT trigger a noon draw
-    const tueTick = await runWeeklyCronTick(env, new Date('2026-11-17T18:05:00Z'));
-    expect(tueTick.actions).not.toContain('opened_noon_draw:2026-W47');
   });
 
   it('supports creating, voting on, and locking a host place poll alongside the Tuesday/Wednesday vote', async () => {
@@ -770,25 +774,24 @@ describe('Man Night PWA Worker & Seed', () => {
     );
     expect(vote3.status).toBe(200);
 
-    // Monday 12:05 PM CST locks Tuesday and transitions to noon_vote while keeping host poll candidates & votes intact
-    const monTick = await runWeeklyCronTick(env, new Date('2026-11-16T18:05:00Z'));
-    expect(monTick.actions).toContain('locked_night:2026-W47');
+    // Tuesday 12:05 PM CST locks Tuesday and transitions to noon_vote while keeping host poll candidates & votes intact (skipping random 4-place draw)
+    const tueNoon = await runWeeklyCronTick(env, new Date('2026-11-17T18:05:00Z'));
+    expect(tueNoon.actions).toContain('locked_night:2026-W47');
+    expect(tueNoon.actions).not.toContain('opened_noon_draw:2026-W47');
 
-    const bootMon = (await (await worker.fetch(makeReq('/api/bootstrap'), env)).json()) as {
+    const bootTue = (await (await worker.fetch(makeReq('/api/bootstrap'), env)).json()) as {
       thisWeek: {
         dinner: { status: string; chosen_via: string };
         noonCandidates: Array<{ id: number }>;
         noonVotes: Array<{ restaurant_id: number }>;
       };
     };
-    expect(bootMon.thisWeek.dinner.status).toBe('noon_vote');
-    expect(bootMon.thisWeek.dinner.chosen_via).toBe('host_poll');
-    expect(bootMon.thisWeek.noonCandidates.map((c) => c.id)).toEqual([p1.id, p2.id, p3.id]);
-    expect(bootMon.thisWeek.noonVotes).toHaveLength(3);
+    expect(bootTue.thisWeek.dinner.status).toBe('noon_vote');
+    expect(bootTue.thisWeek.dinner.chosen_via).toBe('host_poll');
+    expect(bootTue.thisWeek.noonCandidates.map((c) => c.id)).toEqual([p1.id, p2.id, p3.id]);
+    expect(bootTue.thisWeek.noonVotes).toHaveLength(3);
 
-    // Tuesday 12:05 PM CST skips random 4-place draw since status is already noon_vote; 4:05 PM closes with p2 (2 votes)
-    const tueNoon = await runWeeklyCronTick(env, new Date('2026-11-17T18:05:00Z'));
-    expect(tueNoon.actions).not.toContain('opened_noon_draw:2026-W47');
+    // Tuesday 4:05 PM closes with p2 (2 votes)
     const tueClose = await runWeeklyCronTick(env, new Date('2026-11-17T22:05:00Z'));
     expect(tueClose.actions).toContain('closed_noon_vote:2026-W47');
 
@@ -998,8 +1001,8 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(clearData.userChoice).toBe('wednesday');
     expect(clearData.reason).toBe('');
 
-    // 5. After Monday noon lock, remaining vote reasons stay available in /api/bootstrap
-    await runWeeklyCronTick(env, new Date('2026-11-16T18:05:00Z'));
+    // 5. After Tuesday noon lock, remaining vote reasons stay available in /api/bootstrap
+    await runWeeklyCronTick(env, new Date('2026-11-17T18:05:00Z'));
     const bootLocked = (await (await worker.fetch(makeReq('/api/bootstrap'), env)).json()) as {
       thisWeek: {
         dinner: { status: string };
@@ -1065,15 +1068,15 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(boot.thisWeek.nightVotes).toHaveLength(3);
     expect(boot.thisWeek.nightVotes.find((v) => v.user_slug === 'tyler')?.choice).toBe('both');
 
-    // Monday noon lock resolves 2-2 tie in favor of Tuesday
-    await runWeeklyCronTick(env, new Date('2026-11-16T18:05:00Z'));
+    // Tuesday noon lock resolves 2-2 tie in favor of Tuesday
+    await runWeeklyCronTick(env, new Date('2026-11-17T18:05:00Z'));
     const bootLocked = (await (await worker.fetch(makeReq('/api/bootstrap'), env)).json()) as {
       thisWeek: {
         dinner: { day_of_week: string; status: string };
       };
     };
     expect(bootLocked.thisWeek.dinner.day_of_week).toBe('Tuesday');
-    expect(bootLocked.thisWeek.dinner.status).toBe('awaiting_pick');
+    expect(bootLocked.thisWeek.dinner.status).toBe('noon_vote');
 
     // 4. Test direct castNightVote and lockNight functions
     const directBoot = (await (await worker.fetch(makeReq('/api/bootstrap'), env)).json()) as {
@@ -1867,7 +1870,8 @@ describe('Man Night PWA Worker & Seed', () => {
     // 1. Changelog integrity
     const seenIds = new Set<string>();
     expect(WHATS_NEW_RELEASES.length).toBeGreaterThanOrEqual(16);
-    expect(WHATS_NEW_RELEASES[0].id).toBe('2026-11-18-gcal-sync-fixes');
+    expect(WHATS_NEW_RELEASES[0].id).toBe('2026-11-19-tuesday-noon-night-lock');
+    expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-18-gcal-sync-fixes')).toBe(true);
     expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-18-night-comments' && e.issueNumber === 23)).toBe(true);
     expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-18-extra-guest-names' && e.issueNumber === 22)).toBe(true);
     expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-18-change-time' && e.issueNumber === 21)).toBe(true);
@@ -1963,6 +1967,7 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(bootInit.whatsNew.hasUnseen).toBe(true);
     expect(bootInit.whatsNew.unseenCount).toBe(WHATS_NEW_RELEASES.length);
     const creditById = new Map(bootInit.whatsNew.entries.map((e) => [e.id, e.creditLabel]));
+    expect(creditById.get('2026-11-19-tuesday-noon-night-lock')).toBe('Idea by Tyler');
     expect(creditById.get('2026-11-18-gcal-sync-fixes')).toBe('Bug report by Tyler');
     expect(creditById.get('2026-11-18-night-comments')).toBe('Idea by Tyler');
     expect(creditById.get('2026-11-18-extra-guest-names')).toBe('Idea by Tyler');
@@ -2841,7 +2846,7 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(futurePayload.title).toContain('(' + formatShortDate(futureDinner.dinner_date) + ')');
     expect(futurePayload.body).toContain(formatShortDate(futureDinner.dinner_date));
     expect(futurePayload.body).toContain('Spot set in advance');
-    expect(futurePayload.body).not.toContain('before Monday noon');
+    expect(futurePayload.body).not.toContain('before Tuesday noon');
 
     // 4. Picking for future dinner with fixed day (no vote)
     pushSpy.mockClear();
@@ -2893,7 +2898,7 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(pushSpy).toHaveBeenCalled();
     const currentPayload = pushSpy.mock.calls[0][1];
     expect(currentPayload.title).not.toContain('(' + formatShortDate(activeDinner.dinner_date) + ')');
-    expect(currentPayload.body).toBe('Spot is set! Vote Tuesday or Wednesday before Monday noon.');
+    expect(currentPayload.body).toBe('Spot is set! Vote Tuesday or Wednesday before Tuesday noon.');
 
     // 7. Changelog and CACHE_NAME verification
     const entry18 = WHATS_NEW_RELEASES.find((e) => e.issueNumber === 18);

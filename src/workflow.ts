@@ -675,7 +675,7 @@ export async function lockPlace(
       : `${updated.host_label} picked ${updatedRestaurant.name}`;
     const pushBody = isFuture
       ? `Spot set in advance for ${dayDateLabel}! Tue/Wed night vote stays open.`
-      : 'Spot is set! Vote Tuesday or Wednesday before Monday noon.';
+      : 'Spot is set! Vote Tuesday or Wednesday before Tuesday noon.';
 
     await sendWebPushToSubscribers(
       env,

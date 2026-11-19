@@ -100,7 +100,7 @@ function parseHHMMMinutes(hhmm: string): number {
 /**
  * Advances Man Night weekly workflow based on Central Time rules:
  * - Sun >= 10:00: open night poll for upcoming week
- * - Mon >= 12:00: lock night (Tuesday wins ties)
+ * - Tue >= 12:00: lock night (Tuesday wins ties)
  * - Dinner day >= 12:00: if no place picked, trigger 4-place noon rule (skip last 8 weeks)
  * - Dinner day >= 16:00: close noon vote, lock winner (random tiebreak), update GCal + push
  * - Dinner day >= (start_time - 30m): push reminder with Google Maps directions link
@@ -138,12 +138,12 @@ export async function runWeeklyCronTick(env: Env, now = new Date()): Promise<{ a
           .bind(nextScheduled.id)
           .run();
 
-        let pushBody = 'Tuesday is listed first and wins ties at Monday noon.';
+        let pushBody = 'Tuesday is listed first and wins ties at Tuesday noon.';
         if (nextScheduled.restaurant_id) {
           const pickedPlace = await env.DB.prepare('SELECT name FROM restaurants WHERE id = ?')
             .bind(nextScheduled.restaurant_id)
             .first<{ name: string }>();
-          pushBody = `${pickedPlace ? `${pickedPlace.name} is set` : 'Place is set'} · Vote Tuesday or Wednesday (Tuesday wins ties at Monday noon).`;
+          pushBody = `${pickedPlace ? `${pickedPlace.name} is set` : 'Place is set'} · Vote Tuesday or Wednesday (Tuesday wins ties at Tuesday noon).`;
         } else if (nextScheduled.noon_draw_ids) {
           pushBody = 'Place poll is live! Vote on the restaurant and Tuesday or Wednesday (Tuesday wins ties).';
         }
@@ -177,11 +177,13 @@ export async function runWeeklyCronTick(env: Env, now = new Date()): Promise<{ a
     const diffDays =
       (Date.parse(dinner.dinner_date + 'T00:00:00Z') - Date.parse(clock.dateStr + 'T00:00:00Z')) / 86400000;
 
-    // 2. Monday >= 12:00 CT (or later in week): lock night poll for current week
+    // 2. Tuesday >= 12:00 CT (or dinner day >= 12:00 CT / later): lock night poll for current week
     if (
       dinner.status === 'night_poll' &&
       diffDays <= 3 &&
-      ((clock.weekday === 'Monday' && clock.minutesOfDay >= 12 * 60) || clock.dateStr >= dinner.dinner_date)
+      ((clock.weekday === 'Tuesday' && clock.minutesOfDay >= 12 * 60) ||
+        clock.dateStr > dinner.dinner_date ||
+        (clock.dateStr === dinner.dinner_date && clock.minutesOfDay >= 12 * 60))
     ) {
       await lockNight(env, dinner.id);
       actions.push(`locked_night:${dinner.week_key}`);

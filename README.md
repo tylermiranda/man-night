@@ -8,7 +8,7 @@ Weekly Wichita dinner club PWA at **https://dinner.tylermiranda.com** powered by
   - Auth via Cloudflare Access (`Cf-Access-Authenticated-User-Email`) + Service Token fallback (`Cf-Access-Client-Id`).
   - Weekly state machine (`America/Chicago` 15-min Cron):
     - **Sun 10:00 AM**: Night vote opens (Tuesday vs. Wednesday; Tuesday first).
-    - **Mon 12:00 PM**: Night locks (Tuesday wins ties).
+    - **Tue 12:00 PM**: Night locks (Tuesday wins ties).
     - **Dinner Day 12:00 PM (Noon Rule)**: If unpicked, draws 4 random places from club history (skipping anything visited in the last 8 weeks).
     - **Dinner Day 4:00 PM**: Noon vote closes (random tiebreak), locks venue, updates Google Calendar (`Man Night @ <host>'s. Dinner @ <place>`), and pushes crew.
     - **30 min before dinner**: Push reminder carrying a Google Maps directions link (`data.url`).

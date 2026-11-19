@@ -1031,8 +1031,8 @@ function renderWeekView() {
       <h1 class="hero-title">Tuesday or Wednesday?</h1>
       <p class="hero-sub">${
         d.status === 'scheduled'
-          ? `Early voting open · Official poll Sunday 10:00 AM · Locks Monday 12:00 PM · Tuesday wins ties · ${fmtTime(d.start_time)}`
-          : `Locks Monday at 12:00 PM · Tuesday wins ties · ${fmtTime(d.start_time)}`
+          ? `Early voting open · Official poll Sunday 10:00 AM · Locks Tuesday 12:00 PM · Tuesday wins ties · ${fmtTime(d.start_time)}`
+          : `Locks Tuesday at 12:00 PM · Tuesday wins ties · ${fmtTime(d.start_time)}`
       }</p>
       <div class="vote-list">
         <button class="vote-option ${myNight === 'tuesday' ? 'selected' : ''}" data-action="vote-night" data-choice="tuesday">
@@ -2736,7 +2736,7 @@ function showWalkthrough(step = 0) {
       title: 'How a week works',
       body: `<div style="font-size:14px;line-height:1.6;color:var(--muted);margin-bottom:16px;">
         <div><strong style="color:var(--ink);">Pick or Poll Anytime</strong> · Hosts can pick a restaurant or start a place poll ahead of time—the Tuesday/Wednesday vote stays open alongside it (or skip voting).</div>
-        <div><strong style="color:var(--ink);">Sun 10:00 AM</strong> · Night vote opens (Tue vs Wed; Tuesday wins ties at Mon noon).</div>
+        <div><strong style="color:var(--ink);">Sun 10:00 AM</strong> · Night vote opens (Tue vs Wed; Tuesday wins ties at Tue noon).</div>
         <div><strong style="color:var(--ink);">Noon Rule</strong> · Unpicked by 12:00 PM on dinner day? App draws <strong>4 random places</strong> (skipping last 8 weeks) until 4:00 PM.</div>
         <div><strong style="color:var(--ink);">30 min &amp; 5 min before dinner</strong> · Get a 30-min reminder to add any extra people, then a 5-min headcount with Google Maps directions.</div>
       </div>`,

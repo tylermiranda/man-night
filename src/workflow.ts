@@ -22,7 +22,10 @@ import type {
   PlacePriceStats,
   PlaceVisitPrice,
   RatingViewRow,
+  RestaurantClosingFlagRow,
   RestaurantRow,
+  RestaurantSyncPayload,
+  RestaurantSyncRunRow,
   SelloutLogRow,
   SelloutStatRow,
   TrackableDinnerRow,
@@ -156,7 +159,10 @@ export function safeRestaurantSelectSql(alias = 'r'): string {
            THEN (SELECT MAX(d.dinner_date) FROM dinners d WHERE d.restaurant_id = ${alias}.id AND d.status = 'completed' AND d.dinner_date <= ?)
            ELSE ${alias}.last_visited
          END AS last_visited,
-         ${alias}.avg_rating, ${alias}.created_at`;
+         ${alias}.avg_rating, ${alias}.created_at,
+         ${alias}.is_closed, ${alias}.closed_at, ${alias}.closed_reason, ${alias}.closed_source_url,
+         ${alias}.status_locked, ${alias}.source, ${alias}.source_external_id, ${alias}.source_url,
+         ${alias}.cuisine, ${alias}.discovered_at`;
 }
 
 export function isoWeekKey(dateStr: string): string {
@@ -210,6 +216,7 @@ export async function drawFourRandomPlaces(db: D1Database, referenceDate: string
     .prepare(
       `SELECT r.* FROM restaurants r
        WHERE r.visit_count >= 1
+         AND r.is_closed = 0
          AND (r.last_visited IS NULL OR r.last_visited < ?)
          AND NOT EXISTS (
            SELECT 1 FROM dinners d
@@ -228,15 +235,22 @@ export async function drawFourRandomPlaces(db: D1Database, referenceDate: string
     return shuffleRandom(rows).slice(0, 4);
   }
 
-  // Fallback only if fewer than 4 venues exist outside 8-week cooldown
-  const allRows = await db.prepare('SELECT * FROM restaurants ORDER BY id ASC').all<RestaurantRow>();
-  return shuffleRandom(allRows.results ?? []).slice(0, 4);
+  // Fallback only if fewer than 4 open visited venues exist outside 8-week cooldown
+  const openVisited = await db
+    .prepare('SELECT * FROM restaurants WHERE is_closed = 0 AND visit_count >= 1 ORDER BY id ASC')
+    .all<RestaurantRow>();
+  if ((openVisited.results ?? []).length >= 4) {
+    return shuffleRandom(openVisited.results ?? []).slice(0, 4);
+  }
+
+  const allOpenRows = await db.prepare('SELECT * FROM restaurants WHERE is_closed = 0 ORDER BY id ASC').all<RestaurantRow>();
+  return shuffleRandom(allOpenRows.results ?? []).slice(0, 4);
 }
 
 /**
  * Draws 1–6 random places for "I'm Feeling Lucky" (single pick or poll shortlist),
- * respecting the 8-week cooldown, avoiding spots already scheduled in the next 8 weeks,
- * and prioritizing non-excluded venues when re-rolling.
+ * excluding closed venues, respecting the 8-week cooldown, avoiding spots already
+ * scheduled in the next 8 weeks, and supporting an "untried" pool for 0-visit spots.
  */
 export async function drawLuckyPlaces(
   db: D1Database,
@@ -273,6 +287,7 @@ export async function drawLuckyPlaces(
                     AND d.dinner_date <= ?
                 ) AS in_recent_window
          FROM restaurants r
+         WHERE r.is_closed = 0
          ORDER BY visit_count DESC, r.id ASC`,
       )
       .bind(
@@ -298,18 +313,24 @@ export async function drawLuckyPlaces(
     }
   }
 
+  const visitedCooldownEligible = cooldownEligible.filter((r) => (r.visit_count || 0) >= 1);
+  const visitedAllOpen = allCleanRows.filter((r) => (r.visit_count || 0) >= 1);
+  const untriedOpen = cooldownEligible.filter((r) => (r.visit_count || 0) === 0);
+
   const poolRequested: LuckyPool = options.pool || 'any';
   let primaryPool: RestaurantRow[];
   if (poolRequested === 'regulars') {
-    primaryPool = cooldownEligible.filter((r) => (r.visit_count || 0) >= 5);
+    primaryPool = visitedCooldownEligible.filter((r) => (r.visit_count || 0) >= 5);
   } else if (poolRequested === 'comeback') {
-    primaryPool = cooldownEligible.filter(
+    primaryPool = visitedCooldownEligible.filter(
       (r) => (r.visit_count || 0) >= 3 && Boolean(r.last_visited && r.last_visited <= comebackCutoff),
     );
   } else if (poolRequested === 'top_rated') {
-    primaryPool = cooldownEligible.filter((r) => r.avg_rating !== null && Number(r.avg_rating) >= 4);
+    primaryPool = visitedCooldownEligible.filter((r) => r.avg_rating !== null && Number(r.avg_rating) >= 4);
+  } else if (poolRequested === 'untried') {
+    primaryPool = untriedOpen;
   } else {
-    primaryPool = cooldownEligible;
+    primaryPool = visitedCooldownEligible;
   }
 
   const eligibleCount = primaryPool.length;
@@ -342,11 +363,11 @@ export async function drawLuckyPlaces(
   let poolUsed: LuckyPool | 'fallback_any' | 'fallback_all' = poolRequested;
   if (selected.length < targetCount) {
     poolUsed = 'fallback_any';
-    appendFrom(cooldownEligible);
+    appendFrom(visitedCooldownEligible.length > 0 ? visitedCooldownEligible : cooldownEligible);
   }
   if (selected.length < targetCount) {
     poolUsed = 'fallback_all';
-    appendFrom(allCleanRows);
+    appendFrom(visitedAllOpen.length >= targetCount ? visitedAllOpen : allCleanRows);
   }
 
   return {
@@ -618,6 +639,9 @@ export async function lockPlace(
     .bind(restaurantId)
     .first<RestaurantRow>();
   if (!restaurant) throw new Error('Restaurant not found');
+  if (Number(restaurant.is_closed) === 1) {
+    throw new Error(`${restaurant.name} is marked permanently closed and cannot be picked.`);
+  }
 
   const nightNotLockedYet =
     !existing.night_locked_at && (existing.status === 'scheduled' || existing.status === 'night_poll');
@@ -847,6 +871,10 @@ export async function createPlacePoll(
   const candidates = uniqueIds.map((id) => byId.get(id)).filter((r): r is RestaurantRow => Boolean(r));
   if (candidates.length < 2) {
     throw new Error('Select at least 2 valid restaurants');
+  }
+  const closedCandidates = candidates.filter((c) => Number(c.is_closed) === 1);
+  if (closedCandidates.length > 0) {
+    throw new Error(`Cannot include closed restaurant in poll: ${closedCandidates.map((c) => c.name).join(', ')}`);
   }
 
   const candIds = candidates.map((c) => Number(c.id));
@@ -1880,7 +1908,7 @@ export async function applyRotationOverride(
 
 export async function createRestaurant(
   db: D1Database,
-  input: { name: string; address?: string; city?: string; lat?: number | null; lng?: number | null },
+  input: { name: string; address?: string; city?: string; lat?: number | null; lng?: number | null; cuisine?: string },
 ): Promise<RestaurantRow> {
   const cleanName = input.name.trim();
   if (!cleanName) throw new Error('Restaurant name required');
@@ -1891,14 +1919,589 @@ export async function createRestaurant(
 
   const res = await db
     .prepare(
-      `INSERT INTO restaurants (slug, name, address, city, lat, lng, visit_count)
-       VALUES (?, ?, ?, ?, ?, ?, 0)`,
+      `INSERT INTO restaurants (slug, name, address, city, lat, lng, visit_count, source, cuisine, discovered_at)
+       VALUES (?, ?, ?, ?, ?, ?, 0, 'manual', ?, date('now'))`,
     )
-    .bind(baseSlug, cleanName, (input.address || '').trim(), (input.city || 'Wichita').trim(), input.lat ?? null, input.lng ?? null)
+    .bind(
+      baseSlug,
+      cleanName,
+      (input.address || '').trim(),
+      (input.city || 'Wichita').trim(),
+      input.lat ?? null,
+      input.lng ?? null,
+      (input.cuisine || '').trim(),
+    )
     .run();
 
   const id = res.meta.last_row_id;
   return (await db.prepare('SELECT * FROM restaurants WHERE id = ?').bind(id).first<RestaurantRow>())!;
+}
+
+const GENERIC_MATCH_SUFFIXES =
+  /\b(restaurant|bar\s*&\s*grill|bar\s+and\s+grill|grill|cafe|kitchen|bistro|eatery|diner|cantina|pizzeria|steakhouse|pub)\b/g;
+
+export function normalizeRestaurantMatchName(name: string): string {
+  const decoded = String(name || '')
+    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)))
+    .replace(/&amp;/gi, '&')
+    .replace(/&#038;/g, '&')
+    .replace(/['’`]/g, '')
+    .toLowerCase();
+  const base = decoded
+    .replace(/[^a-z0-9 ]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^the\s+/, '');
+  const stripped = base.replace(GENERIC_MATCH_SUFFIXES, '').replace(/\s+/g, ' ').trim();
+  return stripped.length >= 4 ? stripped : base;
+}
+
+export function extractStreetNumber(address: string): string | null {
+  const m = String(address || '').match(/\b(\d{2,5})\s+[a-z0-9]/i);
+  return m ? m[1] : null;
+}
+
+async function runBatchedStatements(db: D1Database, stmts: D1PreparedStatement[], chunkSize = 50): Promise<void> {
+  for (let i = 0; i < stmts.length; i += chunkSize) {
+    await db.batch(stmts.slice(i, i + chunkSize));
+  }
+}
+
+function makeUniqueSlug(baseName: string, address: string, city: string, usedSlugs: Set<string>): string {
+  const base = slugify(baseName);
+  if (!usedSlugs.has(base)) {
+    usedSlugs.add(base);
+    return base;
+  }
+  const streetNum = extractStreetNumber(address);
+  if (streetNum) {
+    const withNum = `${base}-${streetNum}`;
+    if (!usedSlugs.has(withNum)) {
+      usedSlugs.add(withNum);
+      return withNum;
+    }
+  }
+  const citySlug = slugify(city || '');
+  if (citySlug && citySlug !== 'place' && citySlug !== 'wichita') {
+    const withCity = `${base}-${citySlug}`;
+    if (!usedSlugs.has(withCity)) {
+      usedSlugs.add(withCity);
+      return withCity;
+    }
+  }
+  let idx = 2;
+  while (usedSlugs.has(`${base}-${idx}`)) idx += 1;
+  const candidate = `${base}-${idx}`;
+  usedSlugs.add(candidate);
+  return candidate;
+}
+
+export async function getRestaurantSyncStatus(db: D1Database) {
+  const latestRun = await db
+    .prepare('SELECT * FROM restaurant_sync_runs ORDER BY id DESC LIMIT 1')
+    .first<RestaurantSyncRunRow>();
+  const recentRuns = (
+    await db.prepare('SELECT * FROM restaurant_sync_runs ORDER BY id DESC LIMIT 10').all<RestaurantSyncRunRow>()
+  ).results ?? [];
+  const pendingFlags = (
+    await db
+      .prepare(
+        `SELECT f.*, r.name AS restaurant_name, r.slug AS restaurant_slug, r.visit_count
+         FROM restaurant_closing_flags f
+         JOIN restaurants r ON r.id = f.restaurant_id
+         WHERE f.status = 'pending'
+         ORDER BY r.visit_count DESC, f.post_date DESC, f.id DESC`,
+      )
+      .all<RestaurantClosingFlagRow>()
+  ).results ?? [];
+  const counts = await db
+    .prepare(
+      `SELECT
+         (SELECT COUNT(*) FROM restaurants WHERE visit_count >= 1) AS visited_places,
+         (SELECT COUNT(*) FROM restaurants WHERE visit_count = 0 AND is_closed = 0) AS untried_places,
+         (SELECT COUNT(*) FROM restaurants WHERE is_closed = 1) AS closed_places,
+         (SELECT COUNT(*) FROM restaurant_closing_flags WHERE status = 'pending') AS pending_flags`,
+    )
+    .first<{ visited_places: number; untried_places: number; closed_places: number; pending_flags: number }>();
+  const restaurants = (
+    await db
+      .prepare(
+        `SELECT id, slug, name, address, city, lat, lng, visit_count, last_visited,
+                is_closed, closed_at, closed_reason, closed_source_url, status_locked,
+                source, source_external_id, source_url, cuisine, discovered_at
+         FROM restaurants
+         ORDER BY visit_count DESC, id ASC`,
+      )
+      .all<RestaurantRow>()
+  ).results ?? [];
+
+  return { latestRun: latestRun ?? null, recentRuns, pendingFlags, counts, restaurants };
+}
+
+export async function applyRestaurantSync(db: D1Database, payload: RestaurantSyncPayload) {
+  const mode = payload.mode || 'weekly';
+  const cursorPostDate = payload.cursorPostDate ?? null;
+  const recordRun = payload.recordRun !== false;
+  const upserts = Array.isArray(payload.upserts) ? payload.upserts : [];
+  const closings = Array.isArray(payload.closings) ? payload.closings : [];
+  const flags = Array.isArray(payload.flags) ? payload.flags : [];
+
+  type ExistingRow = {
+    id: number;
+    slug: string;
+    name: string;
+    address: string;
+    city: string;
+    lat: number | null;
+    lng: number | null;
+    visit_count: number;
+    is_closed: number;
+    status_locked: number;
+    source: string;
+    source_external_id: string | null;
+    source_url: string | null;
+    cuisine: string;
+    discovered_at: string | null;
+  };
+
+  const loadAll = async (): Promise<ExistingRow[]> =>
+    (
+      await db
+        .prepare(
+          `SELECT id, slug, name, address, city, lat, lng, visit_count, is_closed, status_locked,
+                  source, source_external_id, source_url, cuisine, discovered_at
+           FROM restaurants
+           ORDER BY id ASC`,
+        )
+        .all<ExistingRow>()
+    ).results ?? [];
+
+  let existingRows = await loadAll();
+  const usedSlugs = new Set(existingRows.map((r) => r.slug));
+  const byExtId = new Map<string, ExistingRow>();
+  const bySlug = new Map<string, ExistingRow>();
+  const byNormName = new Map<string, ExistingRow[]>();
+
+  const indexRow = (r: ExistingRow) => {
+    if (r.source_external_id) byExtId.set(r.source_external_id, r);
+    bySlug.set(r.slug, r);
+    const norm = normalizeRestaurantMatchName(r.name);
+    if (norm) {
+      const list = byNormName.get(norm) ?? [];
+      list.push(r);
+      byNormName.set(norm, list);
+    }
+  };
+  for (const r of existingRows) indexRow(r);
+
+  const findMatchingExisting = (
+    name: string,
+    address: string,
+    city: string,
+    sourceExternalId?: string | null,
+    slugHint?: string,
+  ): ExistingRow | undefined => {
+    if (sourceExternalId && byExtId.has(sourceExternalId)) {
+      return byExtId.get(sourceExternalId);
+    }
+    const candidateStreet = extractStreetNumber(address);
+    const streetsConflict = (row: ExistingRow) => {
+      const existingStreet = extractStreetNumber(row.address);
+      if (candidateStreet && existingStreet && candidateStreet !== existingStreet) return true;
+      if (
+        !candidateStreet &&
+        !existingStreet &&
+        city &&
+        row.city &&
+        city.toLowerCase() !== row.city.toLowerCase()
+      ) {
+        return true;
+      }
+      return false;
+    };
+
+    const targetSlug = slugHint || slugify(name);
+    const slugMatch = bySlug.get(targetSlug);
+    if (slugMatch && !streetsConflict(slugMatch)) {
+      return slugMatch;
+    }
+
+    const norm = normalizeRestaurantMatchName(name);
+    if (norm && norm.length >= 4) {
+      const candidates = byNormName.get(norm) ?? [];
+      if (candidateStreet) {
+        const sameStreet = candidates.find((c) => extractStreetNumber(c.address) === candidateStreet);
+        if (sameStreet) return sameStreet;
+      }
+      const compatible = candidates.find((c) => !streetsConflict(c));
+      if (compatible) return compatible;
+    }
+    return undefined;
+  };
+
+  const upsertStmts: D1PreparedStatement[] = [];
+  const added: Array<{ name: string; slug: string; city: string; cuisine: string; sourceUrl: string | null }> = [];
+  let updatedCount = 0;
+
+  for (const raw of upserts) {
+    const cleanName = String(raw.name || '').trim();
+    if (!cleanName) continue;
+    const cleanAddr = String(raw.address || '').trim();
+    const cleanCity = String(raw.city || 'Wichita').trim() || 'Wichita';
+    const cleanCuisine = String(raw.cuisine || '').trim();
+    const cleanExtId = raw.sourceExternalId ? String(raw.sourceExternalId).trim() : null;
+    const cleanUrl = raw.sourceUrl ? String(raw.sourceUrl).trim() : null;
+    const cleanDiscovered = raw.discoveredAt ? String(raw.discoveredAt).trim() : null;
+    const cleanSource = raw.source || 'wichitabyeb_dir';
+    const lat = typeof raw.lat === 'number' && Number.isFinite(raw.lat) ? raw.lat : null;
+    const lng = typeof raw.lng === 'number' && Number.isFinite(raw.lng) ? raw.lng : null;
+
+    const match = findMatchingExisting(cleanName, cleanAddr, cleanCity, cleanExtId);
+    if (match) {
+      const sets: string[] = [];
+      const binds: unknown[] = [];
+      if (!match.address && cleanAddr) {
+        sets.push('address = ?');
+        binds.push(cleanAddr);
+        match.address = cleanAddr;
+      }
+      if ((!match.city || match.city === 'Wichita') && cleanCity && cleanCity !== match.city && cleanAddr) {
+        sets.push('city = ?');
+        binds.push(cleanCity);
+        match.city = cleanCity;
+      }
+      if (match.lat === null && lat !== null) {
+        sets.push('lat = ?');
+        binds.push(lat);
+        match.lat = lat;
+      }
+      if (match.lng === null && lng !== null) {
+        sets.push('lng = ?');
+        binds.push(lng);
+        match.lng = lng;
+      }
+      if (!match.cuisine && cleanCuisine) {
+        sets.push('cuisine = ?');
+        binds.push(cleanCuisine);
+        match.cuisine = cleanCuisine;
+      }
+      if (!match.source_url && cleanUrl) {
+        sets.push('source_url = ?');
+        binds.push(cleanUrl);
+        match.source_url = cleanUrl;
+      }
+      if (!match.source_external_id && cleanExtId && !byExtId.has(cleanExtId)) {
+        sets.push('source_external_id = ?');
+        binds.push(cleanExtId);
+        match.source_external_id = cleanExtId;
+        byExtId.set(cleanExtId, match);
+      }
+      if (!match.discovered_at && cleanDiscovered) {
+        sets.push('discovered_at = ?');
+        binds.push(cleanDiscovered);
+        match.discovered_at = cleanDiscovered;
+      }
+      if (sets.length > 0) {
+        upsertStmts.push(
+          db.prepare(`UPDATE restaurants SET ${sets.join(', ')} WHERE id = ?`).bind(...binds, match.id),
+        );
+        updatedCount += 1;
+      }
+      continue;
+    }
+
+    const newSlug = makeUniqueSlug(cleanName, cleanAddr, cleanCity, usedSlugs);
+    upsertStmts.push(
+      db
+        .prepare(
+          `INSERT INTO restaurants (
+             slug, name, address, city, lat, lng, visit_count,
+             is_closed, status_locked, source, source_external_id, source_url, cuisine, discovered_at
+           ) VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, ?, ?, ?, ?, ?)`,
+        )
+        .bind(
+          newSlug,
+          cleanName,
+          cleanAddr,
+          cleanCity,
+          lat,
+          lng,
+          cleanSource,
+          cleanExtId,
+          cleanUrl,
+          cleanCuisine,
+          cleanDiscovered,
+        ),
+    );
+    const placeholder: ExistingRow = {
+      id: -1,
+      slug: newSlug,
+      name: cleanName,
+      address: cleanAddr,
+      city: cleanCity,
+      lat,
+      lng,
+      visit_count: 0,
+      is_closed: 0,
+      status_locked: 0,
+      source: cleanSource,
+      source_external_id: cleanExtId,
+      source_url: cleanUrl,
+      cuisine: cleanCuisine,
+      discovered_at: cleanDiscovered,
+    };
+    indexRow(placeholder);
+    added.push({ name: cleanName, slug: newSlug, city: cleanCity, cuisine: cleanCuisine, sourceUrl: cleanUrl });
+  }
+
+  if (upsertStmts.length > 0) {
+    await runBatchedStatements(db, upsertStmts);
+    existingRows = await loadAll();
+    byExtId.clear();
+    bySlug.clear();
+    byNormName.clear();
+    for (const r of existingRows) indexRow(r);
+  }
+
+  const byId = new Map(existingRows.map((r) => [r.id, r]));
+  const resolveTarget = (t: { restaurantId?: number; slug?: string; sourceExternalId?: string | null; name?: string }) => {
+    if (t.restaurantId && byId.has(Number(t.restaurantId))) return byId.get(Number(t.restaurantId));
+    if (t.sourceExternalId && byExtId.has(t.sourceExternalId)) return byExtId.get(t.sourceExternalId);
+    if (t.slug && bySlug.has(t.slug)) return bySlug.get(t.slug);
+    if (t.name) return findMatchingExisting(t.name, '', '', t.sourceExternalId ?? null, t.slug);
+    return undefined;
+  };
+
+  const todayStr = getCentralDateStr(new Date(), 'America/Chicago');
+  const closingStmts: D1PreparedStatement[] = [];
+  const closed: Array<{ id: number; name: string; visitCount: number; closedAt: string; sourceUrl: string | null }> = [];
+  const skippedLocked: Array<{ id: number; name: string }> = [];
+
+  for (const c of closings) {
+    const target = resolveTarget(c);
+    if (!target) continue;
+    if (Number(target.status_locked) === 1) {
+      skippedLocked.push({ id: target.id, name: target.name });
+      continue;
+    }
+    if (Number(target.is_closed) === 1) continue;
+    const closedDate = (c.closedAt || todayStr).slice(0, 10);
+    const reason = (c.reason || 'Reported permanently closed by Wichita By E.B.').trim();
+    const srcUrl = c.sourceUrl ? String(c.sourceUrl).trim() : null;
+    target.is_closed = 1;
+    closingStmts.push(
+      db
+        .prepare(
+          `UPDATE restaurants
+           SET is_closed = 1,
+               closed_at = ?,
+               closed_reason = ?,
+               closed_source_url = ?
+           WHERE id = ?`,
+        )
+        .bind(closedDate, reason, srcUrl, target.id),
+      db
+        .prepare(
+          `UPDATE restaurant_closing_flags
+           SET status = 'confirmed_closed', resolved_at = datetime('now')
+           WHERE restaurant_id = ? AND status = 'pending'`,
+        )
+        .bind(target.id),
+    );
+    closed.push({
+      id: target.id,
+      name: target.name,
+      visitCount: Number(target.visit_count || 0),
+      closedAt: closedDate,
+      sourceUrl: srcUrl,
+    });
+  }
+
+  if (closingStmts.length > 0) {
+    await runBatchedStatements(db, closingStmts);
+  }
+
+  const flagged: Array<{
+    restaurantId: number;
+    restaurantName: string;
+    visitCount: number;
+    wpPostId: number;
+    postTitle: string;
+    postUrl: string;
+  }> = [];
+
+  for (const f of flags) {
+    const target = resolveTarget(f);
+    if (!target) continue;
+    if (Number(target.status_locked) === 1 || Number(target.is_closed) === 1) continue;
+    const res = await db
+      .prepare(
+        `INSERT OR IGNORE INTO restaurant_closing_flags
+           (restaurant_id, wp_post_id, post_title, post_url, post_date, confidence, reason)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        target.id,
+        Number(f.wpPostId),
+        String(f.postTitle || '').trim(),
+        String(f.postUrl || '').trim(),
+        String(f.postDate || todayStr).slice(0, 10),
+        String(f.confidence || 'ambiguous'),
+        String(f.reason || '').trim(),
+      )
+      .run();
+    if (Number(res.meta?.changes ?? 0) > 0) {
+      flagged.push({
+        restaurantId: target.id,
+        restaurantName: target.name,
+        visitCount: Number(target.visit_count || 0),
+        wpPostId: Number(f.wpPostId),
+        postTitle: String(f.postTitle || '').trim(),
+        postUrl: String(f.postUrl || '').trim(),
+      });
+    }
+  }
+
+  let runId: number | null = null;
+  if (recordRun) {
+    const summaryJson = JSON.stringify({
+      added: added.slice(0, 100),
+      closed,
+      flagged,
+      skippedLocked,
+    });
+    const runRes = await db
+      .prepare(
+        `INSERT INTO restaurant_sync_runs
+           (finished_at, mode, cursor_post_date, added_count, updated_count, closed_count, flagged_count, summary_json)
+         VALUES (datetime('now'), ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        mode,
+        cursorPostDate,
+        added.length,
+        updatedCount,
+        closed.length,
+        flagged.length,
+        summaryJson,
+      )
+      .run();
+    runId = Number(runRes.meta?.last_row_id ?? 0) || null;
+  }
+
+  return {
+    ok: true,
+    runId,
+    addedCount: added.length,
+    updatedCount,
+    closedCount: closed.length,
+    flaggedCount: flagged.length,
+    added,
+    closed,
+    flagged,
+    skippedLocked,
+  };
+}
+
+export async function setRestaurantClosedStatus(
+  db: D1Database,
+  restaurantId: number,
+  input: { isClosed: boolean; reason?: string; sourceUrl?: string | null; lock?: boolean },
+): Promise<RestaurantRow> {
+  const existing = await db.prepare('SELECT * FROM restaurants WHERE id = ?').bind(restaurantId).first<RestaurantRow>();
+  if (!existing) throw new Error('Restaurant not found');
+
+  const todayStr = getCentralDateStr(new Date(), 'America/Chicago');
+  const lockVal = input.lock === false ? 0 : 1;
+
+  if (input.isClosed) {
+    const reason = (input.reason || existing.closed_reason || 'Marked closed by admin').trim();
+    const srcUrl = input.sourceUrl !== undefined ? input.sourceUrl : existing.closed_source_url ?? null;
+    await db
+      .prepare(
+        `UPDATE restaurants
+         SET is_closed = 1,
+             closed_at = COALESCE(closed_at, ?),
+             closed_reason = ?,
+             closed_source_url = ?,
+             status_locked = ?
+         WHERE id = ?`,
+      )
+      .bind(todayStr, reason, srcUrl, lockVal, restaurantId)
+      .run();
+    await db
+      .prepare(
+        `UPDATE restaurant_closing_flags
+         SET status = 'confirmed_closed', resolved_at = datetime('now')
+         WHERE restaurant_id = ? AND status = 'pending'`,
+      )
+      .bind(restaurantId)
+      .run();
+  } else {
+    await db
+      .prepare(
+        `UPDATE restaurants
+         SET is_closed = 0,
+             closed_at = NULL,
+             closed_reason = '',
+             closed_source_url = NULL,
+             status_locked = ?
+         WHERE id = ?`,
+      )
+      .bind(lockVal, restaurantId)
+      .run();
+    await db
+      .prepare(
+        `UPDATE restaurant_closing_flags
+         SET status = 'dismissed', resolved_at = datetime('now')
+         WHERE restaurant_id = ? AND status = 'pending'`,
+      )
+      .bind(restaurantId)
+      .run();
+  }
+
+  return (await db.prepare('SELECT * FROM restaurants WHERE id = ?').bind(restaurantId).first<RestaurantRow>())!;
+}
+
+export async function resolveClosingFlag(
+  db: D1Database,
+  flagId: number,
+  action: 'confirm_closed' | 'dismiss',
+) {
+  const flag = await db
+    .prepare('SELECT * FROM restaurant_closing_flags WHERE id = ?')
+    .bind(flagId)
+    .first<RestaurantClosingFlagRow>();
+  if (!flag) throw new Error('Closing flag not found');
+
+  if (action === 'confirm_closed') {
+    const restaurant = await setRestaurantClosedStatus(db, flag.restaurant_id, {
+      isClosed: true,
+      reason: flag.post_title,
+      sourceUrl: flag.post_url,
+      lock: true,
+    });
+    await db
+      .prepare(
+        `UPDATE restaurant_closing_flags
+         SET status = 'confirmed_closed', resolved_at = datetime('now')
+         WHERE id = ?`,
+      )
+      .bind(flagId)
+      .run();
+    return { action, flagId, restaurant };
+  }
+
+  await db
+    .prepare(
+      `UPDATE restaurant_closing_flags
+       SET status = 'dismissed', resolved_at = datetime('now')
+       WHERE id = ?`,
+    )
+    .bind(flagId)
+    .run();
+  const restaurant = await db.prepare('SELECT * FROM restaurants WHERE id = ?').bind(flag.restaurant_id).first<RestaurantRow>();
+  return { action, flagId, restaurant };
 }
 
 export async function backfillDinnerPlace(
@@ -3243,12 +3846,25 @@ export async function getBootstrapPayload(env: Env, currentUser: UserRow) {
   const counts = await env.DB.prepare(
     `SELECT
        (SELECT COUNT(*) FROM dinners WHERE status = 'completed') AS total_dinners,
-       (SELECT COUNT(*) FROM restaurants) AS total_places,
+       (SELECT COUNT(*) FROM restaurants WHERE visit_count >= 1) AS total_places,
+       (SELECT COUNT(*) FROM restaurants WHERE visit_count = 0 AND is_closed = 0) AS untried_places,
+       (SELECT COUNT(*) FROM restaurants WHERE is_closed = 1) AS closed_places,
+       (SELECT COUNT(*) FROM restaurant_closing_flags WHERE status = 'pending') AS pending_closing_flags,
        (SELECT COUNT(*) FROM dinners WHERE status = 'completed' AND dinner_date >= '2025-01-01') AS recent_weeks,
        (SELECT COUNT(*) FROM dinners WHERE status = 'completed' AND dinner_date >= '2025-01-01' AND day_of_week = 'Tuesday') AS recent_tuesdays,
        (SELECT ROUND(AVG(price), 2) FROM ratings WHERE price IS NOT NULL AND price > 0) AS avg_meal_price,
        (SELECT COUNT(*) FROM ratings WHERE price IS NOT NULL AND price > 0) AS total_price_entries`,
-  ).first<{ total_dinners: number; total_places: number; recent_weeks: number; recent_tuesdays: number; avg_meal_price: number | null; total_price_entries: number }>();
+  ).first<{
+    total_dinners: number;
+    total_places: number;
+    untried_places: number;
+    closed_places: number;
+    pending_closing_flags: number;
+    recent_weeks: number;
+    recent_tuesdays: number;
+    avg_meal_price: number | null;
+    total_price_entries: number;
+  }>();
 
   const hostStats = (
     await env.DB.prepare(

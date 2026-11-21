@@ -11,6 +11,17 @@ import type { WhatsNewEntry, WhatsNewPayload, WhatsNewViewEntry } from './types'
  */
 export const WHATS_NEW_RELEASES: readonly WhatsNewEntry[] = [
   {
+    id: '2026-11-21-wichita-eb-directory-closings',
+    date: '2026-11-21',
+    kind: 'feature',
+    title: '🍽️ Wichita By E.B. New Spots & Closings Sync',
+    summary:
+      'Added local Wichita restaurants from Wichita By E.B. (excluding coffee shops and food trucks) so hosts can browse Untried / New spots, draw from the new Untried pool in I’m Feeling Lucky, and add fresh openings to polls. Closed spots are automatically flagged and kept out of polls while preserving club history.',
+    creditSlug: 'tyler',
+    creditName: 'Tyler',
+    creditRole: 'idea',
+  },
+  {
     id: '2026-11-19-tuesday-noon-night-lock',
     date: '2026-11-19',
     kind: 'feature',

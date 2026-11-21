@@ -2,9 +2,10 @@ import { resolveAuthUser } from './auth';
 import { WHATS_NEW_RELEASES, buildWhatsNewPayload, isValidWhatsNewId } from './changelog';
 import { runWeeklyCronTick } from './cron';
 import { sendWebPushToSubscribers } from './push';
-import type { Env, LuckyPool, RestaurantRow } from './types';
+import type { Env, LuckyPool, RestaurantClosingFlagRow, RestaurantRow, RestaurantSyncPayload, RestaurantSyncRunRow } from './types';
 import {
   addDinnerComment,
+  applyRestaurantSync,
   applyRotationOverride,
   backfillDinnerPlace,
   cancelNight,
@@ -29,14 +30,17 @@ import {
   getIssueReportScreenshot,
   getMealPhotoBinary,
   getPlaceReviews,
+  getRestaurantSyncStatus,
   listBeers,
   listMealPhotos,
   lockNight,
   lockPlace,
   openNoonDraw,
+  resolveClosingFlag,
   restoreNight,
   safeRestaurantSelectSql,
   setDinnerMealPrice,
+  setRestaurantClosedStatus,
   submitRating,
   syncCurrentAndUpcomingCalendar,
   updateBeer,
@@ -144,6 +148,10 @@ function renderAdminDashboardHtml(data: {
   recentActivity: Array<{ id: number; user_slug: string; name: string | null; feature_name: string; endpoint_path: string | null; request_method: string | null; called_at: string }>;
   notificationLogs: Array<{ id: number; user_slug: string; name: string | null; notification_type: string; status: string; sent_at: string; delivery_endpoint: string | null }>;
   adminLogins: Array<{ id: number; user_slug: string; email: string; login_at: string; ip_address: string | null; user_agent: string | null }>;
+  syncRuns: RestaurantSyncRunRow[];
+  pendingFlags: RestaurantClosingFlagRow[];
+  closedRestaurants: RestaurantRow[];
+  placeCounts: { visited_places: number; untried_places: number; closed_places: number };
 }): string {
   const totalCalls = data.featureStats.reduce((acc, curr) => acc + curr.calls, 0);
   const totalNotifications = data.notificationLogs.length;
@@ -594,6 +602,107 @@ function renderAdminDashboardHtml(data: {
       </div>
     </div>
 
+    <!-- WICHITA BY E.B. SYNC & CLOSINGS -->
+    <div class="section-card">
+      <div class="section-header">
+        <div class="section-title">Wichita By E.B. Sync &amp; Closings</div>
+        <span class="badge ${data.pendingFlags.length > 0 ? 'badge-warn' : 'badge-ok'}">${data.placeCounts.visited_places} visited · ${data.placeCounts.untried_places} untried · ${data.placeCounts.closed_places} closed</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Pending Review</th>
+              <th>Article</th>
+              <th>Visits</th>
+              <th>Reason</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${
+              data.pendingFlags.length === 0
+                ? `<tr><td colspan="5" class="empty-msg">No ambiguous closing flags awaiting review.</td></tr>`
+                : data.pendingFlags
+                    .map(
+                      (f) => `<tr>
+                        <td><strong>${escapeHtml(f.restaurant_name || f.restaurant_slug || `#${f.restaurant_id}`)}</strong></td>
+                        <td><a href="${escapeHtml(f.post_url)}" target="_blank" rel="noopener" style="color:#60a5fa;">${escapeHtml(f.post_title)}</a> <span class="time-cell">(${escapeHtml(f.post_date)})</span></td>
+                        <td class="mono">${Number(f.visit_count || 0)}×</td>
+                        <td style="font-size:0.8rem;color:var(--muted);">${escapeHtml(f.reason || f.confidence)}</td>
+                        <td style="white-space:nowrap;">
+                          <button class="btn btn-danger" onclick="resolveClosingFlag(${f.id}, 'confirm_closed')">Mark Closed</button>
+                          <button class="btn" onclick="resolveClosingFlag(${f.id}, 'dismiss')">Dismiss</button>
+                        </td>
+                      </tr>`,
+                    )
+                    .join('')
+            }
+          </tbody>
+        </table>
+      </div>
+      <div class="table-wrap" style="border-top:1px solid var(--border);">
+        <table>
+          <thead>
+            <tr>
+              <th>Closed Restaurant</th>
+              <th>Visits</th>
+              <th>Closed Date</th>
+              <th>Source / Reason</th>
+              <th>Override</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${
+              data.closedRestaurants.length === 0
+                ? `<tr><td colspan="5" class="empty-msg">No restaurants currently marked closed.</td></tr>`
+                : data.closedRestaurants
+                    .map(
+                      (r) => `<tr>
+                        <td><strong>${escapeHtml(r.name)}</strong> ${r.status_locked ? '<span class="badge badge-warn">Locked</span>' : ''}</td>
+                        <td class="mono">${Number(r.visit_count || 0)}×</td>
+                        <td class="time-cell">${escapeHtml(r.closed_at || '—')}</td>
+                        <td style="font-size:0.8rem;color:var(--muted);">${r.closed_source_url ? `<a href="${escapeHtml(r.closed_source_url)}" target="_blank" rel="noopener" style="color:#60a5fa;">${escapeHtml(r.closed_reason || 'Wichita By E.B.')}</a>` : escapeHtml(r.closed_reason || 'Closed')}</td>
+                        <td><button class="btn" onclick="toggleRestaurantStatus(${r.id}, false)">Reopen</button></td>
+                      </tr>`,
+                    )
+                    .join('')
+            }
+          </tbody>
+        </table>
+      </div>
+      <div class="table-wrap" style="border-top:1px solid var(--border);">
+        <table>
+          <thead>
+            <tr>
+              <th>Sync Run Time</th>
+              <th>Mode</th>
+              <th>Cursor</th>
+              <th>Added / Updated</th>
+              <th>Closed / Flagged</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${
+              data.syncRuns.length === 0
+                ? `<tr><td colspan="5" class="empty-msg">No Wichita By E.B. sync runs recorded yet.</td></tr>`
+                : data.syncRuns
+                    .map(
+                      (s) => `<tr>
+                        <td class="time-cell">${escapeHtml(s.finished_at || s.started_at)}</td>
+                        <td><span class="badge badge-ok">${escapeHtml(s.mode)}</span></td>
+                        <td class="time-cell">${escapeHtml(s.cursor_post_date || '—')}</td>
+                        <td class="mono">+${s.added_count} / ~${s.updated_count}</td>
+                        <td class="mono">${s.closed_count} closed / ${s.flagged_count} flagged</td>
+                      </tr>`,
+                    )
+                    .join('')
+            }
+          </tbody>
+        </table>
+      </div>
+    </div>
+
     <!-- ADMIN LOGINS -->
     <div class="section-card">
       <div class="section-header">
@@ -647,6 +756,42 @@ function renderAdminDashboardHtml(data: {
         alert('Network error clearing logs: ' + e);
       }
     }
+
+    async function resolveClosingFlag(flagId, action) {
+      try {
+        const res = await fetch('/admin/closing-flags/' + flagId + '/resolve', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action }),
+        });
+        const json = await res.json();
+        if (json.ok) {
+          location.reload();
+        } else {
+          alert('Failed: ' + (json.error || 'Unknown error'));
+        }
+      } catch (e) {
+        alert('Network error: ' + e);
+      }
+    }
+
+    async function toggleRestaurantStatus(restaurantId, isClosed) {
+      try {
+        const res = await fetch('/admin/restaurants/' + restaurantId + '/status', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ isClosed, lock: true }),
+        });
+        const json = await res.json();
+        if (json.ok) {
+          location.reload();
+        } else {
+          alert('Failed: ' + (json.error || 'Unknown error'));
+        }
+      } catch (e) {
+        alert('Network error: ' + e);
+      }
+    }
   </script>
 </body>
 </html>`;
@@ -672,6 +817,63 @@ async function handleAdminRequest(request: Request, env: Env, user: { email: str
       return json({ ok: true, results });
     } catch (err) {
       return json({ ok: false, error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  }
+
+  // GET /admin/sync-status -> inspect latest Wichita By E.B. sync cursor, flags, and current restaurant index
+  if (path === '/admin/sync-status' && method === 'GET') {
+    try {
+      const status = await getRestaurantSyncStatus(env.DB);
+      return json({ ok: true, ...status });
+    } catch (err) {
+      return json({ ok: false, error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  }
+
+  // POST /admin/restaurants/sync -> idempotent bulk upsert + closings + ambiguous flags
+  if (path === '/admin/restaurants/sync' && method === 'POST') {
+    try {
+      const body = await readJson<RestaurantSyncPayload>(request);
+      const res = await applyRestaurantSync(env.DB, body);
+      return json(res);
+    } catch (err) {
+      return json({ ok: false, error: err instanceof Error ? err.message : String(err) }, 400);
+    }
+  }
+
+  // PATCH /admin/restaurants/:id/status -> manual close/reopen override (locks status against auto-sync)
+  const restaurantStatusMatch = path.match(/^\/admin\/restaurants\/(\d+)\/status$/);
+  if (restaurantStatusMatch && method === 'PATCH') {
+    try {
+      const restaurantId = Number(restaurantStatusMatch[1]);
+      const body = await readJson<{ isClosed: boolean; reason?: string; sourceUrl?: string | null; lock?: boolean }>(
+        request,
+      );
+      if (typeof body.isClosed !== 'boolean') {
+        return json({ ok: false, error: 'isClosed boolean is required' }, 400);
+      }
+      const restaurant = await setRestaurantClosedStatus(env.DB, restaurantId, body);
+      return json({ ok: true, restaurant });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return json({ ok: false, error: msg }, msg === 'Restaurant not found' ? 404 : 400);
+    }
+  }
+
+  // POST /admin/closing-flags/:id/resolve -> confirm_closed or dismiss a flagged closing post
+  const closingFlagResolveMatch = path.match(/^\/admin\/closing-flags\/(\d+)\/resolve$/);
+  if (closingFlagResolveMatch && method === 'POST') {
+    try {
+      const flagId = Number(closingFlagResolveMatch[1]);
+      const body = await readJson<{ action?: string }>(request);
+      if (body.action !== 'confirm_closed' && body.action !== 'dismiss') {
+        return json({ ok: false, error: 'action must be confirm_closed or dismiss' }, 400);
+      }
+      const res = await resolveClosingFlag(env.DB, flagId, body.action);
+      return json({ ok: true, ...res });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return json({ ok: false, error: msg }, msg === 'Closing flag not found' ? 404 : 400);
     }
   }
 
@@ -771,6 +973,39 @@ async function handleAdminRequest(request: Request, env: Env, user: { email: str
       console.error('Failed to load admin logins', e);
     }
 
+    let syncRuns: RestaurantSyncRunRow[] = [];
+    let pendingFlags: RestaurantClosingFlagRow[] = [];
+    let closedRestaurants: RestaurantRow[] = [];
+    let placeCounts = { visited_places: 0, untried_places: 0, closed_places: 0 };
+    try {
+      syncRuns = (
+        await env.DB.prepare('SELECT * FROM restaurant_sync_runs ORDER BY id DESC LIMIT 10').all<RestaurantSyncRunRow>()
+      ).results ?? [];
+      pendingFlags = (
+        await env.DB.prepare(
+          `SELECT f.*, r.name AS restaurant_name, r.slug AS restaurant_slug, r.visit_count
+           FROM restaurant_closing_flags f
+           JOIN restaurants r ON r.id = f.restaurant_id
+           WHERE f.status = 'pending'
+           ORDER BY r.visit_count DESC, f.post_date DESC, f.id DESC`,
+        ).all<RestaurantClosingFlagRow>()
+      ).results ?? [];
+      closedRestaurants = (
+        await env.DB.prepare(
+          `SELECT * FROM restaurants WHERE is_closed = 1 ORDER BY visit_count DESC, closed_at DESC, name ASC LIMIT 100`,
+        ).all<RestaurantRow>()
+      ).results ?? [];
+      const pc = await env.DB.prepare(
+        `SELECT
+           (SELECT COUNT(*) FROM restaurants WHERE visit_count >= 1) AS visited_places,
+           (SELECT COUNT(*) FROM restaurants WHERE visit_count = 0 AND is_closed = 0) AS untried_places,
+           (SELECT COUNT(*) FROM restaurants WHERE is_closed = 1) AS closed_places`,
+      ).first<typeof placeCounts>();
+      if (pc) placeCounts = pc;
+    } catch (e) {
+      console.error('Failed to load sync status for admin', e);
+    }
+
     const acceptsJson = url.searchParams.get('format') === 'json' ||
       (Boolean(request.headers.get('accept')?.includes('application/json')) && !request.headers.get('accept')?.includes('text/html'));
 
@@ -783,6 +1018,8 @@ async function handleAdminRequest(request: Request, env: Env, user: { email: str
           active_users: userActivity.length,
           feature_calls: featureStats.reduce((acc, curr) => acc + curr.calls, 0),
           notifications: notificationLogs.length,
+          ...placeCounts,
+          pending_flags: pendingFlags.length,
         },
         data: {
           devices,
@@ -791,6 +1028,9 @@ async function handleAdminRequest(request: Request, env: Env, user: { email: str
           recent_activity: recentActivity,
           notification_logs: notificationLogs,
           admin_logins: adminLogins,
+          sync_runs: syncRuns,
+          pending_flags: pendingFlags,
+          closed_restaurants: closedRestaurants,
         },
       });
     }
@@ -803,6 +1043,10 @@ async function handleAdminRequest(request: Request, env: Env, user: { email: str
       recentActivity,
       notificationLogs,
       adminLogins,
+      syncRuns,
+      pendingFlags,
+      closedRestaurants,
+      placeCounts,
     });
 
     return new Response(html, {
@@ -1066,7 +1310,13 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
       }
 
       const pool = body.pool === undefined ? 'any' : body.pool;
-      if (pool !== 'any' && pool !== 'regulars' && pool !== 'comeback' && pool !== 'top_rated') {
+      if (
+        pool !== 'any' &&
+        pool !== 'regulars' &&
+        pool !== 'comeback' &&
+        pool !== 'top_rated' &&
+        pool !== 'untried'
+      ) {
         return json({ error: 'Invalid pool filter' }, 400);
       }
 
@@ -1389,6 +1639,8 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
 
     if (path === '/api/places' && method === 'GET') {
       const q = (url.searchParams.get('q') || '').trim().toLowerCase();
+      const statusParam = (url.searchParams.get('status') || 'all').trim().toLowerCase();
+      const visitedParam = (url.searchParams.get('visited') || 'all').trim().toLowerCase();
       const todayStr = getCentralDateStr(new Date(), env.CLUB_TIMEZONE || 'America/Chicago');
       const rows = (
         await env.DB.prepare(
@@ -1402,9 +1654,26 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
           .bind(todayStr, todayStr, todayStr, todayStr)
           .all<RestaurantRow>()
       ).results ?? [];
-      const filtered = q
-        ? rows.filter((r) => r.name.toLowerCase().includes(q) || r.address.toLowerCase().includes(q))
-        : rows;
+      let filtered = rows;
+      if (statusParam === 'open') {
+        filtered = filtered.filter((r) => !Number(r.is_closed));
+      } else if (statusParam === 'closed') {
+        filtered = filtered.filter((r) => Number(r.is_closed) === 1);
+      }
+      if (visitedParam === '1' || visitedParam === 'true') {
+        filtered = filtered.filter((r) => (r.visit_count || 0) > 0);
+      } else if (visitedParam === '0' || visitedParam === 'false') {
+        filtered = filtered.filter((r) => (r.visit_count || 0) === 0);
+      }
+      if (q) {
+        filtered = filtered.filter(
+          (r) =>
+            r.name.toLowerCase().includes(q) ||
+            r.address.toLowerCase().includes(q) ||
+            (r.city || '').toLowerCase().includes(q) ||
+            (r.cuisine || '').toLowerCase().includes(q),
+        );
+      }
 
       const limitParam = url.searchParams.get('limit');
       const offsetParam = url.searchParams.get('offset');

@@ -22,6 +22,8 @@ const state = {
   pickerDay: 'Tuesday',
   pickerKeepNightVote: true,
   pickerAllowKeepNightVote: false,
+  pickerFilter: 'all',
+  pollFilter: 'all',
   nightReasonDraft: null,
   nightReasonDinnerId: null,
   focusNightReason: false,
@@ -1668,18 +1670,43 @@ function renderHistoryView() {
   `;
 }
 
+function isNewDiscovery(place) {
+  if (!place || (place.visit_count || 0) > 0 || place.is_closed) return false;
+  if (place.source === 'wichitabyeb_post') return true;
+  return Boolean(place.discovered_at && String(place.discovered_at) >= '2025-01-01');
+}
+
+function placeMatchesQuery(place, term) {
+  if (!term) return true;
+  return (
+    (place.name || '').toLowerCase().includes(term) ||
+    (place.address || '').toLowerCase().includes(term) ||
+    (place.city || '').toLowerCase().includes(term) ||
+    (place.cuisine || '').toLowerCase().includes(term)
+  );
+}
+
 function getFilteredPlaces() {
   const q = state.placesQuery.trim().toLowerCase();
   const todayIso = getTodayCentralIso();
   const cutoffTwoYearsAgo = new Date(Date.now() - 365 * 2 * 86400000).toISOString().slice(0, 10);
   let list = [...state.places];
 
-  if (state.placesFilter === 'ten_plus') {
+  if (state.placesFilter === 'all') {
+    if (!q) {
+      list = list.filter((p) => (p.visit_count || 0) > 0);
+    }
+  } else if (state.placesFilter === 'untried') {
+    list = list.filter((p) => (p.visit_count || 0) === 0 && !p.is_closed);
+  } else if (state.placesFilter === 'closed') {
+    list = list.filter((p) => Boolean(p.is_closed));
+  } else if (state.placesFilter === 'ten_plus') {
     list = list.filter((p) => (p.visit_count || 0) >= 10);
   } else if (state.placesFilter === 'regulars') {
     list = list.filter((p) => (p.visit_count || 0) >= 5);
   } else if (state.placesFilter === 'comeback') {
     list = list.filter((p) => {
+      if (p.is_closed) return false;
       const lv = effectiveLastVisited(p, todayIso);
       return (p.visit_count || 0) >= 3 && lv && lv <= cutoffTwoYearsAgo;
     });
@@ -1694,7 +1721,7 @@ function getFilteredPlaces() {
   }
 
   if (q) {
-    list = list.filter((p) => p.name.toLowerCase().includes(q) || (p.address || '').toLowerCase().includes(q));
+    list = list.filter((p) => placeMatchesQuery(p, q));
   }
   if (state.placesSort === 'rating') {
     list.sort(
@@ -1713,12 +1740,26 @@ function getFilteredPlaces() {
     );
   } else if (state.placesSort === 'recent') {
     list.sort((a, b) => {
-      const aDate = effectiveLastVisited(a, todayIso) || '';
-      const bDate = effectiveLastVisited(b, todayIso) || '';
+      const aDate = effectiveLastVisited(a, todayIso) || a.discovered_at || '';
+      const bDate = effectiveLastVisited(b, todayIso) || b.discovered_at || '';
       return bDate.localeCompare(aDate) || (b.visit_count - a.visit_count) || a.name.localeCompare(b.name);
     });
   } else if (state.placesSort === 'alpha') {
     list.sort((a, b) => a.name.localeCompare(b.name));
+  } else if (state.placesFilter === 'untried') {
+    list.sort(
+      (a, b) =>
+        Number(isNewDiscovery(b)) - Number(isNewDiscovery(a)) ||
+        (b.discovered_at || '').localeCompare(a.discovered_at || '') ||
+        a.name.localeCompare(b.name),
+    );
+  } else if (state.placesFilter === 'closed') {
+    list.sort(
+      (a, b) =>
+        (b.visit_count - a.visit_count) ||
+        (b.closed_at || '').localeCompare(a.closed_at || '') ||
+        a.name.localeCompare(b.name),
+    );
   } else {
     list.sort((a, b) => (b.visit_count - a.visit_count) || a.name.localeCompare(b.name));
   }
@@ -1821,20 +1862,39 @@ function renderSelectedPlaceCard(selected) {
       : `<div style="font-size:13px;color:var(--muted);">No crew reviews yet for this spot.</div>`
     : `<div style="font-size:13px;color:var(--muted);">Loading reviews &amp; photos…</div>`;
 
+  const closedBannerHtml = place.is_closed
+    ? `<div class="closed-banner">
+         <strong>Closed</strong>${place.closed_at ? ` · ${fmtDate(place.closed_at)}` : ''}${place.closed_reason ? ` — ${esc(place.closed_reason)}` : ''}
+         ${place.closed_source_url ? ` · <a href="${esc(place.closed_source_url)}" target="_blank" rel="noopener">Wichita By E.B. report ↗</a>` : ''}
+       </div>`
+    : '';
+  const statusPills = [
+    place.is_closed ? '<span class="badge badge-closed">Closed</span>' : '',
+    isNewDiscovery(place) ? '<span class="badge badge-new">New</span>' : !(place.visit_count || 0) && !place.is_closed ? '<span class="badge badge-untried">Untried</span>' : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
+  const ebBtnHtml = place.source_url
+    ? `<a class="btn btn-sm btn-outline" href="${esc(place.source_url)}" target="_blank" rel="noopener">Wichita By E.B. ↗</a>`
+    : '';
+
   return `
     <section class="card">
       <div class="card-kicker">
-        <span>Selected spot</span>
+        <span>Selected spot ${statusPills}</span>
         <span id="selected-place-rating-badge">${ratingBadgeHtml}</span>
       </div>
+      ${closedBannerHtml}
       <div style="font-weight:750;font-size:18px;line-height:1.2;">${esc(place.name)}</div>
+      ${place.cuisine ? `<div class="place-cuisine">${esc(place.cuisine)}</div>` : ''}
       <div style="font-size:13px;color:var(--muted);margin-top:3px;">
-        ${place.visit_count} ${place.visit_count === 1 ? 'visit' : 'visits'}${lastVisited ? ` · Last ${fmtDate(lastVisited)}` : ''}
+        ${place.visit_count} ${place.visit_count === 1 ? 'visit' : 'visits'}${lastVisited ? ` · Last ${fmtDate(lastVisited)}` : place.discovered_at ? ` · Added ${fmtDate(place.discovered_at)}` : ''}
       </div>
       <div style="font-size:12px;color:var(--muted);margin-top:2px;margin-bottom:10px;">${esc(place.address || place.city)}</div>
       <div class="btn-row" style="margin-bottom:12px;">
         <a class="btn btn-sm btn-primary" href="${esc(gmaps)}" target="_blank" rel="noopener">Directions ↗</a>
-        <button class="btn btn-sm btn-outline" data-action="filter-place-history" data-place-id="${place.id}">Visit history →</button>
+        ${ebBtnHtml}
+        ${place.visit_count > 0 ? `<button class="btn btn-sm btn-outline" data-action="filter-place-history" data-place-id="${place.id}">Visit history →</button>` : ''}
         <span id="selected-place-rate-wrap">${rateBtnHtml}${photoBtnHtml}</span>
       </div>
       <div id="selected-place-prices">${renderPriceTrackerHtml(place, cached)}</div>
@@ -1899,29 +1959,32 @@ async function loadPlaceReviews(placeId) {
 
 function renderPlacesView() {
   const all = state.places || [];
+  const visitedPlaces = all.filter((p) => (p.visit_count || 0) > 0);
+  const untriedOpenPlaces = all.filter((p) => (p.visit_count || 0) === 0 && !p.is_closed);
+  const closedPlaces = all.filter((p) => Boolean(p.is_closed));
   const todayIso = getTodayCentralIso();
-  const totalVisits = all.reduce((sum, p) => sum + (p.visit_count || 0), 0);
-  const tenPlus = [...all].filter((p) => (p.visit_count || 0) >= 10).sort((a, b) => b.visit_count - a.visit_count);
-  const regulars = all.filter((p) => (p.visit_count || 0) >= 5);
-  const oneHits = all.filter((p) => (p.visit_count || 0) === 1);
-  const reviewedPlaces = all.filter((p) => (p.rating_count || 0) > 0 || p.avg_rating != null);
-  const placesWithPhotos = all.filter((p) => (p.photo_count || 0) > 0);
-  const byVisits = [...all].sort((a, b) => (b.visit_count - a.visit_count) || a.name.localeCompare(b.name));
-  const byRecent = [...all]
-    .filter((p) => (p.visit_count || 0) > 0 && effectiveLastVisited(p, todayIso))
+  const totalVisits = visitedPlaces.reduce((sum, p) => sum + (p.visit_count || 0), 0);
+  const tenPlus = [...visitedPlaces].filter((p) => (p.visit_count || 0) >= 10).sort((a, b) => b.visit_count - a.visit_count);
+  const regulars = visitedPlaces.filter((p) => (p.visit_count || 0) >= 5);
+  const oneHits = visitedPlaces.filter((p) => (p.visit_count || 0) === 1);
+  const reviewedPlaces = visitedPlaces.filter((p) => (p.rating_count || 0) > 0 || p.avg_rating != null);
+  const placesWithPhotos = visitedPlaces.filter((p) => (p.photo_count || 0) > 0);
+  const byVisits = [...visitedPlaces].sort((a, b) => (b.visit_count - a.visit_count) || a.name.localeCompare(b.name));
+  const byRecent = [...visitedPlaces]
+    .filter((p) => effectiveLastVisited(p, todayIso))
     .sort((a, b) => {
       const aDate = effectiveLastVisited(a, todayIso) || '';
       const bDate = effectiveLastVisited(b, todayIso) || '';
       return bDate.localeCompare(aDate) || (b.visit_count - a.visit_count) || a.name.localeCompare(b.name);
     });
-  const comebackPool = [...all]
-    .filter((p) => (p.visit_count || 0) >= 5 && effectiveLastVisited(p, todayIso))
+  const comebackPool = [...visitedPlaces]
+    .filter((p) => !p.is_closed && (p.visit_count || 0) >= 5 && effectiveLastVisited(p, todayIso))
     .sort((a, b) => {
       const aDate = effectiveLastVisited(a, todayIso) || '';
       const bDate = effectiveLastVisited(b, todayIso) || '';
       return aDate.localeCompare(bDate);
     });
-  const topDerby = [...all]
+  const topDerby = [...visitedPlaces]
     .filter((p) => (p.city || '').toLowerCase().includes('derby') || (p.address || '').toLowerCase().includes('derby'))
     .sort((a, b) => b.visit_count - a.visit_count)[0];
 
@@ -2027,10 +2090,12 @@ function renderPlacesView() {
     state.selectedPlaceId = selected.id;
   }
 
-  const pricedPlaces = all.filter((p) => p.avg_meal_price != null);
+  const pricedPlaces = visitedPlaces.filter((p) => p.avg_meal_price != null);
 
   const filterDefs = [
-    { id: 'all', label: `All (${all.length})` },
+    { id: 'all', label: `Visited (${visitedPlaces.length})` },
+    { id: 'untried', label: `🆕 Untried / New (${untriedOpenPlaces.length})` },
+    { id: 'closed', label: `🚫 Closed (${closedPlaces.length})` },
     { id: 'photos', label: `📷 Photos (${placesWithPhotos.length})` },
     { id: 'reviewed', label: `⭐ Reviewed (${reviewedPlaces.length})` },
     { id: 'priced', label: `💵 Prices (${pricedPlaces.length})` },
@@ -2050,13 +2115,27 @@ function renderPlacesView() {
   const listHtml = pagedList
     .map((p) => {
       const lv = effectiveLastVisited(p, todayIso);
+      const rowClasses = `place-card-row ${selected?.id === p.id ? 'selected' : ''} ${p.is_closed ? 'is-closed' : ''}`.trim();
+      const statusBadge = p.is_closed
+        ? '<span class="badge badge-closed">Closed</span>'
+        : isNewDiscovery(p)
+          ? '<span class="badge badge-new">New</span>'
+          : (p.visit_count || 0) === 0
+            ? '<span class="badge badge-untried">Untried</span>'
+            : '';
+      const subParts = [
+        p.cuisine ? esc(p.cuisine) : '',
+        esc(p.address || p.city),
+        lv ? `Last ${fmtShortDate(lv)}` : p.discovered_at && !p.visit_count ? `Added ${fmtShortDate(p.discovered_at)}` : '',
+      ].filter(Boolean);
       return `
-      <button class="place-card-row ${selected?.id === p.id ? 'selected' : ''}" data-action="select-place" data-place-id="${p.id}">
+      <button class="${rowClasses}" data-action="select-place" data-place-id="${p.id}">
         <div style="min-width:0;">
-          <div class="place-name">${esc(p.name)}${p.visit_count >= 10 ? ' 🏆' : p.visit_count >= 5 ? ' 🔥' : ''}</div>
-          <div class="place-addr">${esc(p.address || p.city)}${lv ? ` · Last ${fmtShortDate(lv)}` : ''}</div>
+          <div class="place-name">${esc(p.name)}${!p.is_closed && p.visit_count >= 10 ? ' 🏆' : !p.is_closed && p.visit_count >= 5 ? ' 🔥' : ''}</div>
+          <div class="place-addr">${subParts.join(' · ')}</div>
         </div>
         <div style="display:flex;align-items:center;gap:6px;flex-shrink:0;">
+          ${statusBadge}
           ${(p.photo_count || 0) > 0 ? `<span class="badge badge-photo tabular">📷 ${p.photo_count}</span>` : ''}
           ${p.avg_meal_price != null ? `<span class="badge badge-price tabular" title="Average meal price">💵 ${fmtPrice(p.avg_meal_price)}</span>` : ''}
           ${p.avg_rating != null ? `<span class="badge badge-star tabular">★ ${Number(p.avg_rating).toFixed(1)}</span>` : ''}
@@ -2067,8 +2146,9 @@ function renderPlacesView() {
     })
     .join('');
 
+  const scopeCount = state.placesFilter === 'untried' ? untriedOpenPlaces.length : state.placesFilter === 'closed' ? closedPlaces.length : visitedPlaces.length;
   const rangeLabel = list.length
-    ? `Showing ${startIdx + 1}–${endIdx} of ${list.length}${list.length !== all.length ? ` (of ${all.length})` : ''}`
+    ? `Showing ${startIdx + 1}–${endIdx} of ${list.length}${list.length !== scopeCount && state.placesFilter !== 'all' ? ` (of ${scopeCount})` : ''}`
     : 'No matching places';
   const paginationHtml = renderPlacesPagination(state.placesPage, totalPages);
 
@@ -2076,14 +2156,14 @@ function renderPlacesView() {
     <div style="display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:14px;">
       <div>
         <h1 class="hero-title" style="margin-bottom:2px;">Places</h1>
-        <p class="hero-sub" style="margin:0;">${all.length} spots across Wichita &amp; Derby · OpenStreetMap · dot size reflects visit count</p>
+        <p class="hero-sub" style="margin:0;">${visitedPlaces.length} visited spots · ${untriedOpenPlaces.length} untried Wichita By E.B. spots ready for polls</p>
       </div>
       <button class="btn btn-sm btn-primary" data-action="open-new-place">+ Add new place</button>
     </div>
     <div class="places-stats-bar">
       <div class="places-stat-tile">
-        <div class="places-stat-val">${all.length}</div>
-        <div class="places-stat-lbl">Distinct restaurants</div>
+        <div class="places-stat-val">${visitedPlaces.length}</div>
+        <div class="places-stat-lbl">Visited restaurants</div>
       </div>
       <div class="places-stat-tile">
         <div class="places-stat-val">${totalVisits}</div>
@@ -2590,10 +2670,20 @@ function initPlacesMap() {
   if (!el || typeof maplibregl === 'undefined') return;
 
   const filtered = getFilteredPlaces();
-  const geocoded = filtered.filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng));
+  const allGeocoded = filtered.filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng));
   const selected =
-    filtered.find((p) => p.id === state.selectedPlaceId && Number.isFinite(p.lat)) ||
+    allGeocoded.find((p) => p.id === state.selectedPlaceId) ||
     state.places.find((p) => p.id === state.selectedPlaceId && Number.isFinite(p.lat));
+  // Cap rendered DOM pins on huge untried views while keeping selected + current page visible
+  let geocoded = allGeocoded;
+  if (allGeocoded.length > 160) {
+    const startIdx = (state.placesPage - 1) * PLACES_PAGE_SIZE;
+    const priorityIds = new Set(filtered.slice(startIdx, startIdx + PLACES_PAGE_SIZE).map((p) => p.id));
+    if (selected) priorityIds.add(selected.id);
+    const prioritized = allGeocoded.filter((p) => priorityIds.has(p.id));
+    const rest = allGeocoded.filter((p) => !priorityIds.has(p.id));
+    geocoded = [...prioritized, ...rest].slice(0, 160);
+  }
   const center = selected ? [selected.lng, selected.lat] : [-97.295, 37.687];
   const map = new maplibregl.Map({
     container: el,
@@ -2603,9 +2693,9 @@ function initPlacesMap() {
   });
 
   for (const p of geocoded) {
-    const sz = Math.min(24, Math.max(10, 9 + Math.round(Math.sqrt(p.visit_count) * 2.5)));
+    const sz = p.visit_count > 0 ? Math.min(24, Math.max(10, 9 + Math.round(Math.sqrt(p.visit_count) * 2.5))) : 10;
     const pin = document.createElement('div');
-    pin.className = 'place-pin';
+    pin.className = `place-pin${p.is_closed ? ' is-closed' : (p.visit_count || 0) === 0 ? ' is-untried' : ''}`;
     pin.style.width = `${sz}px`;
     pin.style.height = `${sz}px`;
     if (p.id === state.selectedPlaceId) {
@@ -2613,10 +2703,11 @@ function initPlacesMap() {
       pin.style.zIndex = '5';
     }
     const gmaps = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(p.address || p.name)}`;
+    const statusTag = p.is_closed ? 'Closed · ' : (p.visit_count || 0) === 0 ? 'Untried · ' : '';
     const popupHtml = `
       <div style="font-family:var(--sys);font-size:13px;max-width:220px;">
         <strong style="display:block;margin-bottom:3px;">${esc(p.name)}</strong>
-        <div style="color:#71717a;font-size:12px;margin-bottom:6px;">${p.avg_rating != null ? `★ ${Number(p.avg_rating).toFixed(1)} · ` : ''}${p.visit_count} visits · ${esc(p.address || p.city)}</div>
+        <div style="color:#71717a;font-size:12px;margin-bottom:6px;">${statusTag}${p.cuisine ? `${esc(p.cuisine)} · ` : ''}${p.avg_rating != null ? `★ ${Number(p.avg_rating).toFixed(1)} · ` : ''}${p.visit_count} visits · ${esc(p.address || p.city)}</div>
         <a href="${esc(gmaps)}" target="_blank" rel="noopener" style="color:#e5484d;font-weight:600;">Directions ↗</a>
       </div>
     `;
@@ -2902,11 +2993,25 @@ async function openPlacePickerModal(mode, dinnerId = null, dinnerDate = null, op
       `
       : '';
 
+  const openCount = state.places.filter((p) => !p.is_closed).length;
+  state.pickerFilter = 'all';
+  const pickerFilterBarHtml =
+    mode !== 'backfill'
+      ? `
+        <div class="filter-pills" id="picker-filter-pills" style="margin-bottom:8px;">
+          <button type="button" class="filter-pill active" data-action="set-picker-filter" data-mode="${mode}" data-dinner-id="${dinnerId || ''}" data-filter="all">All open (${openCount})</button>
+          <button type="button" class="filter-pill" data-action="set-picker-filter" data-mode="${mode}" data-dinner-id="${dinnerId || ''}" data-filter="visited">Visited</button>
+          <button type="button" class="filter-pill" data-action="set-picker-filter" data-mode="${mode}" data-dinner-id="${dinnerId || ''}" data-filter="untried">🆕 New &amp; Untried</button>
+        </div>
+      `
+      : '';
+
   openModal(`
     <h2 class="hero-title" style="font-size:20px;margin-bottom:10px;">${esc(title)}</h2>
     ${daySelectorHtml}
     ${luckyBarHtml}
-    <input id="picker-q" class="input" style="width:100%;margin-bottom:10px;" placeholder="Search ${state.places.length} spots…" />
+    ${pickerFilterBarHtml}
+    <input id="picker-q" class="input" style="width:100%;margin-bottom:10px;" placeholder="Search ${mode === 'backfill' ? state.places.length : openCount} spots by name, street, or cuisine…" />
     <div id="picker-results" style="max-height:280px;overflow-y:auto;display:flex;flex-direction:column;gap:6px;margin-bottom:14px;"></div>
     <div style="border-top:1px solid var(--line);padding-top:12px;">
       <div style="font-size:12px;font-weight:700;color:var(--muted);margin-bottom:6px;">Not in the list yet?</div>
@@ -2926,24 +3031,46 @@ function renderPickerOptions(mode, dinnerId, q) {
   const container = document.getElementById('picker-results');
   if (!container) return;
   const term = q.trim().toLowerCase();
-  const filtered = (term
-    ? state.places.filter((p) => p.name.toLowerCase().includes(term) || p.address.toLowerCase().includes(term))
-    : state.places
-  ).slice(0, 40);
+  let pool = mode === 'backfill' ? state.places : state.places.filter((p) => !p.is_closed);
+  if (mode !== 'backfill') {
+    if (state.pickerFilter === 'visited') {
+      pool = pool.filter((p) => (p.visit_count || 0) > 0);
+    } else if (state.pickerFilter === 'untried') {
+      pool = [...pool]
+        .filter((p) => (p.visit_count || 0) === 0)
+        .sort(
+          (a, b) =>
+            Number(isNewDiscovery(b)) - Number(isNewDiscovery(a)) ||
+            (b.discovered_at || '').localeCompare(a.discovered_at || '') ||
+            a.name.localeCompare(b.name),
+        );
+    }
+  }
+  const filtered = (term ? pool.filter((p) => placeMatchesQuery(p, term)) : pool).slice(0, 40);
 
-  container.innerHTML = filtered
-    .map(
-      (p) => `
-      <button class="place-card-row" data-action="confirm-place-choice" data-mode="${mode}" data-dinner-id="${dinnerId || ''}" data-place-id="${p.id}">
-        <div>
+  container.innerHTML = filtered.length
+    ? filtered
+        .map((p) => {
+          const badge = p.is_closed
+            ? '<span class="badge badge-closed">Closed</span>'
+            : isNewDiscovery(p)
+              ? '<span class="badge badge-new">New</span>'
+              : (p.visit_count || 0) === 0
+                ? '<span class="badge badge-untried">Untried</span>'
+                : `<span class="badge badge-muted tabular">${p.visit_count}×</span>`;
+          const sub = [p.cuisine ? esc(p.cuisine) : '', esc(p.address || p.city)].filter(Boolean).join(' · ');
+          return `
+      <button class="place-card-row ${p.is_closed ? 'is-closed' : ''}" data-action="confirm-place-choice" data-mode="${mode}" data-dinner-id="${dinnerId || ''}" data-place-id="${p.id}">
+        <div style="min-width:0;">
           <div class="place-name">${esc(p.name)}</div>
-          <div class="place-addr">${esc(p.address || p.city)}</div>
+          <div class="place-addr">${sub}</div>
         </div>
-        <span class="badge badge-muted tabular">${p.visit_count}×</span>
+        ${badge}
       </button>
-    `,
-    )
-    .join('');
+    `;
+        })
+        .join('')
+    : '<div style="font-size:13px;color:var(--muted);padding:10px 4px;">No matching spots found.</div>';
 }
 
 function renderPollBuilderBody() {
@@ -2970,29 +3097,55 @@ function renderPollBuilderBody() {
         .join('')
     : '<span style="font-size:12px;color:var(--muted);">Select 2–6 places below (or tap 🎲 I’m Feeling Lucky).</span>';
 
+  let openPool = state.places.filter((p) => !p.is_closed || selectedSet.has(p.id));
+  if (state.pollFilter === 'visited') {
+    openPool = openPool.filter((p) => (p.visit_count || 0) > 0 || selectedSet.has(p.id));
+  } else if (state.pollFilter === 'untried') {
+    openPool = [...openPool]
+      .filter((p) => ((p.visit_count || 0) === 0 && !p.is_closed) || selectedSet.has(p.id))
+      .sort(
+        (a, b) =>
+          Number(selectedSet.has(b.id)) - Number(selectedSet.has(a.id)) ||
+          Number(isNewDiscovery(b)) - Number(isNewDiscovery(a)) ||
+          (b.discovered_at || '').localeCompare(a.discovered_at || '') ||
+          a.name.localeCompare(b.name),
+      );
+  }
+
   const term = state.pollSearchQuery.trim().toLowerCase();
   const matching = term
-    ? state.places.filter((p) => p.name.toLowerCase().includes(term) || (p.address || '').toLowerCase().includes(term))
-    : [...selectedPlaces, ...state.places.filter((p) => !selectedSet.has(p.id))];
+    ? openPool.filter((p) => placeMatchesQuery(p, term))
+    : state.pollFilter === 'untried'
+      ? openPool
+      : [...selectedPlaces, ...openPool.filter((p) => !selectedSet.has(p.id))];
   const visible = matching.slice(0, 40);
 
-  results.innerHTML = visible
-    .map((p) => {
-      const isSel = selectedSet.has(p.id);
-      const badge = isSel
-        ? '<span class="badge badge-ok">✓ In poll</span>'
-        : `<span class="badge badge-muted tabular">${p.visit_count}×${p.avg_rating != null ? ` · ★ ${Number(p.avg_rating).toFixed(1)}` : ''}</span>`;
-      return `
+  results.innerHTML = visible.length
+    ? visible
+        .map((p) => {
+          const isSel = selectedSet.has(p.id);
+          const badge = isSel
+            ? '<span class="badge badge-ok">✓ In poll</span>'
+            : p.is_closed
+              ? '<span class="badge badge-closed">Closed</span>'
+              : isNewDiscovery(p)
+                ? '<span class="badge badge-new">New</span>'
+                : (p.visit_count || 0) === 0
+                  ? '<span class="badge badge-untried">Untried</span>'
+                  : `<span class="badge badge-muted tabular">${p.visit_count}×${p.avg_rating != null ? ` · ★ ${Number(p.avg_rating).toFixed(1)}` : ''}</span>`;
+          const sub = [p.cuisine ? esc(p.cuisine) : '', esc(p.address || p.city)].filter(Boolean).join(' · ');
+          return `
         <button type="button" class="place-card-row ${isSel ? 'selected' : ''}" data-action="toggle-poll-place" data-place-id="${p.id}">
-          <div>
+          <div style="min-width:0;">
             <div class="place-name">${esc(p.name)}</div>
-            <div class="place-addr">${esc(p.address || p.city)}</div>
+            <div class="place-addr">${sub}</div>
           </div>
           ${badge}
         </button>
       `;
-    })
-    .join('');
+        })
+        .join('')
+    : '<div style="font-size:13px;color:var(--muted);padding:10px 4px;">No matching open spots found.</div>';
 
   if (launchBtn) {
     const count = state.pollCandidateIds.length;
@@ -3015,7 +3168,9 @@ async function openPollBuilderModal(dinnerId, presetIds = null) {
   const existingIds = parsePollIds(target.noon_draw_ids);
   state.pollCandidateIds = Array.isArray(presetIds) ? presetIds.slice(0, 6) : existingIds.slice(0, 6);
   state.pollSearchQuery = '';
+  state.pollFilter = 'all';
   const isEditing = !Array.isArray(presetIds) && existingIds.length >= 2;
+  const openCount = state.places.filter((p) => !p.is_closed).length;
 
   openModal(`
     <h2 class="hero-title" style="font-size:20px;margin-bottom:6px;">${isEditing ? 'Edit place poll' : 'Create place poll'} for ${esc(target.host_label)}’s dinner (${fmtShortDate(target.dinner_date)})</h2>
@@ -3029,7 +3184,12 @@ async function openPollBuilderModal(dinnerId, presetIds = null) {
       <button type="button" class="btn btn-lucky btn-sm" style="min-height:28px;padding:3px 10px;font-size:12px;" data-action="poll-fill-random" data-dinner-id="${target.id}">🎲 I’m Feeling Lucky</button>
     </div>
     <div id="poll-selected-tray" class="poll-tray"></div>
-    <input id="poll-q" class="input" style="width:100%;margin-bottom:10px;" placeholder="Search ${state.places.length} spots to toggle in poll…" />
+    <div class="filter-pills" id="poll-filter-pills" style="margin-bottom:8px;">
+      <button type="button" class="filter-pill active" data-action="set-poll-filter" data-filter="all">All open (${openCount})</button>
+      <button type="button" class="filter-pill" data-action="set-poll-filter" data-filter="visited">Visited</button>
+      <button type="button" class="filter-pill" data-action="set-poll-filter" data-filter="untried">🆕 New &amp; Untried</button>
+    </div>
+    <input id="poll-q" class="input" style="width:100%;margin-bottom:10px;" placeholder="Search ${openCount} open spots by name, street, or cuisine…" />
     <div id="poll-results" style="max-height:240px;overflow-y:auto;display:flex;flex-direction:column;gap:6px;margin-bottom:12px;"></div>
     <div style="border-top:1px solid var(--line);padding-top:10px;margin-bottom:12px;">
       <div style="font-size:12px;font-weight:700;color:var(--muted);margin-bottom:6px;">Add a new spot to poll?</div>
@@ -3053,10 +3213,11 @@ function renderLuckyModalContent() {
   const todayIso = getTodayCentralIso();
   const hostLabel = state.luckyHostLabel ? `${state.luckyHostLabel}’s dinner` : 'this week’s dinner';
   const poolDefs = [
-    { id: 'any', label: 'All spots' },
+    { id: 'any', label: 'Visited spots' },
     { id: 'regulars', label: '🔥 Regulars 5+' },
     { id: 'comeback', label: '🕰️ Comeback due' },
     { id: 'top_rated', label: '⭐ Top rated' },
+    { id: 'untried', label: '🆕 Untried' },
   ];
 
   const poolPillsHtml = poolDefs
@@ -4476,6 +4637,19 @@ document.addEventListener('click', async (e) => {
       document.querySelectorAll('#picker-day-group .day-toggle-btn').forEach((btn) => {
         btn.classList.toggle('active', btn.dataset.day === state.pickerDay);
       });
+    } else if (action === 'set-picker-filter') {
+      state.pickerFilter = actEl.dataset.filter || 'all';
+      document.querySelectorAll('#picker-filter-pills .filter-pill').forEach((btn) => {
+        btn.classList.toggle('active', btn.dataset.filter === state.pickerFilter);
+      });
+      const qVal = document.getElementById('picker-q')?.value || '';
+      renderPickerOptions(actEl.dataset.mode || 'pick', actEl.dataset.dinnerId || '', qVal);
+    } else if (action === 'set-poll-filter') {
+      state.pollFilter = actEl.dataset.filter || 'all';
+      document.querySelectorAll('#poll-filter-pills .filter-pill').forEach((btn) => {
+        btn.classList.toggle('active', btn.dataset.filter === state.pollFilter);
+      });
+      renderPollBuilderBody();
     } else if (action === 'open-picker') {
       const d = state.bootstrap.thisWeek.dinner;
       const dinnerId = Number(actEl.dataset.dinnerId || d.id);
@@ -4610,10 +4784,12 @@ document.addEventListener('click', async (e) => {
         const todayIso = getTodayCentralIso();
         const cutoff = new Date(Date.now() - 56 * 86400000).toISOString().slice(0, 10);
         const pool = state.places.filter((p) => {
+          if (p.is_closed) return false;
           const lv = effectiveLastVisited(p, todayIso);
           return !lv || lv < cutoff;
         });
-        const source = [...(pool.length >= 4 ? pool : state.places)];
+        const openFallback = state.places.filter((p) => !p.is_closed);
+        const source = [...(pool.length >= 4 ? pool : openFallback)];
         for (let i = source.length - 1; i > 0; i--) {
           const j = Math.floor(Math.random() * (i + 1));
           [source[i], source[j]] = [source[j], source[i]];
@@ -4829,7 +5005,7 @@ document.addEventListener('click', async (e) => {
       if (!name) return toast('Name is required');
       const res = await api('/api/places', { method: 'POST', body: JSON.stringify({ name, address, city }) });
       state.places = [res.place, ...state.places];
-      state.placesFilter = 'all';
+      state.placesFilter = (res.place.visit_count || 0) === 0 ? 'untried' : 'all';
       state.placesQuery = '';
       state.selectedPlaceId = res.place.id;
       state.syncPageToSelectedPlace = true;

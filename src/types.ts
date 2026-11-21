@@ -52,6 +52,16 @@ export interface RestaurantRow {
   photo_count?: number;
   avg_meal_price?: number | null;
   price_stats?: PlacePriceStats | null;
+  is_closed?: number;
+  closed_at?: string | null;
+  closed_reason?: string;
+  closed_source_url?: string | null;
+  status_locked?: number;
+  source?: string;
+  source_external_id?: string | null;
+  source_url?: string | null;
+  cuisine?: string;
+  discovered_at?: string | null;
 }
 
 export interface PlaceVisitPrice {
@@ -261,7 +271,81 @@ export interface DinnerHeadcount {
   unansweredCount: number;
 }
 
-export type LuckyPool = 'any' | 'regulars' | 'comeback' | 'top_rated';
+export type LuckyPool = 'any' | 'regulars' | 'comeback' | 'top_rated' | 'untried';
+
+export interface RestaurantSyncUpsertInput {
+  name: string;
+  address?: string;
+  city?: string;
+  lat?: number | null;
+  lng?: number | null;
+  cuisine?: string;
+  source?: 'wichitabyeb_dir' | 'wichitabyeb_post' | 'manual' | 'club';
+  sourceExternalId?: string | null;
+  sourceUrl?: string | null;
+  discoveredAt?: string | null;
+}
+
+export interface RestaurantSyncClosingInput {
+  restaurantId?: number;
+  slug?: string;
+  sourceExternalId?: string | null;
+  name?: string;
+  closedAt?: string | null;
+  reason?: string;
+  sourceUrl?: string | null;
+}
+
+export interface RestaurantSyncFlagInput {
+  restaurantId?: number;
+  slug?: string;
+  sourceExternalId?: string | null;
+  wpPostId: number;
+  postTitle: string;
+  postUrl: string;
+  postDate: string;
+  confidence?: string;
+  reason?: string;
+}
+
+export interface RestaurantSyncPayload {
+  mode?: 'backfill' | 'weekly' | 'manual';
+  cursorPostDate?: string | null;
+  recordRun?: boolean;
+  upserts?: RestaurantSyncUpsertInput[];
+  closings?: RestaurantSyncClosingInput[];
+  flags?: RestaurantSyncFlagInput[];
+}
+
+export interface RestaurantSyncRunRow {
+  id: number;
+  started_at: string;
+  finished_at: string | null;
+  mode: string;
+  cursor_post_date: string | null;
+  added_count: number;
+  updated_count: number;
+  closed_count: number;
+  flagged_count: number;
+  summary_json: string;
+}
+
+export interface RestaurantClosingFlagRow {
+  id: number;
+  restaurant_id: number;
+  restaurant_name?: string;
+  restaurant_slug?: string;
+  visit_count?: number;
+  wp_post_id: number;
+  post_title: string;
+  post_url: string;
+  post_date: string;
+  confidence: string;
+  reason: string;
+  status: 'pending' | 'confirmed_closed' | 'dismissed';
+  resolved_at: string | null;
+  created_at: string;
+}
 
 export type WhatsNewCreditRole = 'idea' | 'bug_report';
 

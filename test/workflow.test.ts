@@ -10,7 +10,7 @@ import worker from '../src/index';
 import * as pushModule from '../src/push';
 import { createVapidAuthHeader, encryptWebPushPayload } from '../src/push';
 import type { Env, RestaurantRow } from '../src/types';
-import { addDaysToIsoDate, castNightVote, castRsvp, drawFourRandomPlaces, formatShortDate, isFutureDinner, lockNight } from '../src/workflow';
+import { addDaysToIsoDate, castNightVote, castRsvp, drawFourRandomPlaces, drawLuckyPlaces, formatShortDate, isFutureDinner, lockNight } from '../src/workflow';
 import { createTestD1 } from './d1-shim';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -34,6 +34,7 @@ const migration0016Sql = readFileSync(resolve(rootDir, 'migrations/0016_allow_bo
 const migration0017Sql = readFileSync(resolve(rootDir, 'migrations/0017_cancel_night.sql'), 'utf8');
 const migration0018Sql = readFileSync(resolve(rootDir, 'migrations/0018_extra_guest_names.sql'), 'utf8');
 const migration0019Sql = readFileSync(resolve(rootDir, 'migrations/0019_dinner_comments.sql'), 'utf8');
+const migration0020Sql = readFileSync(resolve(rootDir, 'migrations/0020_restaurant_directory_sync.sql'), 'utf8');
 
 function makeEnv(db: D1Database, overrides: Partial<Env> = {}): Env {
   return {
@@ -81,6 +82,7 @@ describe('Man Night PWA Worker & Seed', () => {
     await db.exec(migration0017Sql);
     await db.exec(migration0018Sql);
     await db.exec(migration0019Sql);
+    await db.exec(migration0020Sql);
     env = makeEnv(db);
   });
 
@@ -1869,8 +1871,9 @@ describe('Man Night PWA Worker & Seed', () => {
   it('tracks What’s New releases, crew idea/bug credits, per-user seen state, and UI wiring (issue #11)', async () => {
     // 1. Changelog integrity
     const seenIds = new Set<string>();
-    expect(WHATS_NEW_RELEASES.length).toBeGreaterThanOrEqual(16);
-    expect(WHATS_NEW_RELEASES[0].id).toBe('2026-11-19-tuesday-noon-night-lock');
+    expect(WHATS_NEW_RELEASES.length).toBeGreaterThanOrEqual(17);
+    expect(WHATS_NEW_RELEASES[0].id).toBe('2026-11-21-wichita-eb-directory-closings');
+    expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-19-tuesday-noon-night-lock')).toBe(true);
     expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-18-gcal-sync-fixes')).toBe(true);
     expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-18-night-comments' && e.issueNumber === 23)).toBe(true);
     expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-18-extra-guest-names' && e.issueNumber === 22)).toBe(true);
@@ -3684,5 +3687,267 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(syncData.results.find((r) => r.weekKey === '2026-W48')?.synced).toBe(true);
 
     fetchSpy.mockRestore();
+  });
+
+  it('syncs Wichita By E.B. restaurants idempotently, tracks closings & flags, excludes closed spots from polls, and supports untried Lucky pool', async () => {
+    // 1. Non-admin cannot access sync or status endpoints
+    const nonAdminSync = await worker.fetch(
+      makeReq('/admin/restaurants/sync', 'POST', { upserts: [] }, { 'Cf-Access-Authenticated-User-Email': 'storme2@gmail.com' }),
+      env,
+    );
+    expect(nonAdminSync.status).toBe(403);
+
+    const nonAdminStatus = await worker.fetch(
+      makeReq('/admin/sync-status', 'GET', undefined, { 'Cf-Access-Authenticated-User-Email': 'storme2@gmail.com' }),
+      env,
+    );
+    expect(nonAdminStatus.status).toBe(403);
+
+    // 2. Sync new untried spots, enrich existing club spot (without changing visit_count), apply closing, and queue ambiguous flag
+    const mango = await env.DB.prepare("SELECT id, slug, visit_count FROM restaurants WHERE slug = 'mango-tree'").first<{
+      id: number;
+      slug: string;
+      visit_count: number;
+    }>();
+    const poplar = await env.DB.prepare("SELECT id, slug, visit_count, last_visited FROM restaurants WHERE slug = 'poplar'").first<{
+      id: number;
+      slug: string;
+      visit_count: number;
+      last_visited: string;
+    }>();
+    const bjs = await env.DB.prepare("SELECT id, slug FROM restaurants WHERE slug = 'bjs-brewhouse'").first<{ id: number; slug: string }>();
+    expect(mango).toBeTruthy();
+    expect(poplar).toBeTruthy();
+    expect(bjs).toBeTruthy();
+
+    const syncRes = await worker.fetch(
+      makeReq('/admin/restaurants/sync', 'POST', {
+        mode: 'backfill',
+        cursorPostDate: '2026-11-20T12:00:00',
+        upserts: [
+          {
+            name: 'Toure by Fredo',
+            address: '2146 N Collective Ln, Wichita, KS',
+            city: 'Wichita',
+            lat: 37.721,
+            lng: -97.245,
+            cuisine: 'American, Caribbean',
+            source: 'wichitabyeb_post',
+            sourceExternalId: 'wbeb-post-114090',
+            sourceUrl: 'https://www.wichitabyeb.com/2026/10/first-look-at-toure-by-fredo.html',
+            discoveredAt: '2026-10-26',
+          },
+          {
+            name: 'Chiang Mai East',
+            address: '313 S Greenwich Rd, Wichita, KS 67207',
+            city: 'Wichita',
+            cuisine: 'Thai',
+            source: 'wichitabyeb_post',
+            sourceExternalId: 'wbeb-post-114040',
+            sourceUrl: 'https://www.wichitabyeb.com/2026/10/first-look-at-chiang-mai-east.html',
+            discoveredAt: '2026-10-21',
+          },
+          {
+            // Should match existing Poplar without mutating visit_count or last_visited
+            name: 'Poplar Restaurant',
+            address: '127 US-54, Andover, KS',
+            city: 'Andover',
+            cuisine: 'American, Comfort Food',
+            source: 'wichitabyeb_dir',
+            sourceExternalId: 'wbeb-dir-999',
+            sourceUrl: 'https://www.wichitabyeb.com/directory-restaurants/listing/poplar',
+          },
+        ],
+        closings: [
+          {
+            restaurantId: mango!.id,
+            closedAt: '2025-09-07',
+            reason: 'The Mango Tree has permanently closed',
+            sourceUrl: 'https://www.wichitabyeb.com/2025/09/mango-tree-closed.html',
+          },
+        ],
+        flags: [
+          {
+            restaurantId: bjs!.id,
+            wpPostId: 999001,
+            postTitle: 'One local spot temporarily closed for remodel',
+            postUrl: 'https://www.wichitabyeb.com/2026/11/temp-flag.html',
+            postDate: '2026-11-15',
+            confidence: 'temporary_or_change',
+            reason: 'Temporary closure mentioned',
+          },
+        ],
+      }),
+      env,
+    );
+    expect(syncRes.status).toBe(200);
+    const syncBody = (await syncRes.json()) as {
+      ok: boolean;
+      addedCount: number;
+      updatedCount: number;
+      closedCount: number;
+      flaggedCount: number;
+    };
+    expect(syncBody.ok).toBe(true);
+    expect(syncBody.addedCount).toBe(2);
+    expect(syncBody.updatedCount).toBe(1);
+    expect(syncBody.closedCount).toBe(1);
+    expect(syncBody.flaggedCount).toBe(1);
+
+    // Verify Poplar kept its club visit_count & last_visited while gaining cuisine/extId
+    const poplarAfter = await env.DB.prepare('SELECT * FROM restaurants WHERE id = ?').bind(poplar!.id).first<RestaurantRow>();
+    expect(poplarAfter?.visit_count).toBe(poplar!.visit_count);
+    expect(poplarAfter?.last_visited).toBe(poplar!.last_visited);
+    expect(poplarAfter?.cuisine).toBe('American, Comfort Food');
+    expect(poplarAfter?.source_external_id).toBe('wbeb-dir-999');
+
+    // Re-running exact same payload is idempotent (0 new inserts, 0 duplicate flags, 0 re-closes)
+    const rerunRes = await worker.fetch(
+      makeReq('/admin/restaurants/sync', 'POST', {
+        mode: 'weekly',
+        cursorPostDate: '2026-11-20T12:00:00',
+        upserts: [
+          {
+            name: 'Toure by Fredo',
+            address: '2146 N Collective Ln, Wichita, KS',
+            city: 'Wichita',
+            cuisine: 'American, Caribbean',
+            source: 'wichitabyeb_post',
+            sourceExternalId: 'wbeb-post-114090',
+          },
+        ],
+        closings: [{ restaurantId: mango!.id, closedAt: '2025-09-07' }],
+        flags: [
+          {
+            restaurantId: bjs!.id,
+            wpPostId: 999001,
+            postTitle: 'One local spot temporarily closed for remodel',
+            postUrl: 'https://www.wichitabyeb.com/2026/11/temp-flag.html',
+            postDate: '2026-11-15',
+          },
+        ],
+      }),
+      env,
+    );
+    const rerunBody = (await rerunRes.json()) as { addedCount: number; closedCount: number; flaggedCount: number };
+    expect(rerunBody.addedCount).toBe(0);
+    expect(rerunBody.closedCount).toBe(0);
+    expect(rerunBody.flaggedCount).toBe(0);
+
+    // 3. Closed restaurant cannot be picked or put in a poll, nor drawn by Noon Rule or Lucky
+    const dinner = await env.DB.prepare("SELECT id FROM dinners WHERE status != 'completed' ORDER BY dinner_date ASC LIMIT 1").first<{ id: number }>();
+    expect(dinner).toBeTruthy();
+
+    const pickClosed = await worker.fetch(
+      makeReq('/api/week/pick-place', 'POST', { dinnerId: dinner!.id, restaurantId: mango!.id }),
+      env,
+    );
+    expect(pickClosed.status).toBe(400);
+
+    const pollClosed = await worker.fetch(
+      makeReq('/api/week/create-poll', 'POST', { dinnerId: dinner!.id, restaurantIds: [mango!.id, poplar!.id] }),
+      env,
+    );
+    expect(pollClosed.status).toBe(400);
+
+    // Historical dinner backfill STILL permits selecting a closed restaurant
+    const pastUnlinked = await env.DB.prepare("SELECT id FROM dinners WHERE status = 'completed' AND restaurant_id IS NULL LIMIT 1").first<{
+      id: number;
+    }>();
+    if (pastUnlinked) {
+      const backfillClosed = await worker.fetch(
+        makeReq(`/api/dinners/${pastUnlinked.id}/backfill`, 'POST', { restaurantId: mango!.id }),
+        env,
+      );
+      expect(backfillClosed.status).toBe(200);
+    }
+
+    for (let i = 0; i < 6; i++) {
+      const drawn = await drawFourRandomPlaces(env.DB, '2026-11-24');
+      expect(drawn.some((r) => r.id === mango!.id)).toBe(false);
+      expect(drawn.every((r) => r.visit_count >= 1 && !r.is_closed)).toBe(true);
+    }
+
+    // Lucky 'untried' pool draws only open 0-visit spots, while 'any' draws open visited spots
+    const untriedLucky = await worker.fetch(
+      makeReq('/api/week/lucky', 'POST', { dinnerId: dinner!.id, mode: 'poll', count: 2, pool: 'untried', commit: false }),
+      env,
+    );
+    expect(untriedLucky.status).toBe(200);
+    const untriedData = (await untriedLucky.json()) as { places: RestaurantRow[]; poolRequested: string };
+    expect(untriedData.poolRequested).toBe('untried');
+    expect(untriedData.places).toHaveLength(2);
+    expect(untriedData.places.every((p) => p.visit_count === 0 && !p.is_closed)).toBe(true);
+
+    const visitedLucky = await drawLuckyPlaces(env.DB, {
+      dinnerId: dinner!.id,
+      referenceDate: '2026-11-24',
+      todayStr: '2026-11-21',
+      count: 4,
+      pool: 'any',
+    });
+    expect(visitedLucky.places.every((p) => p.visit_count >= 1 && !p.is_closed)).toBe(true);
+    expect(visitedLucky.places.some((p) => p.id === mango!.id)).toBe(false);
+
+    // 4. GET /api/places searches cuisine and /api/bootstrap separates visited vs untried vs closed counts
+    const cuisinePlacesRes = await worker.fetch(makeReq('/api/places?q=caribbean'), env);
+    expect(cuisinePlacesRes.status).toBe(200);
+    const cuisineData = (await cuisinePlacesRes.json()) as { places: RestaurantRow[] };
+    expect(cuisineData.places.some((p) => p.name === 'Toure by Fredo')).toBe(true);
+
+    const bootRes = await worker.fetch(makeReq('/api/bootstrap'), env);
+    const boot = (await bootRes.json()) as {
+      stats: { total_places: number; untried_places: number; closed_places: number; pending_closing_flags: number };
+    };
+    expect(boot.stats.untried_places).toBe(2);
+    expect(boot.stats.closed_places).toBe(1);
+    expect(boot.stats.pending_closing_flags).toBe(1);
+    expect(boot.stats.total_places).toBeGreaterThanOrEqual(200);
+
+    // 5. Admin manual reopen locks status against future auto-closings; resolving flag works
+    const reopenRes = await worker.fetch(
+      makeReq(`/admin/restaurants/${mango!.id}/status`, 'PATCH', { isClosed: false, lock: true }),
+      env,
+    );
+    expect(reopenRes.status).toBe(200);
+    const mangoReopened = await env.DB.prepare('SELECT is_closed, status_locked FROM restaurants WHERE id = ?')
+      .bind(mango!.id)
+      .first<{ is_closed: number; status_locked: number }>();
+    expect(mangoReopened?.is_closed).toBe(0);
+    expect(mangoReopened?.status_locked).toBe(1);
+
+    // Weekly auto-sync cannot re-close a status_locked restaurant
+    const lockedSyncRes = await worker.fetch(
+      makeReq('/admin/restaurants/sync', 'POST', {
+        mode: 'weekly',
+        closings: [{ restaurantId: mango!.id, closedAt: '2026-11-21' }],
+      }),
+      env,
+    );
+    const lockedSyncData = (await lockedSyncRes.json()) as { closedCount: number; skippedLocked: Array<{ id: number }> };
+    expect(lockedSyncData.closedCount).toBe(0);
+    expect(lockedSyncData.skippedLocked.some((s) => s.id === mango!.id)).toBe(true);
+
+    // Dismissing a pending closing flag marks it dismissed and leaves restaurant open
+    const statusRes = await worker.fetch(makeReq('/admin/sync-status'), env);
+    const statusJson = (await statusRes.json()) as { pendingFlags: Array<{ id: number; restaurant_id: number }> };
+    expect(statusJson.pendingFlags).toHaveLength(1);
+    const flagId = statusJson.pendingFlags[0].id;
+
+    const dismissRes = await worker.fetch(
+      makeReq(`/admin/closing-flags/${flagId}/resolve`, 'POST', { action: 'dismiss' }),
+      env,
+    );
+    expect(dismissRes.status).toBe(200);
+    const bjsAfter = await env.DB.prepare('SELECT is_closed FROM restaurants WHERE id = ?')
+      .bind(bjs!.id)
+      .first<{ is_closed: number }>();
+    expect(bjsAfter?.is_closed).toBe(0);
+
+    // Admin HTML page renders the new Wichita By E.B. Sync & Closings panel
+    const adminHtmlRes = await worker.fetch(makeReq('/admin'), env);
+    expect(adminHtmlRes.status).toBe(200);
+    const adminHtml = await adminHtmlRes.text();
+    expect(adminHtml).toContain('Wichita By E.B. Sync');
   });
 });

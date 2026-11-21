@@ -27,6 +27,7 @@ const DIR_NON_DINNER_ONLY_CATS = new Set([
   3341, // Bakery
   3316, // Dessert
   3309, // Breakfast
+  3318, // Bars (bars-only dive/cocktail clubs with no food category)
   3311, // Coffee Shop
   3310, // Donuts
   3317, // Shave Ice
@@ -99,7 +100,7 @@ const METRO_CITIES = new Set([
 ]);
 
 const EXCLUDED_NAME_OR_BODY_RE =
-  /\b(food\s+truck|food\s+trailer|mobile\s+(?:kitchen|food|vendor|trailer)|coffee\s*(?:shop|house|bar|co\.?|company|roaster|roasters|roastery)?|espresso|coffeehouse|roaster(?:s|y)?|cold\s+brew|boba|bubble\s+tea|milk\s+tea|matcha|smoothie|juice\s+bar|donut|doughnut|bakery|patisserie|cupcake|ice\s+cream|gelato|frozen\s+yogurt|froyo|shave\s+ice|shaved\s+ice|snow\s+cone|snowball|candy|chocolat(?:e|ier)|popcorn|cookies?|crumbl|dutch\s+bros|scooter'?s\s+coffee|starbucks|7\s+brew|biggby|reverie\s+coffee|mokas|auntie\s+anne'?s|cinnabon)\b/i;
+  /\b(food\s+truck|food\s+trailer|waffle\s+bus|mobile\s+(?:kitchen|food|vendor|trailer)|coffee\s*(?:shop|house|bar|co\.?|company|roaster|roasters|roastery)?|espresso|coffeehouse|roaster(?:s|y)?|cold\s+brew|boba|bubble\s+tea|milk\s+tea|matcha|smoothie|juice\s+bar|donut|doughnut|bakery|patisserie|cupcake|ice\s+cream|gelato|frozen\s+yogurt|froyo|shave\s+ice|shaved\s+ice|snow\s+cone|snowball|candy|chocolat(?:e|ier)|popcorn|cookies?|crumbl|dutch\s+bros|scooter'?s\s+coffee|starbucks|7\s+brew|biggby|reverie\s+coffee|mokas|auntie\s+anne'?s|cinnabon)\b/i;
 
 const GENERIC_SINGLE_TOKENS = new Set([
   'pizza',
@@ -127,6 +128,16 @@ const GENERIC_SINGLE_TOKENS = new Set([
   'restaurant',
   'bistro',
   'pub',
+  'public',
+  'social',
+  'mediterranean',
+  'anchor',
+  'garden',
+  'home',
+  'place',
+  'house',
+  'spot',
+  'express',
 ]);
 
 const GENERIC_MATCH_SUFFIXES =
@@ -210,14 +221,14 @@ function normalizeMatchName(name) {
   return stripped.length >= 4 ? stripped : base;
 }
 
-function normalizeStrictName(name) {
-  return decodeHtmlEntities(String(name || ''))
+function normalizeStrictName(name, keepLeadingThe = false) {
+  const s = decodeHtmlEntities(String(name || ''))
     .replace(/['’`]/g, '')
     .toLowerCase()
     .replace(/[^a-z0-9 ]+/g, ' ')
     .replace(/\s+/g, ' ')
-    .trim()
-    .replace(/^the\s+/, '');
+    .trim();
+  return keepLeadingThe ? s : s.replace(/^the\s+/, '');
 }
 
 function extractStreetNumber(address) {
@@ -373,19 +384,36 @@ function extractAddressFromPostText(text) {
 function parseOpeningNameFromPostTitle(title) {
   let clean = decodeHtmlEntities(title).trim();
   const patterns = [
-    /^(?:a\s+)?first\s+look\s+(?:at|inside)\s+/i,
-    /^sneak\s+peek\s+(?:at|inside)\s+/i,
+    /^(?:a\s+)?first\s+look\s*[:–—-]?\s*(?:at|inside)?\s*/i,
+    /^(?:a\s+)?sneak\s+peek\s*[:–—-]?\s*(?:at|inside)?\s*/i,
     /^what\s+to\s+expect\s+(?:at|inside)\s+/i,
+    /^(?:an\s+)?inside\s+look\s+(?:at|inside)\s+/i,
+    /^a\s+look\s+inside\s+/i,
+    /^checking\s+out\s+(?:the\s+food\s+at\s+)?/i,
+    /^visiting\s+/i,
+    /^introducing\s+/i,
+    /^a\s+visit\s+to\s+/i,
+    /^inside\s+/i,
     /^revisiting\s+/i,
     /^grabbing\s+[^f]*?\s+from\s+/i,
+    /^getting\s+[^f]*?\s+from\s+/i,
+    /^the\s+newest\s+iteration\s+of\s+[^i]+?\s+is\s+/i,
+    /^overland\s+park-based\s+/i,
   ];
   for (const re of patterns) {
     clean = clean.replace(re, '');
   }
   clean = clean
+    .replace(/^(?:the\s+new\s+(?:downtown\s+location\s+for\s+)?)/i, '')
+    .replace(/^west\s+wichita'?s\s+/i, '')
+    .replace(/^the\s+west\s+side\s+/i, '')
+    .replace(/['’]s\s+(?:new|second|third|west\s+wichita|east\s+wichita|relocated)\s+(?:location|store|space).*$/i, '')
     .replace(/\s+(?:inside|in)\s+the\s+former\s+.*$/i, '')
-    .replace(/\s+(?:officially|now)\s+opens?.*$/i, '')
-    .replace(/\s+in\s+(?:downtown\s+wichita|east\s+wichita|west\s+wichita|northwest\s+wichita|wichita|derby|andover|maize|goddard)(?:,\s*ks)?$/i, '')
+    .replace(/\s+(?:located\s+at|offering|opens\s+the\s+first|officially\s+opens?|now\s+opens?|is\s+now\s+open).*$/i, '')
+    .replace(/\s+is$/i, '')
+    .replace(/\s+for\s+(?:pizza|wings|brunch|lunch|dinner).*$/i, '')
+    .replace(/\s+in\s+(?:downtown\s+wichita|east\s+wichita|west\s+wichita|northwest\s+wichita|southeast\s+wichita|wichita|derby|andover|maize|goddard|park\s+city|colwich|augusta)(?:,\s*ks)?$/i, '')
+    .replace(/,.*$/, '')
     .replace(/[:;].*$/, '')
     .trim();
   return clean;
@@ -486,10 +514,11 @@ function extractClosingItemsFromPost(post) {
 function doesRestaurantMatchClosingItem(rest, item) {
   const rawName = String(rest.name || '').trim();
   if (!rawName) return null;
-  const strictName = normalizeStrictName(rawName);
+  const fullWithThe = normalizeStrictName(rawName, true);
+  const strictName = normalizeStrictName(rawName, false);
   const normName = normalizeMatchName(rawName);
-  const haystackStrict = normalizeStrictName(item.isRoundupItem ? item.candidateName : item.postTitle);
-  const bodyStrict = normalizeStrictName(item.snippet);
+  const haystackWithThe = normalizeStrictName(item.isRoundupItem ? item.candidateName : item.postTitle, true);
+  const haystackStrict = normalizeStrictName(item.isRoundupItem ? item.candidateName : item.postTitle, false);
 
   // Guard against ultra-short or malformed DB names like "Pizza /"
   if (rawName.includes('/') || strictName.length < 4) {
@@ -498,30 +527,29 @@ function doesRestaurantMatchClosingItem(rest, item) {
     }
     return null;
   }
+
+  // Generic single-word names (e.g. "The Kitchen", "Public") require exact full-phrase match
   if (GENERIC_SINGLE_TOKENS.has(normName) || normName.length < 4) {
-    if (strictName.length >= 5 && new RegExp(`\\b${strictName}\\b`).test(haystackStrict)) {
+    if (
+      haystackWithThe === fullWithThe ||
+      (/^the\s+/.test(fullWithThe) && new RegExp(`\\b${fullWithThe}\\b`).test(haystackWithThe))
+    ) {
       return 'exact';
     }
     return null;
   }
 
-  // Prefer title / roundup-heading match first
   if (
     new RegExp(`\\b${strictName}\\b`).test(haystackStrict) ||
     (normName.length >= 5 && new RegExp(`\\b${normName}\\b`).test(haystackStrict))
   ) {
     return 'title';
   }
-
-  // For single-post news, require strict full name in title (not arbitrary body mentions like "previously Lola's")
-  if (!item.isRoundupItem) return null;
-  if (strictName.length >= 6 && new RegExp(`\\b${strictName}\\b`).test(bodyStrict.slice(0, 200))) {
-    return 'roundup_body';
-  }
   return null;
 }
 
 function classifyClosingConfidence(rest, item) {
+  const titleLower = item.postTitle.toLowerCase();
   const txt = `${item.postTitle} ${item.snippet}`.toLowerCase();
   const postDate = item.postDate;
 
@@ -543,16 +571,12 @@ function classifyClosingConfidence(rest, item) {
     return { action: 'flag', confidence: 'temporary_or_change', reason: 'Temporary closure, relocation, or rebrand mentioned' };
   }
 
-  // Multi-location / branch-specific closing -> auto-close ONLY if street number matches DB address, or post states it's the final/last location
-  const isFinalAll = /\b(final|last store|last location|all .* closed)\b/i.test(txt);
-  const isBranchSpecific = /\b(one of|remaining|west side|east side|bradley fair|south wichita|north|oldest|original location|second|towne east)\b/i.test(
-    txt,
+  // Multi-location / branch-specific closing in the TITLE -> flag unless explicitly the final location
+  const isFinalAll = /\b(final|last store|last location|all .* closed)\b/i.test(titleLower);
+  const isBranchSpecificTitle = /\b(one of|remaining|west side|east side|bradley fair|south wichita|oldest|original location|second|towne east|north location|downtown store)\b/i.test(
+    titleLower,
   );
-  if (isBranchSpecific && !isFinalAll) {
-    const restStreet = extractStreetNumber(rest.address);
-    if (restStreet && new RegExp(`\\b${restStreet}\\b`).test(txt)) {
-      return { action: 'close', reason: `Matching location (${restStreet}) reported closed by Wichita By E.B.` };
-    }
+  if (isBranchSpecificTitle && !isFinalAll) {
     return { action: 'flag', confidence: 'single_branch', reason: 'Branch-specific closure; verify address matches club entry' };
   }
 
@@ -746,6 +770,16 @@ async function buildSyncPayload(opts) {
     }
     const bodyText = stripHtml(post?.content?.rendered || '');
     const { address, city } = extractAddressFromPostText(bodyText);
+    const fakeRest = { name: parsed.name, address, visit_count: 0, last_visited: null };
+    const alreadyClosed = allClosingItems.find((ci) => {
+      if (ci.postDate < String(post.date || '').slice(0, 10)) return false;
+      if (!doesRestaurantMatchClosingItem(fakeRest, ci)) return false;
+      return classifyClosingConfidence(fakeRest, ci).action === 'close';
+    });
+    if (alreadyClosed) {
+      skippedStats.postExcluded += 1;
+      continue;
+    }
     let coords = null;
     if (opts.geocode && address) {
       await new Promise((r) => setTimeout(r, 1100));
@@ -814,8 +848,10 @@ async function buildSyncPayload(opts) {
     const formerMatch = bodyText.match(/\bformer\s+([A-Z][A-Za-z0-9'& .-]{3,40}?)\s+(?:space|location|building|spot|restaurant)\b/);
     if (!formerMatch) continue;
     const formerName = formerMatch[1].trim();
+    const postSubjectNorm = normalizeMatchName(parseOpeningNameFromPostTitle(post.title?.rendered || ''));
     for (const rest of existingRestaurants) {
       if (Number(rest.is_closed) === 1 || Number(rest.status_locked) === 1) continue;
+      if (postSubjectNorm && normalizeMatchName(rest.name) === postSubjectNorm) continue;
       const syntheticItem = {
         wpPostId: Number(post.id),
         postTitle: `Replaced in "${decodeHtmlEntities(post.title?.rendered || '')}"`,

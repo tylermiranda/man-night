@@ -11,6 +11,17 @@ import type { WhatsNewEntry, WhatsNewPayload, WhatsNewViewEntry } from './types'
  */
 export const WHATS_NEW_RELEASES: readonly WhatsNewEntry[] = [
   {
+    id: '2026-11-22-seasonal-themes',
+    date: '2026-11-22',
+    kind: 'feature',
+    title: '🎨 Custom Seasonal Themes (Thanksgiving, Christmas & More)',
+    summary:
+      'Switch between 8 custom seasonal palettes—Thanksgiving, Christmas, Halloween, Winter, St. Patrick’s, Spring, 4th of July, and Summer BBQ—plus Auto mode that automatically matches the season in both Light and Dark mode. Open Settings from your profile menu to try them anytime.',
+    creditSlug: 'tyler',
+    creditName: 'Tyler',
+    creditRole: 'idea',
+  },
+  {
     id: '2026-11-22-eb-review-links',
     date: '2026-11-22',
     kind: 'feature',

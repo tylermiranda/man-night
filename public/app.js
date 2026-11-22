@@ -1,3 +1,12 @@
+import {
+  SEASON_THEMES,
+  normalizeSeasonThemePref,
+  resolveAutoSeasonTheme,
+  resolveEffectiveSeasonTheme,
+  getSeasonThemeMeta,
+  getThemeColor,
+} from './themes.js';
+
 const PLACES_PAGE_SIZE = 15;
 
 const state = {
@@ -66,6 +75,7 @@ const state = {
   lightboxConfirmDeleteId: null,
   lastBootstrapAt: 0,
   theme: localStorage.getItem('mn_theme') || 'light',
+  seasonTheme: normalizeSeasonThemePref(localStorage.getItem('mn_season_theme')),
   deferredInstallPrompt: null,
   installBannerDismissed: localStorage.getItem('mn_install_dismissed') === '1',
   mapInstances: [],
@@ -77,17 +87,58 @@ function resolveEffectiveTheme(pref) {
   return 'light';
 }
 
+function syncThemeChrome() {
+  const effectiveMode = resolveEffectiveTheme(state.theme);
+  const effectiveSeason = resolveEffectiveSeasonTheme(state.seasonTheme, getTodayCentralIso());
+  const meta = getSeasonThemeMeta(effectiveSeason);
+
+  document.documentElement.dataset.theme = effectiveMode;
+  document.documentElement.dataset.season = effectiveSeason;
+
+  const themeColorMeta = document.querySelector('meta[name="theme-color"]');
+  if (themeColorMeta) {
+    themeColorMeta.setAttribute('content', getThemeColor(effectiveSeason, effectiveMode));
+  }
+
+  const brandBadge = document.getElementById('brand-season-badge');
+  if (brandBadge) {
+    if (effectiveSeason !== 'classic') {
+      brandBadge.textContent = meta.emoji;
+      brandBadge.classList.remove('hidden');
+      brandBadge.title = `${meta.name} theme`;
+    } else {
+      brandBadge.textContent = '';
+      brandBadge.classList.add('hidden');
+      brandBadge.removeAttribute('title');
+    }
+  }
+
+  const menuHint = document.getElementById('menu-settings-hint');
+  if (menuHint) {
+    const modeLabel = effectiveMode === 'dark' ? 'Dark' : 'Light';
+    menuHint.textContent =
+      effectiveSeason !== 'classic' ? `${meta.emoji} ${meta.name} · ${modeLabel}` : `Theme · ${modeLabel}`;
+  }
+}
+
 function applyTheme(pref) {
   const valid = pref === 'dark' || pref === 'system' ? pref : 'light';
   state.theme = valid;
   localStorage.setItem('mn_theme', valid);
-  document.documentElement.dataset.theme = resolveEffectiveTheme(valid);
+  syncThemeChrome();
+}
+
+function applySeasonTheme(pref) {
+  const valid = normalizeSeasonThemePref(pref);
+  state.seasonTheme = valid;
+  localStorage.setItem('mn_season_theme', valid);
+  syncThemeChrome();
 }
 
 applyTheme(state.theme);
 
 window.matchMedia?.('(prefers-color-scheme: dark)').addEventListener?.('change', () => {
-  if (state.theme === 'system') applyTheme('system');
+  if (state.theme === 'system') syncThemeChrome();
 });
 
 window.addEventListener('beforeinstallprompt', (e) => {
@@ -587,6 +638,7 @@ async function enableWebPush() {
 async function refreshBootstrap() {
   state.bootstrap = await api('/api/bootstrap');
   state.lastBootstrapAt = Date.now();
+  syncThemeChrome();
   const { user, stats } = state.bootstrap;
   const myLast = (state.bootstrap.lastDinnerRatings || []).find((r) => r.user_slug === user.slug);
   state.ratingScore = myLast ? Number(myLast.score) : 5;
@@ -4097,6 +4149,32 @@ function toggleUserMenu() {
 function openSettingsModal(feedbackHtml = '') {
   const me = state.bootstrap?.user || {};
   const perm = 'Notification' in window ? Notification.permission : 'unsupported';
+  const todayIso = getTodayCentralIso();
+  const autoSeasonMeta = getSeasonThemeMeta(resolveAutoSeasonTheme(todayIso));
+  const activeSeasonId = resolveEffectiveSeasonTheme(state.seasonTheme, todayIso);
+  const activeSeasonMeta = getSeasonThemeMeta(activeSeasonId);
+  const seasonBadgeText =
+    state.seasonTheme === 'auto'
+      ? `Auto · ${activeSeasonMeta.emoji} ${activeSeasonMeta.name}`
+      : `${activeSeasonMeta.emoji} ${activeSeasonMeta.name}`;
+  const seasonalCardsHtml = SEASON_THEMES.filter((t) => t.id !== 'classic')
+    .map((t) => {
+      const selected = state.seasonTheme === t.id;
+      const dots = t.swatches
+        .map((c) => `<span class="season-swatch-dot" style="background:${esc(c)};"></span>`)
+        .join('');
+      return `
+        <button type="button" class="season-theme-card ${selected ? 'active' : ''}" data-action="set-season-theme" data-season="${esc(t.id)}" aria-pressed="${selected ? 'true' : 'false'}">
+          <div class="season-card-head">
+            <span class="season-card-title">${esc(t.emoji)} ${esc(t.name)}</span>
+            <span class="season-swatches" aria-hidden="true">${dots}</span>
+          </div>
+          <div class="season-card-meta">${esc(t.subtitle)} · ${esc(t.windowLabel)}</div>
+        </button>
+      `;
+    })
+    .join('');
+
   openModal(`
     <h2 class="hero-title" style="font-size:20px;margin-bottom:4px;">Settings</h2>
     <p class="hero-sub" style="margin-bottom:14px;">Signed in as <strong>${esc(me.name || '')}</strong> (${esc(me.email || '')})</p>
@@ -4110,6 +4188,24 @@ function openSettingsModal(feedbackHtml = '') {
         <button type="button" class="theme-switch-btn ${state.theme === 'light' ? 'active' : ''}" data-action="set-theme" data-theme="light">☀️ Light</button>
         <button type="button" class="theme-switch-btn ${state.theme === 'dark' ? 'active' : ''}" data-action="set-theme" data-theme="dark">🌙 Dark</button>
         <button type="button" class="theme-switch-btn ${state.theme === 'system' ? 'active' : ''}" data-action="set-theme" data-theme="system">💻 Auto</button>
+      </div>
+    </div>
+
+    <div class="settings-block">
+      <div class="settings-block-title">
+        <span>Seasonal Theme</span>
+        <span class="badge badge-red">${esc(seasonBadgeText)}</span>
+      </div>
+      <div class="season-theme-quick">
+        <button type="button" class="theme-switch-btn ${state.seasonTheme === 'auto' ? 'active' : ''}" data-action="set-season-theme" data-season="auto" aria-pressed="${state.seasonTheme === 'auto' ? 'true' : 'false'}">
+          ✨ Auto <span class="season-quick-sub">(${esc(autoSeasonMeta.emoji)} ${esc(autoSeasonMeta.name)})</span>
+        </button>
+        <button type="button" class="theme-switch-btn ${state.seasonTheme === 'classic' ? 'active' : ''}" data-action="set-season-theme" data-season="classic" aria-pressed="${state.seasonTheme === 'classic' ? 'true' : 'false'}">
+          🍽️ Classic <span class="season-quick-sub">(Default)</span>
+        </button>
+      </div>
+      <div class="season-theme-grid">
+        ${seasonalCardsHtml}
       </div>
     </div>
 
@@ -4252,6 +4348,20 @@ document.addEventListener('click', async (e) => {
     } else if (action === 'set-theme') {
       applyTheme(actEl.dataset.theme);
       toast(`Theme set to ${actEl.dataset.theme}`);
+      if (document.getElementById('settings-push-feedback')) {
+        openSettingsModal(document.getElementById('settings-push-feedback').innerHTML);
+      } else {
+        render();
+      }
+    } else if (action === 'set-season-theme') {
+      const nextSeason = actEl.dataset.season;
+      applySeasonTheme(nextSeason);
+      const effMeta = getSeasonThemeMeta(resolveEffectiveSeasonTheme(state.seasonTheme, getTodayCentralIso()));
+      toast(
+        state.seasonTheme === 'auto'
+          ? `Seasonal theme set to Auto (${effMeta.emoji} ${effMeta.name})`
+          : `Seasonal theme set to ${effMeta.emoji} ${effMeta.name}`,
+      );
       if (document.getElementById('settings-push-feedback')) {
         openSettingsModal(document.getElementById('settings-push-feedback').innerHTML);
       } else {

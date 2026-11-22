@@ -1873,8 +1873,9 @@ describe('Man Night PWA Worker & Seed', () => {
   it('tracks What’s New releases, crew idea/bug credits, per-user seen state, and UI wiring (issue #11)', async () => {
     // 1. Changelog integrity
     const seenIds = new Set<string>();
-    expect(WHATS_NEW_RELEASES.length).toBeGreaterThanOrEqual(18);
-    expect(WHATS_NEW_RELEASES[0].id).toBe('2026-11-22-eb-review-links');
+    expect(WHATS_NEW_RELEASES.length).toBeGreaterThanOrEqual(19);
+    expect(WHATS_NEW_RELEASES[0].id).toBe('2026-11-22-seasonal-themes');
+    expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-22-eb-review-links')).toBe(true);
     expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-21-wichita-eb-directory-closings')).toBe(true);
     expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-19-tuesday-noon-night-lock')).toBe(true);
     expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-18-gcal-sync-fixes')).toBe(true);
@@ -4115,6 +4116,150 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(appJs).toContain('E.B. Review ↗');
     expect(stylesCss).toContain('.vote-option-review-bar');
     expect(stylesCss).toContain('.eb-review-link');
-    expect(swJs).toContain('man-night-shell-v27');
+    expect(swJs).toMatch(/CACHE_NAME = 'man-night-shell-v\d+'/);
+  });
+
+  it('supports custom seasonal themes (Thanksgiving, Christmas, etc.) with auto-date resolution, WCAG AA contrast, and UI wiring', async () => {
+    const { pathToFileURL } = await import('node:url');
+    const themesMod = (await import(pathToFileURL(resolve(rootDir, 'public/themes.js')).href)) as {
+      SEASON_THEMES: Array<{
+        id: string;
+        name: string;
+        emoji: string;
+        subtitle: string;
+        windowLabel: string;
+        swatches: string[];
+        themeColorLight: string;
+        themeColorDark: string;
+      }>;
+      SEASON_THEME_IDS: string[];
+      resolveAutoSeasonTheme: (isoDate: string) => string;
+      normalizeSeasonThemePref: (pref: unknown) => string;
+      resolveEffectiveSeasonTheme: (pref: unknown, isoDate: string) => string;
+      getSeasonThemeMeta: (id: string) => {
+        id: string;
+        name: string;
+        emoji: string;
+        themeColorLight: string;
+        themeColorDark: string;
+      };
+      getThemeColor: (seasonId: string, mode: string) => string;
+    };
+
+    // 1. Expected seasonal themes catalog
+    const expectedIds = [
+      'classic',
+      'thanksgiving',
+      'christmas',
+      'halloween',
+      'winter',
+      'stpatricks',
+      'spring',
+      'july4',
+      'summer',
+    ];
+    expect(themesMod.SEASON_THEME_IDS).toEqual(expectedIds);
+    for (const theme of themesMod.SEASON_THEMES) {
+      expect(theme.name.length).toBeGreaterThan(0);
+      expect(theme.emoji.length).toBeGreaterThan(0);
+      expect(theme.swatches).toHaveLength(3);
+      expect(theme.themeColorLight).toMatch(/^#[0-9a-f]{6}$/i);
+      expect(theme.themeColorDark).toMatch(/^#[0-9a-f]{6}$/i);
+    }
+
+    // 2. Date-based automatic season resolution across the calendar
+    expect(themesMod.resolveAutoSeasonTheme('2026-11-22')).toBe('thanksgiving');
+    expect(themesMod.resolveAutoSeasonTheme('2026-11-01')).toBe('thanksgiving');
+    expect(themesMod.resolveAutoSeasonTheme('2026-11-30')).toBe('thanksgiving');
+    expect(themesMod.resolveAutoSeasonTheme('2026-12-01')).toBe('christmas');
+    expect(themesMod.resolveAutoSeasonTheme('2026-12-25')).toBe('christmas');
+    expect(themesMod.resolveAutoSeasonTheme('2026-10-31')).toBe('halloween');
+    expect(themesMod.resolveAutoSeasonTheme('2026-01-15')).toBe('winter');
+    expect(themesMod.resolveAutoSeasonTheme('2026-02-28')).toBe('winter');
+    expect(themesMod.resolveAutoSeasonTheme('2026-03-17')).toBe('stpatricks');
+    expect(themesMod.resolveAutoSeasonTheme('2026-03-21')).toBe('spring');
+    expect(themesMod.resolveAutoSeasonTheme('2026-05-15')).toBe('spring');
+    expect(themesMod.resolveAutoSeasonTheme('2026-06-15')).toBe('summer');
+    expect(themesMod.resolveAutoSeasonTheme('2026-06-28')).toBe('july4');
+    expect(themesMod.resolveAutoSeasonTheme('2026-07-04')).toBe('july4');
+    expect(themesMod.resolveAutoSeasonTheme('2026-07-08')).toBe('summer');
+    expect(themesMod.resolveAutoSeasonTheme('2026-08-20')).toBe('summer');
+    expect(themesMod.resolveAutoSeasonTheme('2026-09-15')).toBe('classic');
+    expect(themesMod.resolveAutoSeasonTheme('invalid-date')).toBe('classic');
+
+    // 3. Preference normalization, overrides, and meta theme-color
+    expect(themesMod.normalizeSeasonThemePref(null)).toBe('auto');
+    expect(themesMod.normalizeSeasonThemePref('not-a-theme')).toBe('auto');
+    expect(themesMod.normalizeSeasonThemePref('christmas')).toBe('christmas');
+    expect(themesMod.resolveEffectiveSeasonTheme('auto', '2026-11-22')).toBe('thanksgiving');
+    expect(themesMod.resolveEffectiveSeasonTheme('christmas', '2026-11-22')).toBe('christmas');
+    expect(themesMod.resolveEffectiveSeasonTheme('classic', '2026-12-25')).toBe('classic');
+    expect(themesMod.getThemeColor('thanksgiving', 'light')).toBe('#fffaf3');
+    expect(themesMod.getThemeColor('thanksgiving', 'dark')).toBe('#17110d');
+    expect(themesMod.getSeasonThemeMeta('unknown').id).toBe('classic');
+
+    // 4. CSS coverage + automated WCAG AA (>= 4.5:1) contrast verification for every seasonal theme (light & dark)
+    const stylesCss = readFileSync(resolve(rootDir, 'public/styles.css'), 'utf8');
+    const hexToRgb = (h: string) => {
+      const clean = h.replace('#', '');
+      return [0, 2, 4].map((i) => parseInt(clean.slice(i, i + 2), 16));
+    };
+    const relLum = (h: string) =>
+      hexToRgb(h)
+        .map((v) => {
+          const n = v / 255;
+          return n <= 0.03928 ? n / 12.92 : Math.pow((n + 0.055) / 1.055, 2.4);
+        })
+        .reduce((acc, v, i) => acc + v * [0.2126, 0.7152, 0.0722][i], 0);
+    const contrast = (a: string, b: string) => {
+      const l1 = relLum(a);
+      const l2 = relLum(b);
+      return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
+    };
+    const extractBlockVars = (selector: string): Record<string, string> => {
+      const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const match = stylesCss.match(new RegExp(`${escaped}\\s*\\{([^}]*)\\}`));
+      expect(match, `Missing CSS block for ${selector}`).toBeTruthy();
+      const vars: Record<string, string> = {};
+      for (const line of match![1].split('\n')) {
+        const m = line.match(/(--[a-z-]+)\s*:\s*(#[0-9a-f]{6})/i);
+        if (m) vars[m[1]] = m[2];
+      }
+      return vars;
+    };
+
+    for (const seasonId of expectedIds.filter((id) => id !== 'classic')) {
+      for (const selector of [
+        `html[data-season="${seasonId}"]`,
+        `html[data-theme="dark"][data-season="${seasonId}"]`,
+      ]) {
+        const vars = extractBlockVars(selector);
+        expect(contrast(vars['--ink'], vars['--bg']), `${selector} ink/bg`).toBeGreaterThanOrEqual(4.5);
+        expect(contrast(vars['--ink'], vars['--surf']), `${selector} ink/surf`).toBeGreaterThanOrEqual(4.5);
+        expect(contrast(vars['--muted'], vars['--bg']), `${selector} muted/bg`).toBeGreaterThanOrEqual(4.5);
+        expect(contrast(vars['--muted'], vars['--surf']), `${selector} muted/surf`).toBeGreaterThanOrEqual(4.5);
+        expect(contrast('#ffffff', vars['--accent']), `${selector} white/accent`).toBeGreaterThanOrEqual(4.5);
+        expect(contrast(vars['--accent-ink'], vars['--bg']), `${selector} accent-ink/bg`).toBeGreaterThanOrEqual(4.5);
+        expect(contrast(vars['--accent-ink'], vars['--accent-soft']), `${selector} accent-ink/soft`).toBeGreaterThanOrEqual(4.5);
+      }
+    }
+
+    // 5. Frontend UI, HTML, SW, and What's New changelog wiring
+    const appJs = readFileSync(resolve(rootDir, 'public/app.js'), 'utf8');
+    const html = readFileSync(resolve(rootDir, 'public/index.html'), 'utf8');
+    const swJs = readFileSync(resolve(rootDir, 'public/sw.js'), 'utf8');
+    expect(appJs).toContain("from './themes.js'");
+    expect(appJs).toContain('mn_season_theme');
+    expect(appJs).toContain('set-season-theme');
+    expect(appJs).toContain('applySeasonTheme');
+    expect(appJs).toContain('Seasonal Theme');
+    expect(html).toContain('brand-season-badge');
+    expect(html).toContain('menu-settings-hint');
+    expect(swJs).toContain("'/themes.js'");
+    expect(swJs).toContain('man-night-shell-v28');
+
+    const seasonalEntry = WHATS_NEW_RELEASES.find((e) => e.id === '2026-11-22-seasonal-themes');
+    expect(seasonalEntry).toBeDefined();
+    expect(seasonalEntry?.creditSlug).toBe('tyler');
   });
 });

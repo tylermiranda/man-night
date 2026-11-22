@@ -1,8 +1,9 @@
-const CACHE_NAME = 'man-night-shell-v27';
+const CACHE_NAME = 'man-night-shell-v28';
 const SHELL_ASSETS = [
   '/',
   '/index.html',
   '/styles.css',
+  '/themes.js',
   '/app.js',
   '/manifest.webmanifest',
   '/favicon.svg',

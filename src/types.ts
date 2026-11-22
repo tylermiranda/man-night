@@ -62,6 +62,9 @@ export interface RestaurantRow {
   source_url?: string | null;
   cuisine?: string;
   discovered_at?: string | null;
+  eb_review_url?: string | null;
+  eb_review_date?: string | null;
+  eb_review_title?: string;
 }
 
 export interface PlaceVisitPrice {
@@ -284,6 +287,17 @@ export interface RestaurantSyncUpsertInput {
   sourceExternalId?: string | null;
   sourceUrl?: string | null;
   discoveredAt?: string | null;
+  ebReviewUrl?: string | null;
+  ebReviewDate?: string | null;
+  ebReviewTitle?: string;
+}
+
+export interface RestaurantSyncReviewUpdateInput {
+  restaurantId?: number;
+  slug?: string;
+  ebReviewUrl: string;
+  ebReviewDate?: string | null;
+  ebReviewTitle?: string;
 }
 
 export interface RestaurantSyncClosingInput {
@@ -309,10 +323,11 @@ export interface RestaurantSyncFlagInput {
 }
 
 export interface RestaurantSyncPayload {
-  mode?: 'backfill' | 'weekly' | 'manual';
+  mode?: 'backfill' | 'weekly' | 'manual' | 'reviews-backfill';
   cursorPostDate?: string | null;
   recordRun?: boolean;
   upserts?: RestaurantSyncUpsertInput[];
+  reviews?: RestaurantSyncReviewUpdateInput[];
   closings?: RestaurantSyncClosingInput[];
   flags?: RestaurantSyncFlagInput[];
 }

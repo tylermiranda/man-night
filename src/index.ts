@@ -151,7 +151,7 @@ function renderAdminDashboardHtml(data: {
   syncRuns: RestaurantSyncRunRow[];
   pendingFlags: RestaurantClosingFlagRow[];
   closedRestaurants: RestaurantRow[];
-  placeCounts: { visited_places: number; untried_places: number; closed_places: number };
+  placeCounts: { visited_places: number; untried_places: number; closed_places: number; eb_reviewed_places: number };
 }): string {
   const totalCalls = data.featureStats.reduce((acc, curr) => acc + curr.calls, 0);
   const totalNotifications = data.notificationLogs.length;
@@ -606,7 +606,7 @@ function renderAdminDashboardHtml(data: {
     <div class="section-card">
       <div class="section-header">
         <div class="section-title">Wichita By E.B. Sync &amp; Closings</div>
-        <span class="badge ${data.pendingFlags.length > 0 ? 'badge-warn' : 'badge-ok'}">${data.placeCounts.visited_places} visited · ${data.placeCounts.untried_places} untried · ${data.placeCounts.closed_places} closed</span>
+        <span class="badge ${data.pendingFlags.length > 0 ? 'badge-warn' : 'badge-ok'}">${data.placeCounts.visited_places} visited · ${data.placeCounts.untried_places} untried · ${data.placeCounts.eb_reviewed_places} E.B. reviewed · ${data.placeCounts.closed_places} closed</span>
       </div>
       <div class="table-wrap">
         <table>
@@ -976,7 +976,7 @@ async function handleAdminRequest(request: Request, env: Env, user: { email: str
     let syncRuns: RestaurantSyncRunRow[] = [];
     let pendingFlags: RestaurantClosingFlagRow[] = [];
     let closedRestaurants: RestaurantRow[] = [];
-    let placeCounts = { visited_places: 0, untried_places: 0, closed_places: 0 };
+    let placeCounts = { visited_places: 0, untried_places: 0, closed_places: 0, eb_reviewed_places: 0 };
     try {
       syncRuns = (
         await env.DB.prepare('SELECT * FROM restaurant_sync_runs ORDER BY id DESC LIMIT 10').all<RestaurantSyncRunRow>()
@@ -999,7 +999,8 @@ async function handleAdminRequest(request: Request, env: Env, user: { email: str
         `SELECT
            (SELECT COUNT(*) FROM restaurants WHERE visit_count >= 1) AS visited_places,
            (SELECT COUNT(*) FROM restaurants WHERE visit_count = 0 AND is_closed = 0) AS untried_places,
-           (SELECT COUNT(*) FROM restaurants WHERE is_closed = 1) AS closed_places`,
+           (SELECT COUNT(*) FROM restaurants WHERE is_closed = 1) AS closed_places,
+           (SELECT COUNT(*) FROM restaurants WHERE eb_review_url IS NOT NULL) AS eb_reviewed_places`,
       ).first<typeof placeCounts>();
       if (pc) placeCounts = pc;
     } catch (e) {

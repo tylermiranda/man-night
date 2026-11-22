@@ -162,7 +162,8 @@ export function safeRestaurantSelectSql(alias = 'r'): string {
          ${alias}.avg_rating, ${alias}.created_at,
          ${alias}.is_closed, ${alias}.closed_at, ${alias}.closed_reason, ${alias}.closed_source_url,
          ${alias}.status_locked, ${alias}.source, ${alias}.source_external_id, ${alias}.source_url,
-         ${alias}.cuisine, ${alias}.discovered_at`;
+         ${alias}.cuisine, ${alias}.discovered_at,
+         ${alias}.eb_review_url, ${alias}.eb_review_date, ${alias}.eb_review_title`;
 }
 
 export function isoWeekKey(dateStr: string): string {
@@ -2020,15 +2021,23 @@ export async function getRestaurantSyncStatus(db: D1Database) {
          (SELECT COUNT(*) FROM restaurants WHERE visit_count >= 1) AS visited_places,
          (SELECT COUNT(*) FROM restaurants WHERE visit_count = 0 AND is_closed = 0) AS untried_places,
          (SELECT COUNT(*) FROM restaurants WHERE is_closed = 1) AS closed_places,
+         (SELECT COUNT(*) FROM restaurants WHERE eb_review_url IS NOT NULL) AS eb_reviewed_places,
          (SELECT COUNT(*) FROM restaurant_closing_flags WHERE status = 'pending') AS pending_flags`,
     )
-    .first<{ visited_places: number; untried_places: number; closed_places: number; pending_flags: number }>();
+    .first<{
+      visited_places: number;
+      untried_places: number;
+      closed_places: number;
+      eb_reviewed_places: number;
+      pending_flags: number;
+    }>();
   const restaurants = (
     await db
       .prepare(
         `SELECT id, slug, name, address, city, lat, lng, visit_count, last_visited,
                 is_closed, closed_at, closed_reason, closed_source_url, status_locked,
-                source, source_external_id, source_url, cuisine, discovered_at
+                source, source_external_id, source_url, cuisine, discovered_at,
+                eb_review_url, eb_review_date, eb_review_title
          FROM restaurants
          ORDER BY visit_count DESC, id ASC`,
       )
@@ -2038,11 +2047,49 @@ export async function getRestaurantSyncStatus(db: D1Database) {
   return { latestRun: latestRun ?? null, recentRuns, pendingFlags, counts, restaurants };
 }
 
+export function isVerifiedEbReviewUrl(url: string | null | undefined): boolean {
+  if (!url || typeof url !== 'string') return false;
+  const trimmed = url.trim();
+  if (!/^https?:\/\/(?:www\.)?wichitabyeb\.com\/.+/i.test(trimmed)) return false;
+  if (/\/directory-restaurants\//i.test(trimmed)) return false;
+  return true;
+}
+
+function shouldApplyEbReviewUpdate(
+  existing: { eb_review_url: string | null; eb_review_date: string | null; eb_review_title: string },
+  incomingUrl: string | null | undefined,
+  incomingDate: string | null | undefined,
+  incomingTitle: string,
+): { url: string; date: string | null; title: string } | null {
+  if (!incomingUrl || !isVerifiedEbReviewUrl(incomingUrl)) return null;
+  const cleanUrl = incomingUrl.trim();
+  const cleanDate = incomingDate ? incomingDate.trim().slice(0, 10) : null;
+  if (cleanDate && !/^\d{4}-\d{2}-\d{2}$/.test(cleanDate)) return null;
+  const cleanTitle = incomingTitle.trim();
+
+  if (!existing.eb_review_url) {
+    return { url: cleanUrl, date: cleanDate, title: cleanTitle };
+  }
+  const exDate = existing.eb_review_date || '';
+  if (cleanDate && (!exDate || cleanDate > exDate)) {
+    return { url: cleanUrl, date: cleanDate, title: cleanTitle };
+  }
+  if (cleanDate && exDate === cleanDate && !existing.eb_review_title && cleanTitle) {
+    return {
+      url: existing.eb_review_url,
+      date: existing.eb_review_date,
+      title: cleanTitle,
+    };
+  }
+  return null;
+}
+
 export async function applyRestaurantSync(db: D1Database, payload: RestaurantSyncPayload) {
   const mode = payload.mode || 'weekly';
   const cursorPostDate = payload.cursorPostDate ?? null;
   const recordRun = payload.recordRun !== false;
   const upserts = Array.isArray(payload.upserts) ? payload.upserts : [];
+  const reviews = Array.isArray(payload.reviews) ? payload.reviews : [];
   const closings = Array.isArray(payload.closings) ? payload.closings : [];
   const flags = Array.isArray(payload.flags) ? payload.flags : [];
 
@@ -2062,6 +2109,9 @@ export async function applyRestaurantSync(db: D1Database, payload: RestaurantSyn
     source_url: string | null;
     cuisine: string;
     discovered_at: string | null;
+    eb_review_url: string | null;
+    eb_review_date: string | null;
+    eb_review_title: string;
   };
 
   const loadAll = async (): Promise<ExistingRow[]> =>
@@ -2069,7 +2119,8 @@ export async function applyRestaurantSync(db: D1Database, payload: RestaurantSyn
       await db
         .prepare(
           `SELECT id, slug, name, address, city, lat, lng, visit_count, is_closed, status_locked,
-                  source, source_external_id, source_url, cuisine, discovered_at
+                  source, source_external_id, source_url, cuisine, discovered_at,
+                  eb_review_url, eb_review_date, eb_review_title
            FROM restaurants
            ORDER BY id ASC`,
         )
@@ -2201,6 +2252,19 @@ export async function applyRestaurantSync(db: D1Database, payload: RestaurantSyn
         binds.push(cleanDiscovered);
         match.discovered_at = cleanDiscovered;
       }
+      const nextEb = shouldApplyEbReviewUpdate(
+        match,
+        raw.ebReviewUrl ?? null,
+        raw.ebReviewDate ?? null,
+        String(raw.ebReviewTitle || ''),
+      );
+      if (nextEb) {
+        sets.push('eb_review_url = ?', 'eb_review_date = ?', 'eb_review_title = ?');
+        binds.push(nextEb.url, nextEb.date, nextEb.title);
+        match.eb_review_url = nextEb.url;
+        match.eb_review_date = nextEb.date;
+        match.eb_review_title = nextEb.title;
+      }
       if (sets.length > 0) {
         upsertStmts.push(
           db.prepare(`UPDATE restaurants SET ${sets.join(', ')} WHERE id = ?`).bind(...binds, match.id),
@@ -2210,14 +2274,22 @@ export async function applyRestaurantSync(db: D1Database, payload: RestaurantSyn
       continue;
     }
 
+    const cleanEbUrl = raw.ebReviewUrl && isVerifiedEbReviewUrl(raw.ebReviewUrl) ? String(raw.ebReviewUrl).trim() : null;
+    const cleanEbDate =
+      cleanEbUrl && raw.ebReviewDate && /^\d{4}-\d{2}-\d{2}/.test(String(raw.ebReviewDate).trim())
+        ? String(raw.ebReviewDate).trim().slice(0, 10)
+        : null;
+    const cleanEbTitle = cleanEbUrl ? String(raw.ebReviewTitle || '').trim() : '';
+
     const newSlug = makeUniqueSlug(cleanName, cleanAddr, cleanCity, usedSlugs);
     upsertStmts.push(
       db
         .prepare(
           `INSERT INTO restaurants (
              slug, name, address, city, lat, lng, visit_count,
-             is_closed, status_locked, source, source_external_id, source_url, cuisine, discovered_at
-           ) VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, ?, ?, ?, ?, ?)`,
+             is_closed, status_locked, source, source_external_id, source_url, cuisine, discovered_at,
+             eb_review_url, eb_review_date, eb_review_title
+           ) VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .bind(
           newSlug,
@@ -2231,6 +2303,9 @@ export async function applyRestaurantSync(db: D1Database, payload: RestaurantSyn
           cleanUrl,
           cleanCuisine,
           cleanDiscovered,
+          cleanEbUrl,
+          cleanEbDate,
+          cleanEbTitle,
         ),
     );
     const placeholder: ExistingRow = {
@@ -2249,6 +2324,9 @@ export async function applyRestaurantSync(db: D1Database, payload: RestaurantSyn
       source_url: cleanUrl,
       cuisine: cleanCuisine,
       discovered_at: cleanDiscovered,
+      eb_review_url: cleanEbUrl,
+      eb_review_date: cleanEbDate,
+      eb_review_title: cleanEbTitle,
     };
     indexRow(placeholder);
     added.push({ name: cleanName, slug: newSlug, city: cleanCity, cuisine: cleanCuisine, sourceUrl: cleanUrl });
@@ -2271,6 +2349,48 @@ export async function applyRestaurantSync(db: D1Database, payload: RestaurantSyn
     if (t.name) return findMatchingExisting(t.name, '', '', t.sourceExternalId ?? null, t.slug);
     return undefined;
   };
+
+  const reviewStmts: D1PreparedStatement[] = [];
+  const reviewsUpdated: Array<{ id: number; name: string; ebReviewUrl: string; ebReviewDate: string | null }> = [];
+  let reviewsSkippedInvalid = 0;
+
+  for (const rv of reviews) {
+    if (!isVerifiedEbReviewUrl(rv?.ebReviewUrl)) {
+      reviewsSkippedInvalid += 1;
+      continue;
+    }
+    const target = resolveTarget(rv);
+    if (!target) continue;
+    const nextEb = shouldApplyEbReviewUpdate(
+      target,
+      rv.ebReviewUrl,
+      rv.ebReviewDate ?? null,
+      String(rv.ebReviewTitle || ''),
+    );
+    if (!nextEb) continue;
+    target.eb_review_url = nextEb.url;
+    target.eb_review_date = nextEb.date;
+    target.eb_review_title = nextEb.title;
+    reviewStmts.push(
+      db
+        .prepare(
+          `UPDATE restaurants
+           SET eb_review_url = ?, eb_review_date = ?, eb_review_title = ?
+           WHERE id = ?`,
+        )
+        .bind(nextEb.url, nextEb.date, nextEb.title, target.id),
+    );
+    reviewsUpdated.push({
+      id: target.id,
+      name: target.name,
+      ebReviewUrl: nextEb.url,
+      ebReviewDate: nextEb.date,
+    });
+  }
+
+  if (reviewStmts.length > 0) {
+    await runBatchedStatements(db, reviewStmts);
+  }
 
   const todayStr = getCentralDateStr(new Date(), 'America/Chicago');
   const closingStmts: D1PreparedStatement[] = [];
@@ -2366,6 +2486,8 @@ export async function applyRestaurantSync(db: D1Database, payload: RestaurantSyn
   if (recordRun) {
     const summaryJson = JSON.stringify({
       added: added.slice(0, 100),
+      reviewsUpdated: reviewsUpdated.slice(0, 50),
+      reviewsUpdatedCount: reviewsUpdated.length,
       closed,
       flagged,
       skippedLocked,
@@ -2380,7 +2502,7 @@ export async function applyRestaurantSync(db: D1Database, payload: RestaurantSyn
         mode,
         cursorPostDate,
         added.length,
-        updatedCount,
+        updatedCount + reviewsUpdated.length,
         closed.length,
         flagged.length,
         summaryJson,
@@ -2394,9 +2516,12 @@ export async function applyRestaurantSync(db: D1Database, payload: RestaurantSyn
     runId,
     addedCount: added.length,
     updatedCount,
+    reviewsUpdatedCount: reviewsUpdated.length,
+    reviewsSkippedInvalid,
     closedCount: closed.length,
     flaggedCount: flagged.length,
     added,
+    reviewsUpdated,
     closed,
     flagged,
     skippedLocked,
@@ -3849,6 +3974,7 @@ export async function getBootstrapPayload(env: Env, currentUser: UserRow) {
        (SELECT COUNT(*) FROM restaurants WHERE visit_count >= 1) AS total_places,
        (SELECT COUNT(*) FROM restaurants WHERE visit_count = 0 AND is_closed = 0) AS untried_places,
        (SELECT COUNT(*) FROM restaurants WHERE is_closed = 1) AS closed_places,
+       (SELECT COUNT(*) FROM restaurants WHERE eb_review_url IS NOT NULL) AS eb_reviewed_places,
        (SELECT COUNT(*) FROM restaurant_closing_flags WHERE status = 'pending') AS pending_closing_flags,
        (SELECT COUNT(*) FROM dinners WHERE status = 'completed' AND dinner_date >= '2025-01-01') AS recent_weeks,
        (SELECT COUNT(*) FROM dinners WHERE status = 'completed' AND dinner_date >= '2025-01-01' AND day_of_week = 'Tuesday') AS recent_tuesdays,
@@ -3859,12 +3985,28 @@ export async function getBootstrapPayload(env: Env, currentUser: UserRow) {
     total_places: number;
     untried_places: number;
     closed_places: number;
+    eb_reviewed_places: number;
     pending_closing_flags: number;
     recent_weeks: number;
     recent_tuesdays: number;
     avg_meal_price: number | null;
     total_price_entries: number;
   }>();
+
+  const latestEbReviewed =
+    (await env.DB.prepare(
+      `SELECT ${safeRestaurantSelectSql('r')},
+              (SELECT COUNT(*) FROM ratings rt WHERE rt.restaurant_id = r.id) AS rating_count,
+              (SELECT COUNT(*) FROM meal_photos mp WHERE mp.restaurant_id = r.id) AS photo_count
+       FROM restaurants r
+       WHERE r.is_closed = 0
+         AND r.eb_review_url IS NOT NULL
+         AND r.eb_review_date IS NOT NULL
+       ORDER BY r.eb_review_date DESC, r.id DESC
+       LIMIT 1`,
+    )
+      .bind(todayStr, todayStr, todayStr, todayStr)
+      .first<RestaurantRow>()) ?? null;
 
   const hostStats = (
     await env.DB.prepare(
@@ -4020,6 +4162,7 @@ export async function getBootstrapPayload(env: Env, currentUser: UserRow) {
     },
     whatsNew: buildWhatsNewPayload(currentUser.whats_new_seen_id ?? null, users),
     stats: counts,
+    latestEbReviewed,
     hostStats,
     selloutStats,
     recentSellouts,

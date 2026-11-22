@@ -143,6 +143,62 @@ const GENERIC_SINGLE_TOKENS = new Set([
 const GENERIC_MATCH_SUFFIXES =
   /\b(restaurant|bar\s*&\s*grill|bar\s+and\s+grill|grill|cafe|kitchen|bistro|eatery|diner|cantina|pizzeria|steakhouse|pub)\b/g;
 
+const NON_REVIEW_POST_TITLE_RE =
+  /\b(best things|top \d+|list of|roundup|guide to|most liked|underappreciated|must try in|where to|bracket|sweet 16|elite 8|final four|tournament|reader|poll|winners|openings|closings|giveaway|deal|deals|happy hour|thanksgiving|christmas|valentine|mother'?s day|father'?s day|new year|super bowl|cinco de mayo|st\.?\s*patrick|taco tuesday|burger battle|pizza bracket|wingsanity|career fair|opening later|coming soon|to open in|will expand|announced|podcast|food truck|food trucks)\b/i;
+
+const NON_REVIEW_SLUG_RE =
+  /\/(?:best-things|list-of-|most-liked|closings|readers-choice|food-truck|coffee-|bracket)/i;
+
+const LOCATION_HINT_TOKENS = [
+  'derby',
+  'andover',
+  'maize',
+  'goddard',
+  'haysville',
+  'bel aire',
+  'park city',
+  'valley center',
+  'kechi',
+  'augusta',
+  'rose hill',
+  'mulvane',
+  'downtown',
+  'old town',
+  'delano',
+  'bradley fair',
+  'college hill',
+  'clifton square',
+  'new market',
+  'west',
+  'east',
+  'north',
+  'south',
+  'rock',
+  'woodlawn',
+  'ridge',
+  'tyler',
+  'webb',
+  'greenwich',
+  'central',
+  'maple',
+  'douglas',
+  'kellogg',
+  'harry',
+  'pawnee',
+  'seneca',
+  'oliver',
+  'hydraulic',
+  '13th',
+  '21st',
+  '29th',
+  '37th',
+  'mosley',
+  'meridian',
+  'amidon',
+  'macarthur',
+  'k-96',
+];
+
 function parseArgs(argv) {
   const opts = {
     mode: 'weekly',
@@ -234,6 +290,44 @@ function normalizeStrictName(name, keepLeadingThe = false) {
 function extractStreetNumber(address) {
   const m = String(address || '').match(/\b(\d{2,5})\s+[a-z0-9]/i);
   return m ? m[1] : null;
+}
+
+function escapeRegExp(str) {
+  return String(str || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function isVerifiedEbBlogUrl(url) {
+  if (!url || typeof url !== 'string') return false;
+  const trimmed = url.trim();
+  if (!/^https?:\/\/(?:www\.)?wichitabyeb\.com\/.+/i.test(trimmed)) return false;
+  if (/\/directory-restaurants\//i.test(trimmed)) return false;
+  return true;
+}
+
+function normalizeWbebUrlKey(url) {
+  if (!isVerifiedEbBlogUrl(url)) return '';
+  return url
+    .trim()
+    .replace(/^http:\/\//i, 'https://')
+    .replace(/^https:\/\/wichitabyeb\.com\//i, 'https://www.wichitabyeb.com/')
+    .replace(/\/+$/, '')
+    .toLowerCase();
+}
+
+function extractDateFromBlogUrl(url) {
+  const m = String(url || '').match(/wichitabyeb\.com\/(20\d{2})\/(\d{2})\//i);
+  return m ? `${m[1]}-${m[2]}-01` : null;
+}
+
+function extractLocationHints(text) {
+  const lower = decodeHtmlEntities(String(text || '')).toLowerCase();
+  const hints = new Set();
+  for (const tok of LOCATION_HINT_TOKENS) {
+    if (new RegExp(`\\b${escapeRegExp(tok)}\\b`, 'i').test(lower)) {
+      hints.add(tok);
+    }
+  }
+  return hints;
 }
 
 async function fetchJson(url, headers = {}) {
@@ -413,10 +507,181 @@ function parseOpeningNameFromPostTitle(title) {
     .replace(/\s+is$/i, '')
     .replace(/\s+for\s+(?:pizza|wings|brunch|lunch|dinner).*$/i, '')
     .replace(/\s+in\s+(?:downtown\s+wichita|east\s+wichita|west\s+wichita|northwest\s+wichita|southeast\s+wichita|wichita|derby|andover|maize|goddard|park\s+city|colwich|augusta)(?:,\s*ks)?$/i, '')
+    .replace(/\s*[:|–—-]\s*(?:a\s+)?(?:review|revisit|first\s+look|quick\s+look|quick\s+bite).*$/i, '')
     .replace(/,.*$/, '')
     .replace(/[:;].*$/, '')
     .trim();
   return clean;
+}
+
+function parseReviewSubjectFromPostTitle(title) {
+  let clean = decodeHtmlEntities(title || '').trim();
+  const actionAtMatch = clean.match(/^(?:must\s+try|trying|ordering|sampling|best\s+dish)\b[^:]*?\s+(?:at|from)\s+(.+)$/i);
+  if (actionAtMatch) {
+    clean = actionAtMatch[1].trim();
+  }
+  const reviewPrefixes = [
+    /^(?:dining|restaurant|wichita\s+by\s+e\.?b\.?)?\s*review\s*[:–—-]\s*/i,
+    /^quick\s+(?:bite|review|look)\s*(?:at|from|:|–|—|-)?\s*/i,
+    /^must\s+try\s*[:–—-]\s*/i,
+    /^(?:dinner|lunch|brunch|supper|eating|headed\s+back|going\s+back|back)\s+(?:to|at|from)\s+/i,
+  ];
+  for (const re of reviewPrefixes) {
+    clean = clean.replace(re, '');
+  }
+  return parseOpeningNameFromPostTitle(clean);
+}
+
+function isExcludedPostMeta(post) {
+  const title = decodeHtmlEntities(post?.title?.rendered || '').trim();
+  const cats = (post.categories || []).map(Number);
+  const tags = (post.tags || []).map(Number);
+  if (tags.some((t) => POST_TAG_EXCLUDED.has(t))) return true;
+  if (cats.some((c) => POST_CAT_EXCLUDED_ANY.has(c))) return true;
+  if (cats.includes(POST_CAT_BREAKFAST) && !cats.some((c) => POST_DINNER_CATS.has(c))) return true;
+  if (NON_REVIEW_POST_TITLE_RE.test(title)) return true;
+  if (EXCLUDED_NAME_OR_BODY_RE.test(title)) return true;
+  return false;
+}
+
+function isReviewPostCandidate(post) {
+  const title = decodeHtmlEntities(post?.title?.rendered || '').trim();
+  if (!title || title.length < 3) return false;
+  const cats = (post.categories || []).map(Number);
+  if (!cats.includes(POST_CAT_REVIEW) && !cats.includes(POST_CAT_FIRST_LOOK)) return false;
+  if (isExcludedPostMeta(post)) return false;
+  if (!isVerifiedEbBlogUrl(post.link) || NON_REVIEW_SLUG_RE.test(post.link)) return false;
+  return true;
+}
+
+function pickBestDirectoryBlogReview(item, reviewPostByPath) {
+  const df =
+    item?.drts_fields && typeof item.drts_fields === 'object' && !Array.isArray(item.drts_fields)
+      ? item.drts_fields
+      : {};
+  const blogUrls = Array.isArray(df.field_wichita_by_e_b_s_blog) ? df.field_wichita_by_e_b_s_blog : [];
+  let best = null;
+  for (const rawUrl of blogUrls) {
+    if (!isVerifiedEbBlogUrl(rawUrl) || NON_REVIEW_SLUG_RE.test(rawUrl)) continue;
+    const key = normalizeWbebUrlKey(rawUrl);
+    const matchedPost = reviewPostByPath.get(key);
+    let cand = null;
+    if (matchedPost) {
+      if (isExcludedPostMeta(matchedPost)) continue;
+      cand = {
+        ebReviewUrl: matchedPost.link,
+        ebReviewDate: String(matchedPost.date || '').slice(0, 10),
+        ebReviewTitle: decodeHtmlEntities(matchedPost.title?.rendered || '').trim(),
+      };
+    } else {
+      const fallbackDate = extractDateFromBlogUrl(rawUrl);
+      if (!fallbackDate) continue;
+      cand = {
+        ebReviewUrl: String(rawUrl).trim(),
+        ebReviewDate: fallbackDate,
+        ebReviewTitle: '',
+      };
+    }
+    if (!cand.ebReviewDate) continue;
+    if (
+      !best ||
+      cand.ebReviewDate > best.ebReviewDate ||
+      (cand.ebReviewDate === best.ebReviewDate && !best.ebReviewTitle && cand.ebReviewTitle)
+    ) {
+      best = cand;
+    }
+  }
+  return best;
+}
+
+function scoreRestaurantReviewTitleMatch(rest, postTitle, parsedSubject, sameNormCount) {
+  const rawName = String(rest.name || '').trim();
+  if (!rawName) return 0;
+  const fullWithThe = normalizeStrictName(rawName, true);
+  const strictName = normalizeStrictName(rawName, false);
+  const normName = normalizeMatchName(rawName);
+  const subjWithThe = normalizeStrictName(parsedSubject, true);
+  const subjStrict = normalizeStrictName(parsedSubject, false);
+  const subjNorm = normalizeMatchName(parsedSubject);
+  const titleWithThe = normalizeStrictName(postTitle, true);
+  const titleStrict = normalizeStrictName(postTitle, false);
+
+  if (rawName.includes('/') || strictName.length < 4) {
+    return strictName.length >= 4 && subjStrict === strictName ? 95 : 0;
+  }
+
+  if (GENERIC_SINGLE_TOKENS.has(normName) || normName.length < 4) {
+    if (subjWithThe === fullWithThe || titleWithThe === fullWithThe) return 95;
+    return 0;
+  }
+
+  let baseScore = 0;
+  if (subjWithThe === fullWithThe || subjStrict === strictName) {
+    baseScore = 100;
+  } else if (normName.length >= 5 && subjNorm === normName) {
+    baseScore = 90;
+  } else if (new RegExp(`\\b${escapeRegExp(strictName)}\\b`).test(titleStrict)) {
+    baseScore = 70;
+  } else if (
+    normName.length >= 6 &&
+    !GENERIC_SINGLE_TOKENS.has(normName) &&
+    new RegExp(`\\b${escapeRegExp(normName)}\\b`).test(subjStrict)
+  ) {
+    baseScore = 60;
+  }
+
+  if (baseScore === 0) return 0;
+
+  const restHints = extractLocationHints(`${rawName} ${rest.address || ''} ${rest.city || ''}`);
+  const postHints = extractLocationHints(postTitle);
+  let sharedHints = 0;
+  for (const h of postHints) {
+    if (restHints.has(h)) sharedHints += 1;
+  }
+
+  if (sameNormCount > 1) {
+    if (sharedHints === 0) return 0;
+    baseScore += sharedHints * 5;
+  } else if (sharedHints > 0) {
+    baseScore += 5;
+  }
+
+  return baseScore;
+}
+
+function matchDirItemToExisting(item, dirAddress, dirName, existingByExtId, existingByNorm, normNameCounts) {
+  const extMatch = existingByExtId.get(`wbeb-dir-${item.id}`);
+  if (extMatch) return extMatch;
+
+  const fullWithThe = normalizeStrictName(dirName, true);
+  const strictName = normalizeStrictName(dirName, false);
+  const normName = normalizeMatchName(dirName);
+  if (!normName || dirName.includes('/') || strictName.length < 4) return null;
+
+  const candidates = existingByNorm.get(normName) || [];
+  if (candidates.length === 0) return null;
+
+  if (GENERIC_SINGLE_TOKENS.has(normName) || normName.length < 4) {
+    const exact = candidates.filter((c) => normalizeStrictName(c.name, true) === fullWithThe);
+    if (exact.length !== 1) return null;
+    const dirNum = extractStreetNumber(dirAddress);
+    const candNum = extractStreetNumber(exact[0].address);
+    if (dirNum && candNum && dirNum !== candNum) return null;
+    return exact[0];
+  }
+
+  const dirNum = extractStreetNumber(dirAddress);
+  if (dirNum) {
+    const sameStreet = candidates.find((c) => extractStreetNumber(c.address) === dirNum);
+    if (sameStreet) return sameStreet;
+  }
+
+  if ((normNameCounts.get(normName) || 0) === 1) {
+    const only = candidates[0];
+    const candNum = extractStreetNumber(only.address);
+    if (!dirNum || !candNum || dirNum === candNum) return only;
+  }
+  return null;
 }
 
 function isOpeningPostCandidate(post, postCatMap) {
@@ -624,11 +889,12 @@ async function postSyncBatch(apiUrl, payload) {
 
 async function applyPayloadInBatches(apiUrl, payload) {
   const upserts = Array.isArray(payload.upserts) ? payload.upserts : [];
+  const reviews = Array.isArray(payload.reviews) ? payload.reviews : [];
   const closings = Array.isArray(payload.closings) ? payload.closings : [];
   const flags = Array.isArray(payload.flags) ? payload.flags : [];
   const chunkSize = 150;
 
-  if (upserts.length <= chunkSize) {
+  if (upserts.length <= chunkSize && reviews.length <= chunkSize) {
     return postSyncBatch(apiUrl, payload);
   }
 
@@ -636,19 +902,33 @@ async function applyPayloadInBatches(apiUrl, payload) {
     ok: true,
     addedCount: 0,
     updatedCount: 0,
+    reviewsUpdatedCount: 0,
     closedCount: 0,
     flaggedCount: 0,
     batches: 0,
     finalResult: null,
   };
 
+  const chunks = [];
   for (let i = 0; i < upserts.length; i += chunkSize) {
-    const isLast = i + chunkSize >= upserts.length;
+    chunks.push({ upserts: upserts.slice(i, i + chunkSize), reviews: [] });
+  }
+  for (let i = 0; i < reviews.length; i += chunkSize) {
+    chunks.push({ upserts: [], reviews: reviews.slice(i, i + chunkSize) });
+  }
+  if (chunks.length === 0) {
+    chunks.push({ upserts: [], reviews: [] });
+  }
+
+  for (let idx = 0; idx < chunks.length; idx += 1) {
+    const isLast = idx === chunks.length - 1;
+    const chunk = chunks[idx];
     const chunkPayload = {
       mode: payload.mode || 'backfill',
       cursorPostDate: payload.cursorPostDate || null,
-      recordRun: isLast,
-      upserts: upserts.slice(i, i + chunkSize),
+      recordRun: payload.recordRun !== false && isLast,
+      upserts: chunk.upserts,
+      reviews: chunk.reviews,
       closings: isLast ? closings : [],
       flags: isLast ? flags : [],
     };
@@ -656,11 +936,127 @@ async function applyPayloadInBatches(apiUrl, payload) {
     totals.batches += 1;
     totals.addedCount += Number(res.addedCount || 0);
     totals.updatedCount += Number(res.updatedCount || 0);
+    totals.reviewsUpdatedCount += Number(res.reviewsUpdatedCount || 0);
     totals.closedCount += Number(res.closedCount || 0);
     totals.flaggedCount += Number(res.flaggedCount || 0);
     totals.finalResult = res;
   }
   return totals;
+}
+
+function indexExistingRestaurants(existingRestaurants) {
+  const existingByExtId = new Map();
+  const existingByNorm = new Map();
+  const normNameCounts = new Map();
+  for (const r of existingRestaurants) {
+    if (r.source_external_id) existingByExtId.set(r.source_external_id, r);
+    const norm = normalizeMatchName(r.name);
+    if (norm) {
+      const list = existingByNorm.get(norm) || [];
+      list.push(r);
+      existingByNorm.set(norm, list);
+      normNameCounts.set(norm, (normNameCounts.get(norm) || 0) + 1);
+    }
+  }
+  return { existingByExtId, existingByNorm, normNameCounts };
+}
+
+function collectReviewMatchesForExisting({
+  existingRestaurants,
+  dirItems,
+  dirCatMap,
+  locMap,
+  reviewPosts,
+}) {
+  const reviewPostByPath = new Map();
+  for (const p of reviewPosts) {
+    const key = normalizeWbebUrlKey(p.link);
+    if (key) reviewPostByPath.set(key, p);
+  }
+
+  const { existingByExtId, existingByNorm, normNameCounts } = indexExistingRestaurants(existingRestaurants);
+  const bestByRestId = new Map();
+
+  const considerCandidate = (rest, cand) => {
+    if (!rest || !cand || !isVerifiedEbBlogUrl(cand.ebReviewUrl) || !cand.ebReviewDate) return;
+    const prev = bestByRestId.get(rest.id);
+    if (
+      !prev ||
+      cand.ebReviewDate > prev.ebReviewDate ||
+      (cand.ebReviewDate === prev.ebReviewDate && !prev.ebReviewTitle && cand.ebReviewTitle)
+    ) {
+      bestByRestId.set(rest.id, {
+        restaurantId: rest.id,
+        slug: rest.slug,
+        name: rest.name,
+        matchSource: cand.matchSource,
+        ebReviewUrl: cand.ebReviewUrl.trim(),
+        ebReviewDate: cand.ebReviewDate,
+        ebReviewTitle: String(cand.ebReviewTitle || '').trim(),
+      });
+    }
+  };
+
+  for (const item of dirItems) {
+    const { address, city } = extractAddressAndCityFromDir(item, locMap);
+    if (isNonDinnerDirectoryItem(item, dirCatMap, city)) continue;
+    const bestDirReview = pickBestDirectoryBlogReview(item, reviewPostByPath);
+    if (!bestDirReview) continue;
+    const dirName = decodeHtmlEntities(item.title?.rendered || '').trim();
+    const rest = matchDirItemToExisting(item, address, dirName, existingByExtId, existingByNorm, normNameCounts);
+    if (rest) {
+      considerCandidate(rest, { ...bestDirReview, matchSource: 'directory' });
+    }
+  }
+
+  for (const post of reviewPosts) {
+    if (!isReviewPostCandidate(post)) continue;
+    const postTitle = decodeHtmlEntities(post.title?.rendered || '').trim();
+    const postDate = String(post.date || '').slice(0, 10);
+    if (!postDate) continue;
+    const parsedSubject = parseReviewSubjectFromPostTitle(postTitle);
+
+    let bestScore = 0;
+    let bestMatches = [];
+    for (const rest of existingRestaurants) {
+      const sameCount = normNameCounts.get(normalizeMatchName(rest.name)) || 1;
+      const score = scoreRestaurantReviewTitleMatch(rest, postTitle, parsedSubject, sameCount);
+      if (score <= 0) continue;
+      if (score > bestScore) {
+        bestScore = score;
+        bestMatches = [rest];
+      } else if (score === bestScore) {
+        bestMatches.push(rest);
+      }
+    }
+    if (bestMatches.length === 1) {
+      considerCandidate(bestMatches[0], {
+        ebReviewUrl: post.link,
+        ebReviewDate: postDate,
+        ebReviewTitle: postTitle,
+        matchSource: 'post_title',
+      });
+    }
+  }
+
+  const byRestId = new Map(existingRestaurants.map((r) => [r.id, r]));
+  const reviews = [];
+  for (const [restId, cand] of bestByRestId.entries()) {
+    const cur = byRestId.get(restId);
+    if (!cur) continue;
+    const curUrl = cur.eb_review_url || null;
+    const curDate = cur.eb_review_date || '';
+    const curTitle = cur.eb_review_title || '';
+    const shouldSend =
+      !curUrl ||
+      cand.ebReviewDate > curDate ||
+      (cand.ebReviewDate === curDate && !curTitle && Boolean(cand.ebReviewTitle));
+    if (shouldSend) {
+      reviews.push(cand);
+    }
+  }
+  reviews.sort((a, b) => (b.ebReviewDate || '').localeCompare(a.ebReviewDate || '') || a.name.localeCompare(b.name));
+  return { reviews, reviewPostByPath };
 }
 
 async function buildSyncPayload(opts) {
@@ -670,7 +1066,7 @@ async function buildSyncPayload(opts) {
   try {
     const status = await fetchAdminSyncStatus(opts.apiUrl);
     existingRestaurants = status.restaurants || [];
-    if (!latestCursor && opts.mode === 'weekly' && status.latestRun?.cursor_post_date) {
+    if (!latestCursor && (opts.mode === 'weekly' || opts.mode === 'reviews-backfill') && status.latestRun?.cursor_post_date) {
       latestCursor = status.latestRun.cursor_post_date;
     }
   } catch (err) {
@@ -688,6 +1084,43 @@ async function buildSyncPayload(opts) {
     fetchTaxMap('categories'),
   ]);
 
+  if (opts.mode === 'reviews-backfill') {
+    const [dirItems, reviewPosts] = await Promise.all([
+      fetchWpAllPages('restaurants_dir_ltg'),
+      fetchWpAllPages('posts', {
+        categories: `${POST_CAT_REVIEW},${POST_CAT_FIRST_LOOK}`,
+        _fields: 'id,date,title,link,categories,tags',
+      }),
+    ]);
+    let maxPostDate = latestCursor;
+    for (const p of reviewPosts) {
+      if (p.date && p.date > maxPostDate) maxPostDate = p.date;
+    }
+    const { reviews } = collectReviewMatchesForExisting({
+      existingRestaurants,
+      dirItems,
+      dirCatMap,
+      locMap,
+      reviewPosts,
+    });
+    return {
+      payload: {
+        mode: 'reviews-backfill',
+        cursorPostDate: maxPostDate,
+        upserts: [],
+        reviews,
+        closings: [],
+        flags: [],
+      },
+      meta: {
+        existingCount: existingRestaurants.length,
+        directoryItemsScanned: dirItems.length,
+        reviewPostsScanned: reviewPosts.length,
+        matchedReviewUpdates: reviews.length,
+      },
+    };
+  }
+
   // 1. Fetch closing posts
   const closingParams = { tags: String(POST_TAG_CLOSINGS) };
   if (opts.mode === 'weekly' && latestCursor) {
@@ -701,13 +1134,27 @@ async function buildSyncPayload(opts) {
     ? closingItems
     : (await fetchWpAllPages('posts', { tags: String(POST_TAG_CLOSINGS) })).flatMap(extractClosingItemsFromPost);
 
-  // 2. Build upserts
+  // 2. Build upserts (+ full Review index when in backfill mode)
   const upserts = [];
   const skippedStats = { dirExcluded: 0, dirClosed: 0, postExcluded: 0 };
+  let dirItems = [];
+  let backfillReviewPosts = [];
+  let reviewPostByPath = new Map();
 
   if (opts.mode === 'backfill') {
     // CRITICAL: omit _fields on restaurants_dir_ltg so drts_fields is populated
-    const dirItems = await fetchWpAllPages('restaurants_dir_ltg');
+    [dirItems, backfillReviewPosts] = await Promise.all([
+      fetchWpAllPages('restaurants_dir_ltg'),
+      fetchWpAllPages('posts', {
+        categories: `${POST_CAT_REVIEW},${POST_CAT_FIRST_LOOK}`,
+        _fields: 'id,date,title,link,categories,tags',
+      }),
+    ]);
+    for (const p of backfillReviewPosts) {
+      const key = normalizeWbebUrlKey(p.link);
+      if (key) reviewPostByPath.set(key, p);
+    }
+
     for (const item of dirItems) {
       const { address, city, lat, lng, yearOpened } = extractAddressAndCityFromDir(item, locMap);
       if (isNonDinnerDirectoryItem(item, dirCatMap, city)) {
@@ -727,6 +1174,7 @@ async function buildSyncPayload(opts) {
         continue;
       }
       const discoveredAt = yearOpened && yearOpened >= 1900 ? `${yearOpened}-01-01` : String(item.date || '').slice(0, 10);
+      const bestDirReview = pickBestDirectoryBlogReview(item, reviewPostByPath);
       upserts.push({
         name,
         address,
@@ -738,11 +1186,18 @@ async function buildSyncPayload(opts) {
         sourceExternalId: `wbeb-dir-${item.id}`,
         sourceUrl: item.link,
         discoveredAt,
+        ...(bestDirReview
+          ? {
+              ebReviewUrl: bestDirReview.ebReviewUrl,
+              ebReviewDate: bestDirReview.ebReviewDate,
+              ebReviewTitle: bestDirReview.ebReviewTitle,
+            }
+          : {}),
       });
     }
   }
 
-  // 3. Fetch recent / 2025+ opening posts (First Look + News/Reviews)
+  // 3. Fetch recent / 2025+ opening & review posts (First Look + News/Reviews)
   const postAfter = latestCursor.includes('T') ? latestCursor : `${latestCursor.slice(0, 10)}T00:00:00`;
   const [firstLookPosts, newsPosts] = await Promise.all([
     fetchWpAllPages('posts', { categories: String(POST_CAT_FIRST_LOOK), after: postAfter }),
@@ -785,6 +1240,9 @@ async function buildSyncPayload(opts) {
       await new Promise((r) => setTimeout(r, 1100));
       coords = await geocodeAddressNominatim(address).catch(() => null);
     }
+    const postIsReview = isReviewPostCandidate(post);
+    const postTitle = decodeHtmlEntities(post.title?.rendered || '').trim();
+    const postDate = String(post.date || '').slice(0, 10);
     openingPosts.push({ post, bodyText });
     upserts.push({
       name: parsed.name,
@@ -796,9 +1254,25 @@ async function buildSyncPayload(opts) {
       source: 'wichitabyeb_post',
       sourceExternalId: `wbeb-post-${post.id}`,
       sourceUrl: post.link,
-      discoveredAt: String(post.date || '').slice(0, 10),
+      discoveredAt: postDate,
+      ...(postIsReview && postDate
+        ? {
+            ebReviewUrl: post.link,
+            ebReviewDate: postDate,
+            ebReviewTitle: postTitle,
+          }
+        : {}),
     });
   }
+
+  const reviewPostsForMatching = opts.mode === 'backfill' ? backfillReviewPosts : allCandidatePosts;
+  const { reviews } = collectReviewMatchesForExisting({
+    existingRestaurants,
+    dirItems: opts.mode === 'backfill' ? dirItems : [],
+    dirCatMap,
+    locMap,
+    reviewPosts: reviewPostsForMatching,
+  });
 
   // 4. Match closings against existing Man Night DB restaurants
   const closings = [];
@@ -885,6 +1359,7 @@ async function buildSyncPayload(opts) {
       mode: opts.mode,
       cursorPostDate: maxPostDate,
       upserts,
+      reviews,
       closings,
       flags,
     },
@@ -892,6 +1367,7 @@ async function buildSyncPayload(opts) {
       existingCount: existingRestaurants.length,
       closingPostsScanned: closingPosts.length,
       openingPostsScanned: allCandidatePosts.length,
+      matchedReviewUpdates: reviews.length,
       skippedStats,
     },
   };
@@ -918,13 +1394,27 @@ async function main() {
     mode: payload.mode,
     cursorPostDate: payload.cursorPostDate,
     upsertsCount: (payload.upserts || []).length,
+    reviewsCount: (payload.reviews || []).length,
     closingsCount: (payload.closings || []).length,
     flagsCount: (payload.flags || []).length,
     meta,
   };
 
   if (opts.dryRun || !opts.apply) {
-    console.log(JSON.stringify({ dryRun: true, summary, sampleUpserts: (payload.upserts || []).slice(0, 10), closings: payload.closings, flags: payload.flags }, null, 2));
+    console.log(
+      JSON.stringify(
+        {
+          dryRun: true,
+          summary,
+          sampleUpserts: (payload.upserts || []).slice(0, 10),
+          sampleReviews: (payload.reviews || []).slice(0, 20),
+          closings: payload.closings,
+          flags: payload.flags,
+        },
+        null,
+        2,
+      ),
+    );
     return;
   }
 

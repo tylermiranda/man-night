@@ -11,6 +11,17 @@ import type { WhatsNewEntry, WhatsNewPayload, WhatsNewViewEntry } from './types'
  */
 export const WHATS_NEW_RELEASES: readonly WhatsNewEntry[] = [
   {
+    id: '2026-11-22-eb-review-links',
+    date: '2026-11-22',
+    kind: 'feature',
+    title: '📰 Wichita By E.B. Reviews & Latest Review Spotlight',
+    summary:
+      'Added verified Wichita By E.B. review links across active Place Polls, Tonight cards, I’m Feeling Lucky draws, and the Places map & detail view. Plus a new Latest Wichita By E.B. Review spotlight on This Week and Places, and a "Recently reviewed (E.B.)" sort.',
+    creditSlug: 'tyler',
+    creditName: 'Tyler',
+    creditRole: 'idea',
+  },
+  {
     id: '2026-11-21-wichita-eb-directory-closings',
     date: '2026-11-21',
     kind: 'feature',

@@ -624,13 +624,38 @@ async function loadHistory(append = false) {
   if (state.tab === 'history') render();
 }
 
+function hasEbReview(place) {
+  const url = place?.eb_review_url;
+  return typeof url === 'string' && /^https?:\/\/(?:www\.)?wichitabyeb\.com\/.+/i.test(url.trim()) && !/\/directory-restaurants\//i.test(url);
+}
+
+function syncPlacesFilterToSelected() {
+  if (!state.selectedPlaceId) return;
+  const target =
+    state.places.find((p) => Number(p.id) === Number(state.selectedPlaceId)) ||
+    (Number(state.bootstrap?.latestEbReviewed?.id) === Number(state.selectedPlaceId)
+      ? state.bootstrap.latestEbReviewed
+      : null);
+  if (!target) return;
+  if (target.is_closed) {
+    state.placesFilter = 'closed';
+  } else if (Number(target.visit_count || 0) === 0) {
+    state.placesFilter = 'untried';
+  } else if (state.placesFilter === 'untried' || state.placesFilter === 'closed') {
+    state.placesFilter = 'all';
+  }
+}
+
 function setTab(tab) {
   state.tab = tab;
   document.querySelectorAll('[data-tab]').forEach((btn) => {
     btn.classList.toggle('active', btn.dataset.tab === tab);
   });
   if (tab === 'places') {
-    loadPlacesIfNeeded().then(render);
+    loadPlacesIfNeeded().then(() => {
+      syncPlacesFilterToSelected();
+      render();
+    });
   } else if (tab === 'history') {
     loadHistory(false);
   } else if (tab === 'beers') {
@@ -869,20 +894,29 @@ function renderPlacePollOptions(tw) {
       const sel = myNoon === p.id;
       const ratingTxt = p.avg_rating != null ? `★ ${Number(p.avg_rating).toFixed(1)} · ` : '';
       const lastVisited = effectiveLastVisited(p, todayIso);
+      const reviewBar = hasEbReview(p)
+        ? `<div class="vote-option-review-bar">
+             <span class="eb-review-meta">${p.eb_review_date ? `Reviewed ${esc(fmtShortDate(p.eb_review_date))}` : 'Wichita By E.B.'}</span>
+             <a class="eb-review-link" href="${esc(p.eb_review_url)}" target="_blank" rel="noopener">E.B. Review ↗</a>
+           </div>`
+        : '';
       return `
-        <button class="vote-option ${sel ? 'selected' : ''}" data-action="vote-noon" data-place-id="${p.id}">
-          <div class="vote-fill" style="width:${pct}%"></div>
-          <div class="vote-inner">
-            <div>
-              <div class="vote-main">${esc(p.name)}</div>
-              <div class="vote-meta">${ratingTxt}${p.visit_count} past visits · ${lastVisited ? `Last ${fmtShortDate(lastVisited)}` : 'In the books'}${p.address ? ` · ${esc(p.address)}` : ''}</div>
+        <div class="vote-option-item">
+          <button class="vote-option ${sel ? 'selected' : ''}" data-action="vote-noon" data-place-id="${p.id}">
+            <div class="vote-fill" style="width:${pct}%"></div>
+            <div class="vote-inner">
+              <div>
+                <div class="vote-main">${esc(p.name)}</div>
+                <div class="vote-meta">${ratingTxt}${p.visit_count} past visits · ${lastVisited ? `Last ${fmtShortDate(lastVisited)}` : 'In the books'}${p.address ? ` · ${esc(p.address)}` : ''}</div>
+              </div>
+              <div style="display:flex;align-items:center;gap:8px;">
+                ${voters.map((v) => avatarHtml(v.user_slug, v.user_slug, 'sm')).join('')}
+                <span class="vote-count">${voters.length}</span>
+              </div>
             </div>
-            <div style="display:flex;align-items:center;gap:8px;">
-              ${voters.map((v) => avatarHtml(v.user_slug, v.user_slug, 'sm')).join('')}
-              <span class="vote-count">${voters.length}</span>
-            </div>
-          </div>
-        </button>
+          </button>
+          ${reviewBar}
+        </div>
       `;
     })
     .join('');
@@ -1095,6 +1129,7 @@ function renderWeekView() {
           <div id="tonight-map" class="minimap"></div>
           <div class="btn-row">
             <a class="btn btn-primary" href="${esc(tw.directions_url)}" target="_blank" rel="noopener">Directions in Google Maps</a>
+            ${hasEbReview(tw.place) ? `<a class="btn btn-outline" href="${esc(tw.place.eb_review_url)}" target="_blank" rel="noopener">E.B. Review ↗</a>` : ''}
             <button class="btn btn-outline" data-action="open-picker" data-dinner-id="${d.id}" data-day="${esc(d.day_of_week)}" data-host="${esc(d.host_label)}" data-date="${esc(d.dinner_date)}" data-night-open="1">Change place</button>
             <button class="btn btn-secondary" data-action="open-poll-builder" data-dinner-id="${d.id}">Switch to poll</button>
             <button class="btn btn-secondary" data-action="open-change-time" data-dinner-id="${d.id}">Change time</button>
@@ -1201,6 +1236,7 @@ function renderWeekView() {
       <div id="tonight-map" class="minimap"></div>
       <div class="btn-row">
         <a class="btn btn-primary" href="${esc(tw.directions_url)}" target="_blank" rel="noopener">Directions in Google Maps</a>
+        ${hasEbReview(tw.place) ? `<a class="btn btn-outline" href="${esc(tw.place.eb_review_url)}" target="_blank" rel="noopener">E.B. Review ↗</a>` : ''}
         <button class="btn btn-outline" data-action="open-picker" data-dinner-id="${d.id}" data-day="${esc(d.day_of_week)}" data-host="${esc(d.host_label)}" data-date="${esc(d.dinner_date)}">Change place</button>
         <button class="btn btn-secondary" data-action="open-poll-builder" data-dinner-id="${d.id}">Switch to poll</button>
         <button class="btn btn-secondary" data-action="open-change-time" data-dinner-id="${d.id}">Change time</button>
@@ -1588,6 +1624,31 @@ function renderWeekView() {
           </div>
           <div class="list-clean">${upcomingRows}</div>
         </section>
+        ${(() => {
+          const spot = b.latestEbReviewed;
+          if (!spot || !hasEbReview(spot)) return '';
+          const statusPill = Number(spot.visit_count || 0) === 0
+            ? '<span class="badge badge-untried">Untried</span>'
+            : `<span class="badge badge-muted">${spot.visit_count}×${spot.avg_rating != null ? ` · ★ ${Number(spot.avg_rating).toFixed(1)}` : ''}</span>`;
+          return `
+            <section class="card">
+              <div class="card-kicker">
+                <span>Latest Wichita By E.B. Review</span>
+                <span>${spot.eb_review_date ? esc(fmtShortDate(spot.eb_review_date)) : ''}</span>
+              </div>
+              <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;">
+                <div class="eb-spotlight-title">${esc(spot.name)}</div>
+                ${statusPill}
+              </div>
+              ${spot.cuisine ? `<div class="eb-review-meta" style="margin-top:2px;">${esc(spot.cuisine)}</div>` : ''}
+              ${spot.eb_review_title ? `<div class="eb-spotlight-headline">“${esc(spot.eb_review_title)}”</div>` : ''}
+              <div class="btn-row" style="margin-top:10px;">
+                <a class="btn btn-sm btn-outline" href="${esc(spot.eb_review_url)}" target="_blank" rel="noopener">E.B. Review ↗</a>
+                <button class="btn btn-sm btn-ghost" data-action="focus-place" data-place-id="${spot.id}" data-place-untried="${Number(spot.visit_count || 0) === 0 ? '1' : '0'}">View in Places →</button>
+              </div>
+            </section>
+          `;
+        })()}
         ${rateCard}
       </aside>
     </div>
@@ -1744,6 +1805,15 @@ function getFilteredPlaces() {
       const bDate = effectiveLastVisited(b, todayIso) || b.discovered_at || '';
       return bDate.localeCompare(aDate) || (b.visit_count - a.visit_count) || a.name.localeCompare(b.name);
     });
+  } else if (state.placesSort === 'eb_recent') {
+    list.sort((a, b) => {
+      const aHas = hasEbReview(a) ? 1 : 0;
+      const bHas = hasEbReview(b) ? 1 : 0;
+      if (bHas !== aHas) return bHas - aHas;
+      const aDate = aHas ? a.eb_review_date || '' : '';
+      const bDate = bHas ? b.eb_review_date || '' : '';
+      return bDate.localeCompare(aDate) || (b.id - a.id);
+    });
   } else if (state.placesSort === 'alpha') {
     list.sort((a, b) => a.name.localeCompare(b.name));
   } else if (state.placesFilter === 'untried') {
@@ -1874,9 +1944,15 @@ function renderSelectedPlaceCard(selected) {
   ]
     .filter(Boolean)
     .join(' ');
-  const ebBtnHtml = place.source_url
-    ? `<a class="btn btn-sm btn-outline" href="${esc(place.source_url)}" target="_blank" rel="noopener">Wichita By E.B. ↗</a>`
+  const ebBtnHtml = hasEbReview(place)
+    ? `<a class="btn btn-sm btn-outline" href="${esc(place.eb_review_url)}" target="_blank" rel="noopener">Wichita By E.B. Review ↗</a>`
     : '';
+  const ebReviewSnippetHtml =
+    hasEbReview(place) && (place.eb_review_date || place.eb_review_title)
+      ? `<div class="eb-review-meta" style="margin-bottom:8px;">
+           ${place.eb_review_date ? `Wichita By E.B. review (${esc(fmtDate(place.eb_review_date))})` : 'Wichita By E.B. review'}${place.eb_review_title ? `: “${esc(place.eb_review_title)}”` : ''}
+         </div>`
+      : '';
 
   return `
     <section class="card">
@@ -1890,7 +1966,8 @@ function renderSelectedPlaceCard(selected) {
       <div style="font-size:13px;color:var(--muted);margin-top:3px;">
         ${place.visit_count} ${place.visit_count === 1 ? 'visit' : 'visits'}${lastVisited ? ` · Last ${fmtDate(lastVisited)}` : place.discovered_at ? ` · Added ${fmtDate(place.discovered_at)}` : ''}
       </div>
-      <div style="font-size:12px;color:var(--muted);margin-top:2px;margin-bottom:10px;">${esc(place.address || place.city)}</div>
+      <div style="font-size:12px;color:var(--muted);margin-top:2px;margin-bottom:${ebReviewSnippetHtml ? '4px' : '10px'};">${esc(place.address || place.city)}</div>
+      ${ebReviewSnippetHtml}
       <div class="btn-row" style="margin-bottom:12px;">
         <a class="btn btn-sm btn-primary" href="${esc(gmaps)}" target="_blank" rel="noopener">Directions ↗</a>
         ${ebBtnHtml}
@@ -2025,6 +2102,23 @@ function renderPlacesView() {
       place: topDerby,
       meta: `${topDerby.visit_count} visits in Derby`,
     },
+    (() => {
+      const byLatestEb = [...all]
+        .filter((p) => !p.is_closed && hasEbReview(p) && p.eb_review_date)
+        .sort((a, b) => (b.eb_review_date || '').localeCompare(a.eb_review_date || '') || (b.id - a.id));
+      const latestEb =
+        byLatestEb[0] ||
+        (state.bootstrap?.latestEbReviewed && !state.bootstrap.latestEbReviewed.is_closed && hasEbReview(state.bootstrap.latestEbReviewed)
+          ? state.bootstrap.latestEbReviewed
+          : null);
+      if (!latestEb) return null;
+      return {
+        icon: '📰',
+        title: 'Latest E.B. Review',
+        place: latestEb,
+        meta: `${fmtDate(latestEb.eb_review_date)} · ${Number(latestEb.visit_count || 0) === 0 ? 'Untried spot' : `${latestEb.visit_count}× visited`}`,
+      };
+    })(),
   ].filter(Boolean);
 
   const trophyHtml = trophies.length
@@ -2038,7 +2132,7 @@ function renderPlacesView() {
           ${trophies
             .map(
               (t) => `
-            <button class="trophy-card" data-action="focus-trophy" data-place-id="${t.place.id}">
+            <button class="trophy-card" data-action="focus-trophy" data-place-id="${t.place.id}" data-place-untried="${Number(t.place.visit_count || 0) === 0 ? '1' : '0'}">
               <span class="trophy-icon">${t.icon}</span>
               <span style="min-width:0;">
                 <span class="trophy-kicker">${esc(t.title)}</span>
@@ -2186,6 +2280,7 @@ function renderPlacesView() {
         <option value="rating" ${state.placesSort === 'rating' ? 'selected' : ''}>Top rated</option>
         <option value="price" ${state.placesSort === 'price' ? 'selected' : ''}>Meal price</option>
         <option value="recent" ${state.placesSort === 'recent' ? 'selected' : ''}>Most recent</option>
+        <option value="eb_recent" ${state.placesSort === 'eb_recent' ? 'selected' : ''}>Recently reviewed (E.B.)</option>
         <option value="alpha" ${state.placesSort === 'alpha' ? 'selected' : ''}>A – Z</option>
       </select>
     </div>
@@ -2708,7 +2803,10 @@ function initPlacesMap() {
       <div style="font-family:var(--sys);font-size:13px;max-width:220px;">
         <strong style="display:block;margin-bottom:3px;">${esc(p.name)}</strong>
         <div style="color:#71717a;font-size:12px;margin-bottom:6px;">${statusTag}${p.cuisine ? `${esc(p.cuisine)} · ` : ''}${p.avg_rating != null ? `★ ${Number(p.avg_rating).toFixed(1)} · ` : ''}${p.visit_count} visits · ${esc(p.address || p.city)}</div>
-        <a href="${esc(gmaps)}" target="_blank" rel="noopener" style="color:#e5484d;font-weight:600;">Directions ↗</a>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+          <a href="${esc(gmaps)}" target="_blank" rel="noopener" style="color:#e5484d;font-weight:600;">Directions ↗</a>
+          ${hasEbReview(p) ? `<a href="${esc(p.eb_review_url)}" target="_blank" rel="noopener" style="color:#e5484d;font-weight:600;">E.B. Review ↗</a>` : ''}
+        </div>
       </div>
     `;
     const marker = new maplibregl.Marker({ element: pin })
@@ -3275,7 +3373,10 @@ function renderLuckyModalContent() {
           <div style="font-size:13px;color:var(--muted);margin-bottom:8px;">
             ${lv ? `Last visited ${fmtDate(lv)} · ` : 'Ready for a visit · '}${esc(picked.address || picked.city)}
           </div>
-          <a href="${esc(gmaps)}" target="_blank" rel="noopener" style="font-size:12px;font-weight:600;">Directions preview ↗</a>
+          <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;">
+            <a href="${esc(gmaps)}" target="_blank" rel="noopener" style="font-size:12px;font-weight:600;">Directions preview ↗</a>
+            ${hasEbReview(picked) ? `<a class="eb-review-link" href="${esc(picked.eb_review_url)}" target="_blank" rel="noopener">E.B. Review ↗</a>` : ''}
+          </div>
         </div>
       `;
     } else {
@@ -3290,7 +3391,7 @@ function renderLuckyModalContent() {
           <div class="lucky-poll-row">
             <div style="min-width:0;">
               <div class="place-name">${esc(p.name)}</div>
-              <div class="place-addr">${ratingTxt}${p.visit_count} visits · ${lv ? `Last ${fmtShortDate(lv)}` : esc(p.address || p.city)}</div>
+              <div class="place-addr">${ratingTxt}${p.visit_count} visits · ${lv ? `Last ${fmtShortDate(lv)}` : esc(p.address || p.city)}${hasEbReview(p) ? ` · <a class="eb-review-link" href="${esc(p.eb_review_url)}" target="_blank" rel="noopener">E.B. Review ↗</a>` : ''}</div>
             </div>
             <div class="lucky-row-actions">
               <button type="button" class="lucky-icon-btn" data-action="lucky-swap-one" data-place-id="${p.id}" title="Swap this spot" aria-label="Swap ${esc(p.name)}">↻</button>
@@ -4972,16 +5073,18 @@ document.addEventListener('click', async (e) => {
         }
       }
     } else if (action === 'focus-trophy') {
-      state.placesFilter = 'all';
       state.placesQuery = '';
       state.selectedPlaceId = Number(actEl.dataset.placeId);
       state.syncPageToSelectedPlace = true;
+      state.placesFilter = actEl.dataset.placeUntried === '1' ? 'untried' : 'all';
+      syncPlacesFilterToSelected();
       render();
     } else if (action === 'focus-place') {
-      state.placesFilter = 'all';
       state.placesQuery = '';
       state.selectedPlaceId = Number(actEl.dataset.placeId);
       state.syncPageToSelectedPlace = true;
+      state.placesFilter = actEl.dataset.placeUntried === '1' ? 'untried' : 'all';
+      syncPlacesFilterToSelected();
       setTab('places');
     } else if (action === 'filter-place-history') {
       state.historyPlaceId = Number(actEl.dataset.placeId);

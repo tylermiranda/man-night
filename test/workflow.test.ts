@@ -35,6 +35,7 @@ const migration0017Sql = readFileSync(resolve(rootDir, 'migrations/0017_cancel_n
 const migration0018Sql = readFileSync(resolve(rootDir, 'migrations/0018_extra_guest_names.sql'), 'utf8');
 const migration0019Sql = readFileSync(resolve(rootDir, 'migrations/0019_dinner_comments.sql'), 'utf8');
 const migration0020Sql = readFileSync(resolve(rootDir, 'migrations/0020_restaurant_directory_sync.sql'), 'utf8');
+const migration0021Sql = readFileSync(resolve(rootDir, 'migrations/0021_eb_reviews.sql'), 'utf8');
 
 function makeEnv(db: D1Database, overrides: Partial<Env> = {}): Env {
   return {
@@ -83,6 +84,7 @@ describe('Man Night PWA Worker & Seed', () => {
     await db.exec(migration0018Sql);
     await db.exec(migration0019Sql);
     await db.exec(migration0020Sql);
+    await db.exec(migration0021Sql);
     env = makeEnv(db);
   });
 
@@ -1871,8 +1873,9 @@ describe('Man Night PWA Worker & Seed', () => {
   it('tracks What’s New releases, crew idea/bug credits, per-user seen state, and UI wiring (issue #11)', async () => {
     // 1. Changelog integrity
     const seenIds = new Set<string>();
-    expect(WHATS_NEW_RELEASES.length).toBeGreaterThanOrEqual(17);
-    expect(WHATS_NEW_RELEASES[0].id).toBe('2026-11-21-wichita-eb-directory-closings');
+    expect(WHATS_NEW_RELEASES.length).toBeGreaterThanOrEqual(18);
+    expect(WHATS_NEW_RELEASES[0].id).toBe('2026-11-22-eb-review-links');
+    expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-21-wichita-eb-directory-closings')).toBe(true);
     expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-19-tuesday-noon-night-lock')).toBe(true);
     expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-18-gcal-sync-fixes')).toBe(true);
     expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-18-night-comments' && e.issueNumber === 23)).toBe(true);
@@ -3949,5 +3952,169 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(adminHtmlRes.status).toBe(200);
     const adminHtml = await adminHtmlRes.text();
     expect(adminHtml).toContain('Wichita By E.B. Sync');
+  });
+
+  it('syncs verified Wichita By E.B. reviews, blocks non-blog/downgrade updates, spotlights latest open review, and wires UI', async () => {
+    const poplar = await env.DB.prepare("SELECT id, slug FROM restaurants WHERE name LIKE '%Poplar%' LIMIT 1").first<{
+      id: number;
+      slug: string;
+    }>();
+    expect(poplar).toBeTruthy();
+
+    // 1. Upsert with verified blog review + sync existing review + reject directory URL
+    const syncRes = await worker.fetch(
+      makeReq('/admin/restaurants/sync', 'POST', {
+        mode: 'reviews-backfill',
+        cursorPostDate: '2026-11-22T15:30:00',
+        upserts: [
+          {
+            name: 'Sabor Nuevo Mexican Kitchen',
+            address: '620 N Tyler Rd, Wichita, KS 67212',
+            city: 'Wichita',
+            cuisine: 'Mexican',
+            source: 'wichitabyeb_post',
+            sourceExternalId: 'wbeb-post-200001',
+            sourceUrl: 'https://www.wichitabyeb.com/2026/11/sabor-nuevo-first-look.html',
+            discoveredAt: '2026-11-22',
+            ebReviewUrl: 'https://www.wichitabyeb.com/2026/11/sabor-nuevo-first-look.html',
+            ebReviewDate: '2026-11-22',
+            ebReviewTitle: 'First look at Sabor Nuevo Mexican Kitchen',
+          },
+          {
+            name: 'Old Closed Cafe',
+            address: '100 Main St, Wichita, KS',
+            city: 'Wichita',
+            cuisine: 'American',
+            source: 'wichitabyeb_dir',
+            sourceExternalId: 'wbeb-dir-999901',
+            sourceUrl: 'https://www.wichitabyeb.com/directory-restaurants/listing/old-closed-cafe/',
+            discoveredAt: '2020-01-01',
+            ebReviewUrl: 'https://www.wichitabyeb.com/directory-restaurants/listing/old-closed-cafe/',
+            ebReviewDate: '2026-11-25',
+            ebReviewTitle: 'Directory URL should be rejected',
+          },
+        ],
+        reviews: [
+          {
+            restaurantId: poplar!.id,
+            ebReviewUrl: 'https://www.wichitabyeb.com/2026/11/poplar-review.html',
+            ebReviewDate: '2026-11-18',
+            ebReviewTitle: 'Revisiting The Poplar Restaurant',
+          },
+          {
+            restaurantId: poplar!.id,
+            ebReviewUrl: 'https://www.wichitabyeb.com/directory-restaurants/listing/the-poplar/',
+            ebReviewDate: '2026-11-24',
+            ebReviewTitle: 'Bad directory link',
+          },
+        ],
+      }),
+      env,
+    );
+    expect(syncRes.status).toBe(200);
+    const syncBody = (await syncRes.json()) as {
+      addedCount: number;
+      reviewsUpdatedCount: number;
+      reviewsSkippedInvalid: number;
+    };
+    expect(syncBody.addedCount).toBe(2);
+    expect(syncBody.reviewsUpdatedCount).toBe(1);
+    expect(syncBody.reviewsSkippedInvalid).toBe(1);
+
+    // 2. Monotonic guard: older review date cannot downgrade newer review; newer date upgrades cleanly
+    const downgradeRes = await worker.fetch(
+      makeReq('/admin/restaurants/sync', 'POST', {
+        mode: 'weekly',
+        recordRun: false,
+        reviews: [
+          {
+            restaurantId: poplar!.id,
+            ebReviewUrl: 'https://www.wichitabyeb.com/2018/04/old-poplar.html',
+            ebReviewDate: '2018-04-10',
+            ebReviewTitle: 'Old Poplar Review',
+          },
+        ],
+      }),
+      env,
+    );
+    expect(downgradeRes.status).toBe(200);
+    const downgradeBody = (await downgradeRes.json()) as { reviewsUpdatedCount: number };
+    expect(downgradeBody.reviewsUpdatedCount).toBe(0);
+
+    const oldClosed = await env.DB.prepare('SELECT id, eb_review_url FROM restaurants WHERE slug = ? OR name = ?')
+      .bind('old-closed-cafe', 'Old Closed Cafe')
+      .first<{ id: number; eb_review_url: string | null }>();
+    expect(oldClosed).toBeTruthy();
+    expect(oldClosed?.eb_review_url).toBeNull();
+
+    // Also add a closed reviewed restaurant with a future date and verify bootstrap ignores closed spots for latestEbReviewed
+    await env.DB.prepare(
+      `UPDATE restaurants
+       SET is_closed = 1, closed_at = '2026-11-26', eb_review_url = ?, eb_review_date = ?, eb_review_title = ?
+       WHERE id = ?`,
+    )
+      .bind('https://www.wichitabyeb.com/2026/11/closed-review.html', '2026-11-25', 'Closed Spot Review', oldClosed!.id)
+      .run();
+
+    // 3. Bootstrap returns latestEbReviewed (newest open reviewed restaurant) + eb_reviewed_places count
+    const bootRes = await worker.fetch(makeReq('/api/bootstrap'), env);
+    expect(bootRes.status).toBe(200);
+    const boot = (await bootRes.json()) as {
+      stats: { eb_reviewed_places: number };
+      latestEbReviewed: RestaurantRow | null;
+    };
+    expect(boot.stats.eb_reviewed_places).toBeGreaterThanOrEqual(2);
+    expect(boot.latestEbReviewed?.name).toBe('Sabor Nuevo Mexican Kitchen');
+    expect(boot.latestEbReviewed?.eb_review_url).toBe('https://www.wichitabyeb.com/2026/11/sabor-nuevo-first-look.html');
+    expect(boot.latestEbReviewed?.eb_review_date).toBe('2026-11-22');
+
+    // 4. Active dinner poll & lucky & /api/places & /admin expose verified review fields
+    const dinner = await env.DB.prepare("SELECT id FROM dinners WHERE status != 'completed' ORDER BY dinner_date ASC LIMIT 1").first<{ id: number }>();
+    expect(dinner).toBeTruthy();
+    const nuevo = await env.DB.prepare("SELECT id FROM restaurants WHERE name = 'Sabor Nuevo Mexican Kitchen'").first<{ id: number }>();
+    expect(nuevo).toBeTruthy();
+
+    const createPoll = await worker.fetch(
+      makeReq('/api/week/create-poll', 'POST', { dinnerId: dinner!.id, restaurantIds: [poplar!.id, nuevo!.id] }),
+      env,
+    );
+    expect(createPoll.status).toBe(200);
+
+    const pollBootRes = await worker.fetch(makeReq('/api/bootstrap'), env);
+    const pollBoot = (await pollBootRes.json()) as {
+      thisWeek: { noonCandidates: RestaurantRow[] } | null;
+    };
+    const candUrls = (pollBoot.thisWeek?.noonCandidates ?? []).map((c) => c.eb_review_url);
+    expect(candUrls).toContain('https://www.wichitabyeb.com/2026/11/sabor-nuevo-first-look.html');
+    expect(candUrls).toContain('https://www.wichitabyeb.com/2026/11/poplar-review.html');
+
+    const placesRes = await worker.fetch(makeReq('/api/places?q=sabor+nuevo'), env);
+    expect(placesRes.status).toBe(200);
+    const placesJson = (await placesRes.json()) as { places: RestaurantRow[] };
+    expect(placesJson.places.some((p) => p.eb_review_url === 'https://www.wichitabyeb.com/2026/11/sabor-nuevo-first-look.html')).toBe(true);
+    expect(placesJson.places.every((p) => !p.eb_review_url || !p.eb_review_url.includes('/directory-restaurants/'))).toBe(true);
+
+    const adminStatusRes = await worker.fetch(makeReq('/admin/sync-status'), env);
+    const adminStatus = (await adminStatusRes.json()) as { counts: { eb_reviewed_places: number } };
+    expect(adminStatus.counts.eb_reviewed_places).toBeGreaterThanOrEqual(2);
+
+    const adminHtmlRes = await worker.fetch(makeReq('/admin'), env);
+    const adminHtml = await adminHtmlRes.text();
+    expect(adminHtml).toContain('E.B. reviewed');
+
+    // 5. Frontend UI & SW wiring checks
+    const appJs = readFileSync(resolve(rootDir, 'public/app.js'), 'utf8');
+    const stylesCss = readFileSync(resolve(rootDir, 'public/styles.css'), 'utf8');
+    const swJs = readFileSync(resolve(rootDir, 'public/sw.js'), 'utf8');
+    expect(appJs).toContain('hasEbReview');
+    expect(appJs).toContain('syncPlacesFilterToSelected');
+    expect(appJs).toContain('Latest Wichita By E.B. Review');
+    expect(appJs).toContain('Latest E.B. Review');
+    expect(appJs).toContain('Recently reviewed (E.B.)');
+    expect(appJs).toContain('vote-option-review-bar');
+    expect(appJs).toContain('E.B. Review ↗');
+    expect(stylesCss).toContain('.vote-option-review-bar');
+    expect(stylesCss).toContain('.eb-review-link');
+    expect(swJs).toContain('man-night-shell-v27');
   });
 });

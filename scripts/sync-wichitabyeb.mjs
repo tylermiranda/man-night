@@ -138,13 +138,17 @@ const GENERIC_SINGLE_TOKENS = new Set([
   'house',
   'spot',
   'express',
+  'eatery',
+  'arcade',
+  'las vegas',
+  'buffet',
 ]);
 
 const GENERIC_MATCH_SUFFIXES =
   /\b(restaurant|bar\s*&\s*grill|bar\s+and\s+grill|grill|cafe|kitchen|bistro|eatery|diner|cantina|pizzeria|steakhouse|pub)\b/g;
 
 const NON_REVIEW_POST_TITLE_RE =
-  /\b(best things|top \d+|list of|roundup|guide to|most liked|underappreciated|must try in|where to|bracket|sweet 16|elite 8|final four|tournament|reader|poll|winners|openings|closings|giveaway|deal|deals|happy hour|thanksgiving|christmas|valentine|mother'?s day|father'?s day|new year|super bowl|cinco de mayo|st\.?\s*patrick|taco tuesday|burger battle|pizza bracket|wingsanity|career fair|opening later|coming soon|to open in|will expand|announced|podcast|food truck|food trucks)\b/i;
+  /\b(best things|top \d+|list of|roundup|guide to|most liked|underappreciated|must try in|where to|bracket|sweet 16|elite 8|final four|tournament|reader|poll|winners|openings|closings|giveaway|deal|deals|happy hour|thanksgiving|christmas|valentine|mother'?s day|father'?s day|new year|super bowl|cinco de mayo|st\.?\s*patrick|taco tuesday|burger battle|pizza bracket|wingsanity|career fair|opening later|coming soon|to open in|will expand|announced|podcast|food truck|food trucks|in las vegas|visual buffet tour)\b/i;
 
 const NON_REVIEW_SLUG_RE =
   /\/(?:best-things|list-of-|most-liked|closings|readers-choice|food-truck|coffee-|bracket)/i;
@@ -319,11 +323,16 @@ function extractDateFromBlogUrl(url) {
   return m ? `${m[1]}-${m[2]}-01` : null;
 }
 
+const LOCATION_HINT_REGEXES = LOCATION_HINT_TOKENS.map((tok) => [
+  tok,
+  new RegExp(`\\b${tok.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i'),
+]);
+
 function extractLocationHints(text) {
   const lower = decodeHtmlEntities(String(text || '')).toLowerCase();
   const hints = new Set();
-  for (const tok of LOCATION_HINT_TOKENS) {
-    if (new RegExp(`\\b${escapeRegExp(tok)}\\b`, 'i').test(lower)) {
+  for (const [tok, re] of LOCATION_HINT_REGEXES) {
+    if (re.test(lower)) {
       hints.add(tok);
     }
   }
@@ -594,52 +603,144 @@ function pickBestDirectoryBlogReview(item, reviewPostByPath) {
   return best;
 }
 
-function scoreRestaurantReviewTitleMatch(rest, postTitle, parsedSubject, sameNormCount) {
+function prepareRestaurantForReviewMatch(rest, sameNormCount) {
   const rawName = String(rest.name || '').trim();
-  if (!rawName) return 0;
   const fullWithThe = normalizeStrictName(rawName, true);
   const strictName = normalizeStrictName(rawName, false);
   const normName = normalizeMatchName(rawName);
-  const subjWithThe = normalizeStrictName(parsedSubject, true);
-  const subjStrict = normalizeStrictName(parsedSubject, false);
-  const subjNorm = normalizeMatchName(parsedSubject);
-  const titleWithThe = normalizeStrictName(postTitle, true);
-  const titleStrict = normalizeStrictName(postTitle, false);
+  const reviewKey = normalizeReviewKey(rawName);
+  const isMalformedOrShort = rawName.includes('/') || strictName.length < 4;
+  const isGeneric = GENERIC_SINGLE_TOKENS.has(normName) || normName.length < 4;
+  return {
+    rest,
+    rawName,
+    fullWithThe,
+    strictName,
+    normName,
+    reviewKey,
+    streetNum: extractStreetNumber(rest.address),
+    isMalformedOrShort,
+    isGeneric,
+    sameNormCount,
+    strictRe: !isMalformedOrShort && !isGeneric && strictName ? new RegExp(`\\b${escapeRegExp(strictName)}\\b`) : null,
+    normRe:
+      !isMalformedOrShort && !isGeneric && normName.length >= 6 && !GENERIC_SINGLE_TOKENS.has(normName)
+        ? new RegExp(`\\b${escapeRegExp(normName)}\\b`)
+        : null,
+    restHints: extractLocationHints(`${rawName} ${rest.address || ''} ${rest.city || ''}`),
+  };
+}
 
-  if (rawName.includes('/') || strictName.length < 4) {
-    return strictName.length >= 4 && subjStrict === strictName ? 95 : 0;
+function normalizeReviewKey(name) {
+  let s = decodeHtmlEntities(String(name || ''))
+    .replace(/['’`]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^the\s+/, '');
+
+  const trimmed = s
+    .replace(/\bwichita\s+ks\b/g, '')
+    .replace(
+      /\s+(?:mexican\s+fast\s+food|mexican\s+restaurant|mexican\s+food|mexican\s+grill|fast\s+food|restaurant|bar\s*&\s*grill|bar\s+and\s+grill|bar\s+n\s+grill|grill|cafe|kitchen|bistro|eatery|diner|cantina|pizzeria|steakhouse|pub)\b/g,
+      ' ',
+    )
+    .replace(/\s+(?:east|west|north|south|downtown|wichita)\s*$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (trimmed.length >= 5 && !GENERIC_SINGLE_TOKENS.has(trimmed)) {
+    s = trimmed;
+  } else {
+    const baseNoGeo = s.replace(/\s+(?:east|west|north|south|wichita\s+ks|wichita)\s*$/g, '').trim();
+    if (baseNoGeo.length >= 5 && !GENERIC_SINGLE_TOKENS.has(baseNoGeo)) s = baseNoGeo;
   }
 
-  if (GENERIC_SINGLE_TOKENS.has(normName) || normName.length < 4) {
-    if (subjWithThe === fullWithThe || titleWithThe === fullWithThe) return 95;
+  const parts = s.split(' ');
+  const last = parts[parts.length - 1] || '';
+  if (last.length >= 6 && last.endsWith('s') && !/(?:ss|us|is|es)$/.test(last)) {
+    const singular = [...parts.slice(0, -1), last.slice(0, -1)].join(' ');
+    if (singular.length >= 5 && !GENERIC_SINGLE_TOKENS.has(singular)) {
+      s = singular;
+    }
+  }
+  return s;
+}
+
+function haveConflictingLocations(hintsA, hintsB, numA, numB) {
+  if (numA && numB && numA !== numB) return true;
+  if (hintsA.has('east') && hintsB.has('west')) return true;
+  if (hintsA.has('west') && hintsB.has('east')) return true;
+  if (hintsA.has('north') && hintsB.has('south')) return true;
+  if (hintsA.has('south') && hintsB.has('north')) return true;
+  return false;
+}
+
+function preparePostForReviewMatch(post) {
+  const postTitle = decodeHtmlEntities(post.title?.rendered || '').trim();
+  const postDate = String(post.date || '').slice(0, 10);
+  const parsedSubject = parseReviewSubjectFromPostTitle(postTitle);
+  return {
+    post,
+    postTitle,
+    postDate,
+    parsedSubject,
+    subjWithThe: normalizeStrictName(parsedSubject, true),
+    subjStrict: normalizeStrictName(parsedSubject, false),
+    subjNorm: normalizeMatchName(parsedSubject),
+    subjReviewKey: normalizeReviewKey(parsedSubject),
+    titleWithThe: normalizeStrictName(postTitle, true),
+    titleStrict: normalizeStrictName(postTitle, false),
+    postHints: extractLocationHints(postTitle),
+  };
+}
+
+function scoreRestaurantReviewTitleMatch(prepRest, prepPost) {
+  if (!prepRest.rawName) return 0;
+
+  if (prepRest.isMalformedOrShort) {
+    return prepRest.strictName.length >= 4 && prepPost.subjStrict === prepRest.strictName ? 95 : 0;
+  }
+
+  if (prepRest.isGeneric) {
+    if (prepPost.subjWithThe === prepRest.fullWithThe || prepPost.titleWithThe === prepRest.fullWithThe) return 95;
     return 0;
   }
 
   let baseScore = 0;
-  if (subjWithThe === fullWithThe || subjStrict === strictName) {
+  if (prepPost.subjWithThe === prepRest.fullWithThe || prepPost.subjStrict === prepRest.strictName) {
     baseScore = 100;
-  } else if (normName.length >= 5 && subjNorm === normName) {
+  } else if (prepRest.normName.length >= 5 && prepPost.subjNorm === prepRest.normName) {
     baseScore = 90;
-  } else if (new RegExp(`\\b${escapeRegExp(strictName)}\\b`).test(titleStrict)) {
+  } else if (
+    prepRest.reviewKey.length >= 5 &&
+    !GENERIC_SINGLE_TOKENS.has(prepRest.reviewKey) &&
+    prepPost.subjReviewKey === prepRest.reviewKey
+  ) {
+    baseScore = 85;
+  } else if (
+    prepRest.strictRe &&
+    prepPost.titleStrict.includes(prepRest.strictName) &&
+    prepRest.strictRe.test(prepPost.titleStrict)
+  ) {
     baseScore = 70;
   } else if (
-    normName.length >= 6 &&
-    !GENERIC_SINGLE_TOKENS.has(normName) &&
-    new RegExp(`\\b${escapeRegExp(normName)}\\b`).test(subjStrict)
+    prepRest.normRe &&
+    prepPost.subjStrict.includes(prepRest.normName) &&
+    prepRest.normRe.test(prepPost.subjStrict)
   ) {
     baseScore = 60;
   }
 
   if (baseScore === 0) return 0;
 
-  const restHints = extractLocationHints(`${rawName} ${rest.address || ''} ${rest.city || ''}`);
-  const postHints = extractLocationHints(postTitle);
   let sharedHints = 0;
-  for (const h of postHints) {
-    if (restHints.has(h)) sharedHints += 1;
+  for (const h of prepPost.postHints) {
+    if (prepRest.restHints.has(h)) sharedHints += 1;
   }
 
-  if (sameNormCount > 1) {
+  if (prepRest.sameNormCount > 1) {
     if (sharedHints === 0) return 0;
     baseScore += sharedHints * 5;
   } else if (sharedHints > 0) {
@@ -649,39 +750,68 @@ function scoreRestaurantReviewTitleMatch(rest, postTitle, parsedSubject, sameNor
   return baseScore;
 }
 
-function matchDirItemToExisting(item, dirAddress, dirName, existingByExtId, existingByNorm, normNameCounts) {
-  const extMatch = existingByExtId.get(`wbeb-dir-${item.id}`);
-  if (extMatch) return extMatch;
+function matchDirItemToExistingList(
+  item,
+  dirAddress,
+  dirName,
+  existingByExtId,
+  existingByNorm,
+  existingByReviewKey,
+) {
+  const matched = [];
+  const seenIds = new Set();
+  const addMatch = (r) => {
+    if (r && !seenIds.has(r.id)) {
+      seenIds.add(r.id);
+      matched.push(r);
+    }
+  };
+
+  addMatch(existingByExtId.get(`wbeb-dir-${item.id}`));
 
   const fullWithThe = normalizeStrictName(dirName, true);
   const strictName = normalizeStrictName(dirName, false);
   const normName = normalizeMatchName(dirName);
-  if (!normName || dirName.includes('/') || strictName.length < 4) return null;
-
-  const candidates = existingByNorm.get(normName) || [];
-  if (candidates.length === 0) return null;
-
-  if (GENERIC_SINGLE_TOKENS.has(normName) || normName.length < 4) {
-    const exact = candidates.filter((c) => normalizeStrictName(c.name, true) === fullWithThe);
-    if (exact.length !== 1) return null;
-    const dirNum = extractStreetNumber(dirAddress);
-    const candNum = extractStreetNumber(exact[0].address);
-    if (dirNum && candNum && dirNum !== candNum) return null;
-    return exact[0];
-  }
+  const reviewKey = normalizeReviewKey(dirName);
+  if (!normName || dirName.includes('/') || strictName.length < 4) return matched;
 
   const dirNum = extractStreetNumber(dirAddress);
-  if (dirNum) {
-    const sameStreet = candidates.find((c) => extractStreetNumber(c.address) === dirNum);
-    if (sameStreet) return sameStreet;
+  const dirHints = extractLocationHints(`${dirName} ${dirAddress || ''}`);
+
+  if (GENERIC_SINGLE_TOKENS.has(normName) || normName.length < 4) {
+    const exact = (existingByNorm.get(normName) || []).filter((c) => normalizeStrictName(c.name, true) === fullWithThe);
+    if (exact.length === 1) {
+      const c = exact[0];
+      const candNum = extractStreetNumber(c.address);
+      if (!dirNum || !candNum || dirNum === candNum) addMatch(c);
+    }
+    return matched;
   }
 
-  if ((normNameCounts.get(normName) || 0) === 1) {
-    const only = candidates[0];
-    const candNum = extractStreetNumber(only.address);
-    if (!dirNum || !candNum || dirNum === candNum) return only;
+  const poolMap = new Map();
+  for (const c of existingByNorm.get(normName) || []) poolMap.set(c.id, c);
+  if (reviewKey.length >= 5 && !GENERIC_SINGLE_TOKENS.has(reviewKey)) {
+    for (const c of existingByReviewKey.get(reviewKey) || []) poolMap.set(c.id, c);
   }
-  return null;
+  const pool = [...poolMap.values()];
+  if (pool.length === 0) return matched;
+
+  if (dirNum) {
+    for (const c of pool) {
+      if (extractStreetNumber(c.address) === dirNum) addMatch(c);
+    }
+  }
+
+  for (const c of pool) {
+    const candNum = extractStreetNumber(c.address);
+    const candHints = extractLocationHints(`${c.name} ${c.address || ''} ${c.city || ''}`);
+    if (haveConflictingLocations(dirHints, candHints, dirNum, candNum)) continue;
+    // Allow when compatible and either unambiguous count or missing street number on legacy entry
+    if (pool.length === 1 || !dirNum || !candNum || dirNum === candNum) {
+      addMatch(c);
+    }
+  }
+  return matched;
 }
 
 function isOpeningPostCandidate(post, postCatMap) {
@@ -947,6 +1077,7 @@ async function applyPayloadInBatches(apiUrl, payload) {
 function indexExistingRestaurants(existingRestaurants) {
   const existingByExtId = new Map();
   const existingByNorm = new Map();
+  const existingByReviewKey = new Map();
   const normNameCounts = new Map();
   for (const r of existingRestaurants) {
     if (r.source_external_id) existingByExtId.set(r.source_external_id, r);
@@ -957,8 +1088,14 @@ function indexExistingRestaurants(existingRestaurants) {
       existingByNorm.set(norm, list);
       normNameCounts.set(norm, (normNameCounts.get(norm) || 0) + 1);
     }
+    const rKey = normalizeReviewKey(r.name);
+    if (rKey) {
+      const list = existingByReviewKey.get(rKey) || [];
+      list.push(r);
+      existingByReviewKey.set(rKey, list);
+    }
   }
-  return { existingByExtId, existingByNorm, normNameCounts };
+  return { existingByExtId, existingByNorm, existingByReviewKey, normNameCounts };
 }
 
 function collectReviewMatchesForExisting({
@@ -974,7 +1111,8 @@ function collectReviewMatchesForExisting({
     if (key) reviewPostByPath.set(key, p);
   }
 
-  const { existingByExtId, existingByNorm, normNameCounts } = indexExistingRestaurants(existingRestaurants);
+  const { existingByExtId, existingByNorm, existingByReviewKey, normNameCounts } =
+    indexExistingRestaurants(existingRestaurants);
   const bestByRestId = new Map();
 
   const considerCandidate = (rest, cand) => {
@@ -1003,37 +1141,88 @@ function collectReviewMatchesForExisting({
     const bestDirReview = pickBestDirectoryBlogReview(item, reviewPostByPath);
     if (!bestDirReview) continue;
     const dirName = decodeHtmlEntities(item.title?.rendered || '').trim();
-    const rest = matchDirItemToExisting(item, address, dirName, existingByExtId, existingByNorm, normNameCounts);
-    if (rest) {
+    const matchedList = matchDirItemToExistingList(
+      item,
+      address,
+      dirName,
+      existingByExtId,
+      existingByNorm,
+      existingByReviewKey,
+    );
+    for (const rest of matchedList) {
       considerCandidate(rest, { ...bestDirReview, matchSource: 'directory' });
     }
   }
 
+  const preparedRestaurants = existingRestaurants.map((rest) =>
+    prepareRestaurantForReviewMatch(rest, normNameCounts.get(normalizeMatchName(rest.name)) || 1),
+  );
+  const prepById = new Map(preparedRestaurants.map((p) => [p.rest.id, p]));
+
   for (const post of reviewPosts) {
     if (!isReviewPostCandidate(post)) continue;
-    const postTitle = decodeHtmlEntities(post.title?.rendered || '').trim();
-    const postDate = String(post.date || '').slice(0, 10);
-    if (!postDate) continue;
-    const parsedSubject = parseReviewSubjectFromPostTitle(postTitle);
+    const prepPost = preparePostForReviewMatch(post);
+    if (!prepPost.postDate) continue;
 
     let bestScore = 0;
     let bestMatches = [];
-    for (const rest of existingRestaurants) {
-      const sameCount = normNameCounts.get(normalizeMatchName(rest.name)) || 1;
-      const score = scoreRestaurantReviewTitleMatch(rest, postTitle, parsedSubject, sameCount);
+    for (const prepRest of preparedRestaurants) {
+      const score = scoreRestaurantReviewTitleMatch(prepRest, prepPost);
       if (score <= 0) continue;
       if (score > bestScore) {
         bestScore = score;
-        bestMatches = [rest];
+        bestMatches = [prepRest];
       } else if (score === bestScore) {
-        bestMatches.push(rest);
+        bestMatches.push(prepRest);
       }
     }
+    if (bestMatches.length === 0) continue;
+
+    let applyTargets = [];
     if (bestMatches.length === 1) {
-      considerCandidate(bestMatches[0], {
+      const winner = bestMatches[0];
+      applyTargets = [winner.rest];
+      if (!winner.isMalformedOrShort && !winner.isGeneric && winner.reviewKey.length >= 5) {
+        const siblings = (existingByReviewKey.get(winner.reviewKey) || [])
+          .map((r) => prepById.get(r.id))
+          .filter(
+            (sib) =>
+              sib &&
+              sib.rest.id !== winner.rest.id &&
+              !haveConflictingLocations(winner.restHints, sib.restHints, winner.streetNum, sib.streetNum) &&
+              !haveConflictingLocations(prepPost.postHints, sib.restHints, null, null),
+          );
+        const allNums = new Set(
+          [winner, ...siblings].map((x) => x.streetNum).filter(Boolean),
+        );
+        if (allNums.size <= 1) {
+          applyTargets = [winner.rest, ...siblings.map((s) => s.rest)];
+        }
+      }
+    } else {
+      // Multiple tied winners: apply only if they all represent the same reviewKey with at most 1 physical address
+      const keys = new Set(bestMatches.map((m) => m.reviewKey));
+      const nums = new Set(bestMatches.map((m) => m.streetNum).filter(Boolean));
+      const hasGeneric = bestMatches.some((m) => m.isMalformedOrShort || m.isGeneric || m.reviewKey.length < 5);
+      if (!hasGeneric && keys.size === 1 && nums.size <= 1) {
+        let conflict = false;
+        for (const m of bestMatches) {
+          if (haveConflictingLocations(prepPost.postHints, m.restHints, null, null)) {
+            conflict = true;
+            break;
+          }
+        }
+        if (!conflict) {
+          applyTargets = bestMatches.map((m) => m.rest);
+        }
+      }
+    }
+
+    for (const targetRest of applyTargets) {
+      considerCandidate(targetRest, {
         ebReviewUrl: post.link,
-        ebReviewDate: postDate,
-        ebReviewTitle: postTitle,
+        ebReviewDate: prepPost.postDate,
+        ebReviewTitle: prepPost.postTitle,
         matchSource: 'post_title',
       });
     }

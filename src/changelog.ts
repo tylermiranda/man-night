@@ -11,6 +11,18 @@ import type { WhatsNewEntry, WhatsNewPayload, WhatsNewViewEntry } from './types'
  */
 export const WHATS_NEW_RELEASES: readonly WhatsNewEntry[] = [
   {
+    id: '2026-11-24-night-vote-results',
+    date: '2026-11-24',
+    kind: 'feature',
+    title: '🗳️ Night Vote Results & Voter Breakdown',
+    summary:
+      'After Tuesday noon voting locks, This Week now shows the winning night tally and who voted for Tuesday, Wednesday, or Either day—complete with vote notes inline. Past app-voted dinners on History also include a clickable vote pill to expand the same breakdown.',
+    creditSlug: 'tyler',
+    creditName: 'Tyler',
+    creditRole: 'idea',
+    issueNumber: 25,
+  },
+  {
     id: '2026-11-22-seasonal-themes',
     date: '2026-11-22',
     kind: 'feature',

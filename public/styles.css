@@ -3012,3 +3012,112 @@ html[data-theme="dark"] .mention-menu-item:hover {
 html[data-theme="dark"] .eb-review-link {
   color: var(--accent-ink);
 }
+
+/* Night Vote Results (Post-Lock & History) */
+.night-results-section {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.night-results-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.night-results-meta {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.night-results-groups {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 10px;
+}
+
+.night-result-group {
+  background: var(--surf);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.night-result-group.is-winner {
+  background: var(--bg);
+  border-color: var(--ok);
+}
+
+.night-result-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.night-result-voters {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.night-result-voter {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.night-result-voter-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.night-result-reason {
+  padding-left: 28px;
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--muted);
+  word-break: break-word;
+}
+
+.night-result-empty {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.badge-vote {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+
+.history-row.has-vote-panel-open {
+  border-bottom: 0;
+}
+
+.history-vote-panel {
+  padding: 0 14px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.history-vote-panel .night-results-section {
+  margin-top: 0;
+  padding-top: 8px;
+  border-top: 1px dashed var(--line);
+}
+
+.card > .history-vote-panel:last-child {
+  border-bottom: 0;
+}

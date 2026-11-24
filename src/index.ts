@@ -29,6 +29,7 @@ import {
   getDinnerReviews,
   getIssueReportScreenshot,
   getMealPhotoBinary,
+  getNightVotesForDinners,
   getPlaceReviews,
   getRestaurantSyncStatus,
   listBeers,
@@ -1973,6 +1974,7 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
       const sql = `
         SELECT d.id, d.week_key, d.dinner_date, d.day_of_week, d.host_slug, d.host_label,
                d.restaurant_id, d.raw_location, d.raw_summary, d.chosen_via, d.meal_price,
+               d.night_locked_at,
                r.name AS restaurant_name, r.address AS restaurant_address, r.visit_count AS restaurant_visits, r.avg_rating AS restaurant_avg_rating,
                (SELECT COUNT(*) FROM ratings rt WHERE rt.dinner_id = d.id) AS rating_count,
                (SELECT ROUND(AVG(rt.score), 2) FROM ratings rt WHERE rt.dinner_id = d.id) AS dinner_avg_rating,
@@ -1994,7 +1996,17 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
         WHERE ${where.join(' AND ')}
       `;
 
-      const items = (await env.DB.prepare(sql).bind(user.slug, user.slug, ...binds, limit, offset).all()).results ?? [];
+      const rawItems =
+        (await env.DB.prepare(sql).bind(user.slug, user.slug, ...binds, limit, offset).all<Record<string, unknown>>())
+          .results ?? [];
+      const votesByDinner = await getNightVotesForDinners(
+        env.DB,
+        rawItems.map((r) => Number(r.id)),
+      );
+      const items = rawItems.map((r) => ({
+        ...r,
+        night_votes: votesByDinner.get(Number(r.id)) ?? [],
+      }));
       const totalRow = await env.DB.prepare(countSql).bind(...binds).first<{ total: number }>();
       return json({ items, total: Number(totalRow?.total ?? 0), limit, offset });
     }

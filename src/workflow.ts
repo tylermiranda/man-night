@@ -393,6 +393,50 @@ export async function getNightVotesForDinner(db: D1Database, dinnerId: number): 
   return rows.results ?? [];
 }
 
+export async function getNightVotesForDinners(
+  db: D1Database,
+  dinnerIds: number[],
+): Promise<Map<number, NightVoteViewRow[]>> {
+  const grouped = new Map<number, NightVoteViewRow[]>();
+  const uniqueIds = Array.from(
+    new Set(dinnerIds.map(Number).filter((id) => Number.isInteger(id) && id > 0)),
+  );
+  if (uniqueIds.length === 0) return grouped;
+
+  const chunkSize = 80;
+  for (let i = 0; i < uniqueIds.length; i += chunkSize) {
+    const chunk = uniqueIds.slice(i, i + chunkSize);
+    const placeholders = chunk.map(() => '?').join(',');
+    const rows =
+      (
+        await db
+          .prepare(
+            `SELECT nv.dinner_id, nv.user_slug, u.name AS user_name, nv.choice, nv.reason, nv.voted_at
+             FROM night_votes nv
+             LEFT JOIN users u ON u.slug = nv.user_slug
+             WHERE nv.dinner_id IN (${placeholders})
+             ORDER BY nv.voted_at ASC, nv.id ASC`,
+          )
+          .bind(...chunk)
+          .all<NightVoteViewRow & { dinner_id: number }>()
+      ).results ?? [];
+
+    for (const row of rows) {
+      const id = Number(row.dinner_id);
+      const list = grouped.get(id) ?? [];
+      list.push({
+        user_slug: row.user_slug,
+        user_name: row.user_name ?? null,
+        choice: row.choice,
+        reason: row.reason ?? '',
+        voted_at: row.voted_at,
+      });
+      grouped.set(id, list);
+    }
+  }
+  return grouped;
+}
+
 export async function castNightVote(
   db: D1Database,
   dinnerId: number,

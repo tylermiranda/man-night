@@ -18,6 +18,7 @@ const state = {
   historyQuery: '',
   historyHost: '',
   historyPlaceId: null,
+  expandedHistoryVoteIds: {},
   placesQuery: '',
   placesSort: 'visits',
   placesFilter: 'all',
@@ -935,6 +936,127 @@ function renderNightVoteReasons(nightVotes, kickerLabel = 'Crew vote reasons') {
   `;
 }
 
+function summarizeNightVotes(nightVotes, winningDay) {
+  const votes = Array.isArray(nightVotes) ? nightVotes : [];
+  const tueOnly = votes.filter((v) => v.choice === 'tuesday');
+  const wedOnly = votes.filter((v) => v.choice === 'wednesday');
+  const bothOnly = votes.filter((v) => v.choice === 'both');
+  const tueTotal = tueOnly.length + bothOnly.length;
+  const wedTotal = wedOnly.length + bothOnly.length;
+  const totalVoters = votes.length;
+  const winner =
+    winningDay === 'Wednesday'
+      ? 'Wednesday'
+      : winningDay === 'Tuesday'
+        ? 'Tuesday'
+        : tueTotal >= wedTotal
+          ? 'Tuesday'
+          : 'Wednesday';
+
+  let headline;
+  let shortLabel;
+  if (totalVoters === 0) {
+    headline = winner === 'Wednesday' ? 'No votes cast · Set to Wednesday' : 'No votes cast · Tuesday default';
+    shortLabel = '0 votes';
+  } else if (tueTotal === wedTotal) {
+    headline = `Tied ${tueTotal}–${wedTotal} · ${winner} wins tie`;
+    shortLabel = `Tied ${tueTotal}–${wedTotal}`;
+  } else {
+    const leadDay = tueTotal > wedTotal ? 'Tuesday' : 'Wednesday';
+    const high = Math.max(tueTotal, wedTotal);
+    const low = Math.min(tueTotal, wedTotal);
+    headline = leadDay === winner ? `${leadDay} won ${high}–${low}` : `${leadDay} led ${high}–${low} · Moved to ${winner}`;
+    shortLabel = `${leadDay.slice(0, 3)} ${high}–${low}`;
+  }
+
+  return { tueOnly, wedOnly, bothOnly, tueTotal, wedTotal, totalVoters, winner, headline, shortLabel };
+}
+
+function renderNightVoteResults(nightVotes, winningDay, options = {}) {
+  const { kickerLabel = 'Night vote result', compact = false } = options;
+  const summary = summarizeNightVotes(nightVotes, winningDay);
+  if (summary.totalVoters === 0 && compact) return '';
+
+  if (summary.totalVoters === 0) {
+    return `
+      <div class="night-results-section">
+        <div class="night-results-head">
+          <span class="night-reasons-kicker" style="margin-bottom:0;">${esc(kickerLabel)}</span>
+          <span class="badge badge-muted">${esc(summary.headline)}</span>
+        </div>
+      </div>
+    `;
+  }
+
+  const users = state.bootstrap?.users || [];
+  const renderVoterList = (rows, emptyText) => {
+    if (!rows.length) return `<div class="night-result-empty">${esc(emptyText)}</div>`;
+    return `
+      <div class="night-result-voters">
+        ${rows
+          .map((v) => {
+            const u = users.find((x) => x.slug === v.user_slug);
+            const voterName = v.user_name || u?.name || v.user_slug;
+            const reasonTxt = v.reason && String(v.reason).trim();
+            return `
+              <div class="night-result-voter">
+                <div class="night-result-voter-head">
+                  ${avatarHtml(v.user_slug, voterName, 'sm')}
+                  <span>${esc(voterName)}</span>
+                </div>
+                ${reasonTxt ? `<div class="night-result-reason">${esc(reasonTxt)}</div>` : ''}
+              </div>
+            `;
+          })
+          .join('')}
+      </div>
+    `;
+  };
+
+  const renderGroup = (label, countLabel, rows, emptyText, isWinner) => `
+    <div class="night-result-group${isWinner ? ' is-winner' : ''}">
+      <div class="night-result-group-head">
+        <strong>${esc(label)}</strong>
+        <span class="badge ${isWinner ? 'badge-ok' : 'badge-muted'} tabular">${esc(countLabel)}</span>
+      </div>
+      ${renderVoterList(rows, emptyText)}
+    </div>
+  `;
+
+  return `
+    <div class="night-results-section">
+      <div class="night-results-head">
+        <span class="night-reasons-kicker" style="margin-bottom:0;">${esc(kickerLabel)}</span>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+          <span class="badge badge-ok">✓ ${esc(summary.headline)}</span>
+          <span class="night-results-meta tabular">${summary.totalVoters} voted</span>
+        </div>
+      </div>
+      <div class="night-results-groups">
+        ${renderGroup(
+          'Tuesday',
+          `${summary.tueTotal} ${summary.tueTotal === 1 ? 'vote' : 'votes'}`,
+          summary.tueOnly,
+          summary.tueTotal === 0 ? 'No votes' : 'No direct picks',
+          summary.winner === 'Tuesday',
+        )}
+        ${renderGroup(
+          'Wednesday',
+          `${summary.wedTotal} ${summary.wedTotal === 1 ? 'vote' : 'votes'}`,
+          summary.wedOnly,
+          summary.wedTotal === 0 ? 'No votes' : 'No direct picks',
+          summary.winner === 'Wednesday',
+        )}
+        ${
+          summary.bothOnly.length > 0
+            ? renderGroup('Either day', `+1 to both · ${summary.bothOnly.length}`, summary.bothOnly, '', false)
+            : ''
+        }
+      </div>
+    </div>
+  `;
+}
+
 function renderPlacePollOptions(tw) {
   const totalNoon = tw.noonVotes.length;
   const myNoon = tw.noonVotes.find((v) => v.user_slug === state.bootstrap?.user?.slug)?.restaurant_id;
@@ -1252,7 +1374,7 @@ function renderWeekView() {
         <button class="btn btn-secondary" data-action="open-change-time" data-dinner-id="${d.id}">Change time</button>
         <button class="btn btn-secondary" data-action="open-cancel-night" data-dinner-id="${d.id}">Cancel night</button>
       </div>
-      ${renderNightVoteReasons(tw.nightVotes, 'Night vote notes')}
+      ${renderNightVoteResults(tw.nightVotes, d.day_of_week)}
     `;
   } else if (d.status === 'noon_vote') {
     const isHostPoll = d.chosen_via === 'host_poll';
@@ -1271,7 +1393,7 @@ function renderWeekView() {
         <button class="btn btn-secondary btn-sm" data-action="open-change-time" data-dinner-id="${d.id}">Change time</button>
         <button class="btn btn-secondary btn-sm" data-action="open-cancel-night" data-dinner-id="${d.id}">Cancel night</button>
       </div>
-      ${renderNightVoteReasons(tw.nightVotes, 'Night vote notes')}
+      ${renderNightVoteResults(tw.nightVotes, d.day_of_week)}
     `;
   } else if (d.status === 'place_locked' && tw.place) {
     const p = tw.place;
@@ -1294,7 +1416,7 @@ function renderWeekView() {
         <button class="btn btn-secondary" data-action="open-change-time" data-dinner-id="${d.id}">Change time</button>
         <button class="btn btn-secondary" data-action="open-cancel-night" data-dinner-id="${d.id}">Cancel night</button>
       </div>
-      ${renderNightVoteReasons(tw.nightVotes, 'Night vote notes')}
+      ${renderNightVoteResults(tw.nightVotes, d.day_of_week)}
     `;
   }
 
@@ -1737,14 +1859,19 @@ function renderHistoryView() {
       const pricePill = d.dinner_avg_price != null
         ? `<button class="badge badge-price tabular" style="border:0;cursor:pointer;margin-left:6px;" data-action="open-review-modal" data-dinner-id="${d.id}" title="Average meal price">💵 ${fmtPrice(d.dinner_avg_price)}</button>`
         : '';
+      const nightVotes = Array.isArray(d.night_votes) ? d.night_votes : [];
+      const isVoteOpen = Boolean(state.expandedHistoryVoteIds[d.id]);
+      const votePill = nightVotes.length > 0
+        ? `<button class="badge badge-vote tabular" style="border:0;cursor:pointer;margin-left:6px;" data-action="toggle-history-votes" data-dinner-id="${d.id}" aria-expanded="${isVoteOpen ? 'true' : 'false'}" title="Show night vote breakdown">🗳 ${esc(summarizeNightVotes(nightVotes, d.day_of_week).shortLabel)} ${isVoteOpen ? '▴' : '▾'}</button>`
+        : '';
       const placeCell = d.restaurant_id
         ? `<button class="link-btn" style="color:var(--ink);font-size:14px;text-align:left;" data-action="focus-place" data-place-id="${d.restaurant_id}">${esc(d.restaurant_name)}</button>
            ${d.restaurant_visits ? `<span style="font-size:12px;color:var(--muted);margin-left:6px;">(${d.restaurant_visits}×)</span>` : ''}
-           ${ratingPill}${photoPill}${pricePill}`
+           ${ratingPill}${photoPill}${pricePill}${votePill}`
         : `<button class="link-btn" data-action="open-backfill" data-dinner-id="${d.id}" data-date="${esc(d.dinner_date)}">+ Add the place</button>
-           ${ratingPill}${photoPill}${pricePill}`;
+           ${ratingPill}${photoPill}${pricePill}${votePill}`;
       listHtml += `
-        <div class="history-row">
+        <div class="history-row${isVoteOpen ? ' has-vote-panel-open' : ''}">
           <div class="tabular" style="font-size:13px;color:var(--muted);">${fmtDate(d.dinner_date)}</div>
           <div class="h-day" style="font-size:13px;color:var(--muted);">${esc(d.day_of_week.slice(0, 3))}</div>
           <div>${placeCell}</div>
@@ -1755,6 +1882,14 @@ function renderHistoryView() {
             <button class="btn btn-outline btn-sm" style="min-height:26px;padding:2px 8px;font-size:11px;" data-action="open-review-modal" data-dinner-id="${d.id}">${d.my_score != null ? `★ ${d.my_score} · Edit` : 'Rate'}</button>
           </div>
         </div>
+        ${
+          isVoteOpen
+            ? `<div class="history-vote-panel">${renderNightVoteResults(nightVotes, d.day_of_week, {
+                kickerLabel: 'Night vote breakdown',
+                compact: true,
+              })}</div>`
+            : ''
+        }
       `;
     }
     listHtml += `</div>`;
@@ -4437,6 +4572,14 @@ document.addEventListener('click', async (e) => {
       state.nightReasonDraft = null;
       toast('Reason cleared');
       await refreshBootstrap();
+    } else if (action === 'toggle-history-votes') {
+      const dinnerId = Number(actEl.dataset.dinnerId);
+      if (state.expandedHistoryVoteIds[dinnerId]) {
+        delete state.expandedHistoryVoteIds[dinnerId];
+      } else {
+        state.expandedHistoryVoteIds[dinnerId] = true;
+      }
+      render();
     } else if (action === 'vote-noon') {
       await api('/api/week/vote-noon', {
         method: 'POST',

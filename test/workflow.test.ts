@@ -1873,8 +1873,10 @@ describe('Man Night PWA Worker & Seed', () => {
   it('tracks What’s New releases, crew idea/bug credits, per-user seen state, and UI wiring (issue #11)', async () => {
     // 1. Changelog integrity
     const seenIds = new Set<string>();
-    expect(WHATS_NEW_RELEASES.length).toBeGreaterThanOrEqual(19);
-    expect(WHATS_NEW_RELEASES[0].id).toBe('2026-11-22-seasonal-themes');
+    expect(WHATS_NEW_RELEASES.length).toBeGreaterThanOrEqual(20);
+    expect(WHATS_NEW_RELEASES[0].id).toBe('2026-11-24-night-vote-results');
+    expect(WHATS_NEW_RELEASES[0].issueNumber).toBe(25);
+    expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-22-seasonal-themes')).toBe(true);
     expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-22-eb-review-links')).toBe(true);
     expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-21-wichita-eb-directory-closings')).toBe(true);
     expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-19-tuesday-noon-night-lock')).toBe(true);
@@ -4256,10 +4258,99 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(html).toContain('brand-season-badge');
     expect(html).toContain('menu-settings-hint');
     expect(swJs).toContain("'/themes.js'");
-    expect(swJs).toContain('man-night-shell-v28');
+    expect(swJs).toMatch(/CACHE_NAME = 'man-night-shell-v\d+'/);
 
     const seasonalEntry = WHATS_NEW_RELEASES.find((e) => e.id === '2026-11-22-seasonal-themes');
     expect(seasonalEntry).toBeDefined();
     expect(seasonalEntry?.creditSlug).toBe('tyler');
+  });
+
+  it('surfaces locked night-vote tally and voter breakdown on This Week and History (issue #25)', async () => {
+    const dinner = await env.DB.prepare(
+      "SELECT id, host_slug, dinner_date FROM dinners WHERE status != 'completed' ORDER BY dinner_date ASC LIMIT 1",
+    ).first<{ id: number; host_slug: string; dinner_date: string }>();
+    expect(dinner).toBeTruthy();
+
+    // 1. Cast Tuesday (with reason), Wednesday (without reason), and Both (with reason)
+    await castNightVote(env.DB, dinner!.id, 'tyler', 'tuesday', 'Works better this week');
+    await castNightVote(env.DB, dinner!.id, 'jacob', 'wednesday');
+    await castNightVote(env.DB, dinner!.id, 'eric', 'both', 'Either works for me');
+
+    // 2. Lock night vote (Tuesday wins 2-2 on tie per Man Night rules)
+    const lockRes = await worker.fetch(
+      makeReq('/api/week/advance', 'POST', { stage: 'lock_night', dinnerId: dinner!.id }),
+      env,
+    );
+    expect(lockRes.status).toBe(200);
+
+    // 3. /api/bootstrap exposes night_locked_at and all nightVotes (including voters without reasons)
+    const bootRes = await worker.fetch(makeReq('/api/bootstrap'), env);
+    expect(bootRes.status).toBe(200);
+    const boot = (await bootRes.json()) as {
+      thisWeek: {
+        dinner: { id: number; day_of_week: string; night_locked_at: string | null };
+        nightVotes: Array<{ user_slug: string; user_name: string | null; choice: string; reason: string }>;
+      } | null;
+    };
+    expect(boot.thisWeek?.dinner.night_locked_at).toBeTruthy();
+    expect(boot.thisWeek?.dinner.day_of_week).toBe('Tuesday');
+    expect(boot.thisWeek?.nightVotes).toHaveLength(3);
+    expect(boot.thisWeek?.nightVotes.find((v) => v.user_slug === 'jacob')).toMatchObject({
+      user_name: 'Jacob',
+      choice: 'wednesday',
+      reason: '',
+    });
+    expect(boot.thisWeek?.nightVotes.find((v) => v.user_slug === 'eric')).toMatchObject({
+      user_name: 'Eric',
+      choice: 'both',
+      reason: 'Either works for me',
+    });
+
+    // 4. Mark dinner completed and verify /api/history attaches night_votes (and [] for seeded history)
+    await env.DB.prepare("UPDATE dinners SET status = 'completed' WHERE id = ?").bind(dinner!.id).run();
+
+    const histRes = await worker.fetch(makeReq('/api/history?limit=10'), env);
+    expect(histRes.status).toBe(200);
+    const histData = (await histRes.json()) as {
+      items: Array<{
+        id: number;
+        night_locked_at: string | null;
+        night_votes: Array<{ user_slug: string; user_name: string | null; choice: string; reason: string }>;
+      }>;
+    };
+    const votedDinner = histData.items.find((i) => i.id === dinner!.id);
+    expect(votedDinner).toBeTruthy();
+    expect(votedDinner?.night_locked_at).toBeTruthy();
+    expect(votedDinner?.night_votes).toHaveLength(3);
+    expect(votedDinner?.night_votes.map((v) => `${v.user_slug}:${v.choice}`)).toEqual([
+      'tyler:tuesday',
+      'jacob:wednesday',
+      'eric:both',
+    ]);
+
+    const seededDinner = histData.items.find((i) => i.id !== dinner!.id);
+    expect(seededDinner).toBeTruthy();
+    expect(seededDinner?.night_votes).toEqual([]);
+
+    // Filtered /api/history keeps working
+    const hostHistRes = await worker.fetch(makeReq(`/api/history?host=${encodeURIComponent(dinner!.host_slug)}&limit=10`), env);
+    expect(hostHistRes.status).toBe(200);
+    const hostHistData = (await hostHistRes.json()) as typeof histData;
+    expect(hostHistData.items.some((i) => i.id === dinner!.id && i.night_votes.length === 3)).toBe(true);
+
+    // 5. Frontend UI, CSS, and SW wiring checks
+    const appJs = readFileSync(resolve(rootDir, 'public/app.js'), 'utf8');
+    const stylesCss = readFileSync(resolve(rootDir, 'public/styles.css'), 'utf8');
+    const swJs = readFileSync(resolve(rootDir, 'public/sw.js'), 'utf8');
+    expect(appJs).toContain('summarizeNightVotes');
+    expect(appJs).toContain('renderNightVoteResults');
+    expect(appJs).toContain('toggle-history-votes');
+    expect(appJs).toContain('expandedHistoryVoteIds');
+    expect(appJs).toContain('badge-vote');
+    expect(appJs).toContain('history-vote-panel');
+    expect(stylesCss).toContain('.night-results-section');
+    expect(stylesCss).toContain('.night-result-group');
+    expect(stylesCss).toContain('.history-vote-panel');
+    expect(swJs).toContain('man-night-shell-v29');
   });
 });

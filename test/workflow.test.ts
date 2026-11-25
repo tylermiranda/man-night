@@ -4,7 +4,8 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WHATS_NEW_RELEASES, buildWhatsNewPayload, formatCrewCreditLabel } from '../src/changelog';
-import { buildPreEventHeadcountPayload, buildThirtyMinReminderPayload, runWeeklyCronTick } from '../src/cron';
+import { buildPreEventHeadcountPayload, buildRsvpCheckInPayload, buildThirtyMinReminderPayload, runWeeklyCronTick } from '../src/cron';
+import { buildRsvpReminderEmail, sendRsvpReminderEmail } from '../src/email';
 import { buildDirectionsUrl, formatCalendarSummary } from '../src/gcal';
 import worker from '../src/index';
 import * as pushModule from '../src/push';
@@ -36,6 +37,7 @@ const migration0018Sql = readFileSync(resolve(rootDir, 'migrations/0018_extra_gu
 const migration0019Sql = readFileSync(resolve(rootDir, 'migrations/0019_dinner_comments.sql'), 'utf8');
 const migration0020Sql = readFileSync(resolve(rootDir, 'migrations/0020_restaurant_directory_sync.sql'), 'utf8');
 const migration0021Sql = readFileSync(resolve(rootDir, 'migrations/0021_eb_reviews.sql'), 'utf8');
+const migration0022Sql = readFileSync(resolve(rootDir, 'migrations/0022_rsvp_reminders_and_comment_replies.sql'), 'utf8');
 
 function makeEnv(db: D1Database, overrides: Partial<Env> = {}): Env {
   return {
@@ -85,6 +87,7 @@ describe('Man Night PWA Worker & Seed', () => {
     await db.exec(migration0019Sql);
     await db.exec(migration0020Sql);
     await db.exec(migration0021Sql);
+    await db.exec(migration0022Sql);
     env = makeEnv(db);
   });
 
@@ -1873,9 +1876,12 @@ describe('Man Night PWA Worker & Seed', () => {
   it('tracks What’s New releases, crew idea/bug credits, per-user seen state, and UI wiring (issue #11)', async () => {
     // 1. Changelog integrity
     const seenIds = new Set<string>();
-    expect(WHATS_NEW_RELEASES.length).toBeGreaterThanOrEqual(20);
-    expect(WHATS_NEW_RELEASES[0].id).toBe('2026-11-24-night-vote-results');
-    expect(WHATS_NEW_RELEASES[0].issueNumber).toBe(25);
+    expect(WHATS_NEW_RELEASES.length).toBeGreaterThanOrEqual(23);
+    expect(WHATS_NEW_RELEASES[0].id).toBe('2026-11-24-comment-replies');
+    expect(WHATS_NEW_RELEASES[0].issueNumber).toBe(28);
+    expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-24-proxy-crew-rsvp' && e.issueNumber === 27)).toBe(true);
+    expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-24-rsvp-reminders' && e.issueNumber === 26)).toBe(true);
+    expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-24-night-vote-results' && e.issueNumber === 25)).toBe(true);
     expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-22-seasonal-themes')).toBe(true);
     expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-22-eb-review-links')).toBe(true);
     expect(WHATS_NEW_RELEASES.some((e) => e.id === '2026-11-21-wichita-eb-directory-closings')).toBe(true);
@@ -4351,6 +4357,402 @@ describe('Man Night PWA Worker & Seed', () => {
     expect(stylesCss).toContain('.night-results-section');
     expect(stylesCss).toContain('.night-result-group');
     expect(stylesCss).toContain('.history-vote-panel');
-    expect(swJs).toContain('man-night-shell-v29');
+    expect(swJs).toMatch(/man-night-shell-v\d+/);
+  });
+
+  it('sends 5:00 PM CT dinner-day RSVP reminders via push and Cloudflare email fallback (issue #26)', async () => {
+    const wranglerRaw = readFileSync(resolve(rootDir, 'wrangler.jsonc'), 'utf8');
+    expect(wranglerRaw).toContain('"send_email"');
+    expect(wranglerRaw).toContain('"name": "EMAIL"');
+    expect(wranglerRaw).toContain('reminders@dinner.tylermiranda.com');
+    expect(wranglerRaw).not.toContain('"remote": true');
+
+    const dinner = await env.DB.prepare("SELECT * FROM dinners WHERE week_key = '2026-W47'").first<{
+      id: number;
+      week_key: string;
+    }>();
+    const place = await env.DB.prepare('SELECT * FROM restaurants LIMIT 1').first<RestaurantRow>();
+    expect(dinner).toBeTruthy();
+    expect(place).toBeTruthy();
+
+    await env.DB.prepare(
+      "UPDATE dinners SET status = 'place_locked', day_of_week = 'Tuesday', dinner_date = '2026-11-17', restaurant_id = ?, start_time = '18:30' WHERE id = ?",
+    )
+      .bind(place!.id, dinner!.id)
+      .run();
+
+    const updatedDinner = (await env.DB.prepare('SELECT * FROM dinners WHERE id = ?')
+      .bind(dinner!.id)
+      .first()) as Parameters<typeof buildRsvpCheckInPayload>[0];
+
+    const pushPayload = buildRsvpCheckInPayload(updatedDinner, place!, env.APP_URL);
+    expect(pushPayload.title).toContain(place!.name);
+    expect(pushPayload.actions?.map((a) => a.action)).toEqual(['rsvp-in', 'rsvp-out']);
+    expect(pushPayload.dinnerId).toBe(dinner!.id);
+
+    const renderedEmail = buildRsvpReminderEmail({
+      memberName: 'Chuck <Host>',
+      dinner: updatedDinner,
+      place: place!,
+      appUrl: env.APP_URL,
+    });
+    expect(renderedEmail.subject).toContain(place!.name);
+    expect(renderedEmail.html).toContain(`https://dinner.tylermiranda.com/?rsvp=in&amp;dinner=${dinner!.id}`);
+    expect(renderedEmail.html).toContain(`https://dinner.tylermiranda.com/?rsvp=out&amp;dinner=${dinner!.id}`);
+    expect(renderedEmail.html).toContain('Chuck &lt;Host&gt;');
+    expect(renderedEmail.text).toContain(`https://dinner.tylermiranda.com/?rsvp=in&dinner=${dinner!.id}`);
+
+    // Jacob already RSVP'd -> excluded; Eric turned off notify_reminder -> excluded
+    await castRsvp(env.DB, dinner!.id, 'jacob', 'in', null, undefined, 'jacob', 0);
+    await env.DB.prepare("UPDATE users SET notify_reminder = 0 WHERE slug = 'eric'").run();
+
+    // Real push keys for Tyler (active 201) and Heath (expired 410 -> falls back to email)
+    const toB64u = (u: Uint8Array) =>
+      Buffer.from(u).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    const uaPair = (await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, [
+      'deriveBits',
+    ])) as CryptoKeyPair;
+    const uaPub = new Uint8Array((await crypto.subtle.exportKey('raw', uaPair.publicKey)) as ArrayBuffer);
+    const uaAuth = crypto.getRandomValues(new Uint8Array(16));
+    await env.DB.prepare(
+      `INSERT INTO push_subscriptions (user_slug, endpoint, p256dh, auth)
+       VALUES ('tyler', 'https://push.example/tyler-26', ?, ?),
+              ('heath', 'https://push.example/heath-410', ?, ?)`,
+    )
+      .bind(toB64u(uaPub), toB64u(uaAuth), toB64u(uaPub), toB64u(uaAuth))
+      .run();
+
+    const vapidPair = (await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, [
+      'sign',
+      'verify',
+    ])) as CryptoKeyPair;
+    const vapidJwk = (await crypto.subtle.exportKey('jwk', vapidPair.privateKey)) as JsonWebKey;
+    const vapidPubRaw = new Uint8Array((await crypto.subtle.exportKey('raw', vapidPair.publicKey)) as ArrayBuffer);
+    env.VAPID_PUBLIC_KEY = toB64u(vapidPubRaw);
+    env.VAPID_PRIVATE_KEY = vapidJwk.d!;
+
+    const pushEndpoints: string[] = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : input instanceof Request ? input.url : String(input);
+      pushEndpoints.push(url);
+      if (url === 'https://push.example/heath-410') {
+        return new Response(null, { status: 410 });
+      }
+      return new Response(null, { status: 201 });
+    });
+
+    const sentEmails: Array<{ to: unknown; from: unknown; subject: string; html?: string; text?: string }> = [];
+    env.EMAIL = {
+      send: vi.fn(async (msg: { to: unknown; from: unknown; subject: string; html?: string; text?: string }) => {
+        sentEmails.push(msg);
+        return { messageId: `msg-${sentEmails.length}` };
+      }),
+    } as unknown as SendEmail;
+
+    // Before 5:00 PM CT (16:55 CST = 22:55 UTC): should NOT send
+    const earlyTick = await runWeeklyCronTick(env, new Date('2026-11-17T22:55:00Z'));
+    expect(earlyTick.actions).not.toContain('sent_rsvp_reminder:2026-W47');
+    expect(pushEndpoints).toHaveLength(0);
+    expect(sentEmails).toHaveLength(0);
+
+    // At 5:00 PM CT (17:00 CST = 23:00 UTC): push Tyler & Heath (410 removes Heath's sub), email Chuck, Heath, and Dan
+    const fivePmTick = await runWeeklyCronTick(env, new Date('2026-11-17T23:00:00Z'));
+    expect(fivePmTick.actions).toContain('sent_rsvp_reminder:2026-W47');
+    expect(pushEndpoints.sort()).toEqual([
+      'https://push.example/heath-410',
+      'https://push.example/tyler-26',
+    ]);
+
+    const heathSubsAfter = await env.DB.prepare("SELECT COUNT(*) AS cnt FROM push_subscriptions WHERE user_slug = 'heath'")
+      .first<{ cnt: number }>();
+    expect(heathSubsAfter?.cnt).toBe(0);
+
+    const emailedAddresses = sentEmails.map((m) => (m.to as { email: string }).email);
+    expect(emailedAddresses).toHaveLength(3);
+    expect(emailedAddresses).toContain('bigheadwillie@gmail.com'); // chuck
+    expect(emailedAddresses).toContain('heath.thome@gmail.com'); // heath (410 fallback)
+    expect(emailedAddresses).toContain('dcbourque@gmail.com'); // dan (active non-rotation)
+    expect(emailedAddresses).not.toContain('tyler.miranda@gmail.com'); // push succeeded
+    expect(emailedAddresses).not.toContain('werth6of7@gmail.com'); // already RSVP'd
+    expect(emailedAddresses).not.toContain('storme2@gmail.com'); // notify_reminder = 0
+    expect(emailedAddresses.some((e) => e.endsWith('@history.local'))).toBe(false); // inactive Don
+
+    expect((sentEmails[0].from as { email: string }).email).toBe('reminders@dinner.tylermiranda.com');
+
+    // Second tick at 17:15 CST is idempotent
+    const secondTick = await runWeeklyCronTick(env, new Date('2026-11-17T23:15:00Z'));
+    expect(secondTick.actions).not.toContain('sent_rsvp_reminder:2026-W47');
+    expect(sentEmails).toHaveLength(3);
+
+    const emailLogs = (
+      await env.DB.prepare("SELECT user_slug, status FROM notification_logs WHERE notification_type = ? ORDER BY user_slug")
+        .bind(`rsvp-reminder-email-${dinner!.id}`)
+        .all<{ user_slug: string; status: string }>()
+    ).results;
+    expect(emailLogs).toEqual([
+      { user_slug: 'chuck', status: 'sent' },
+      { user_slug: 'dan', status: 'sent' },
+      { user_slug: 'heath', status: 'sent' },
+    ]);
+
+    // Skips cancelled or after start time cleanly
+    const futureW48 = await env.DB.prepare("SELECT * FROM dinners WHERE week_key = '2026-W48'")
+      .first<Parameters<typeof sendRsvpReminderEmail>[2] & { id: number; dinner_date: string }>();
+    expect(futureW48).toBeTruthy();
+    await env.DB.prepare("UPDATE dinners SET status = 'cancelled', start_time = '18:30' WHERE id = ?")
+      .bind(futureW48!.id)
+      .run();
+    const cancelledTick = await runWeeklyCronTick(env, new Date(`${futureW48!.dinner_date}T23:00:00Z`));
+    expect(cancelledTick.actions).not.toContain('sent_rsvp_reminder:2026-W48');
+
+    // Resilience: failing env.EMAIL logs failed and does not throw
+    const failingEnv: Env = {
+      ...env,
+      EMAIL: {
+        send: vi.fn().mockRejectedValue(new Error('SMTP transient')),
+      } as unknown as SendEmail,
+    };
+    const failRes = await sendRsvpReminderEmail(
+      failingEnv,
+      { slug: 'chuck', name: 'Chuck', email: 'bigheadwillie@gmail.com' },
+      futureW48!,
+      place!,
+    );
+    expect(failRes.sent).toBe(false);
+    const failedLog = await env.DB.prepare(
+      "SELECT status FROM notification_logs WHERE user_slug = 'chuck' AND notification_type = ? AND status = 'failed'",
+    )
+      .bind(`rsvp-reminder-email-${futureW48!.id}`)
+      .first<{ status: string }>();
+    expect(failedLog?.status).toBe('failed');
+
+    // UI & SW deep-link/action wiring
+    const appJs = readFileSync(resolve(rootDir, 'public/app.js'), 'utf8');
+    const swJs = readFileSync(resolve(rootDir, 'public/sw.js'), 'utf8');
+    expect(appJs).toContain("params.get('rsvp')");
+    expect(appJs).toContain('replaceState');
+    expect(swJs).toContain('man-night-shell-v30');
+    expect(swJs).toContain("event.action === 'rsvp-in'");
+    expect(swJs).toContain("event.action === 'rsvp-out'");
+    expect(WHATS_NEW_RELEASES.some((e) => e.issueNumber === 26)).toBe(true);
+  });
+
+  it('allows crew members to RSVP on behalf of other active crew with recorded_by attribution (issue #27)', async () => {
+    const bootInit = (await (await worker.fetch(makeReq('/api/bootstrap'), env)).json()) as {
+      thisWeek: { dinner: { id: number } };
+    };
+    const dinnerId = bootInit.thisWeek.dinner.id;
+
+    // Tyler marks Chuck In, active non-rotation Dan Late (15m), and Heath Out with a note
+    const chuckRes = await worker.fetch(
+      makeReq('/api/week/rsvp', 'POST', { dinnerId, userSlug: 'chuck', status: 'in' }),
+      env,
+    );
+    expect(chuckRes.status).toBe(200);
+
+    const danRes = await worker.fetch(
+      makeReq('/api/week/rsvp', 'POST', { dinnerId, userSlug: 'dan', status: 'late', etaMinutes: 15 }),
+      env,
+    );
+    expect(danRes.status).toBe(200);
+
+    const heathRes = await worker.fetch(
+      makeReq('/api/week/rsvp', 'POST', { dinnerId, userSlug: 'heath', status: 'out', note: 'Kids game' }),
+      env,
+    );
+    expect(heathRes.status).toBe(200);
+
+    // Tyler clears Chuck's RSVP
+    const clearRes = await worker.fetch(
+      makeReq('/api/week/rsvp', 'POST', { dinnerId, userSlug: 'chuck', status: 'clear' }),
+      env,
+    );
+    expect(clearRes.status).toBe(200);
+
+    const bootAfter = (await (await worker.fetch(makeReq('/api/bootstrap'), env)).json()) as {
+      thisWeek: {
+        rsvps: Array<{
+          user_slug: string;
+          status: string;
+          recorded_by: string | null;
+          recorded_by_name: string | null;
+        }>;
+      };
+    };
+    expect(bootAfter.thisWeek.rsvps.some((r) => r.user_slug === 'chuck')).toBe(false);
+    expect(bootAfter.thisWeek.rsvps.find((r) => r.user_slug === 'dan')).toMatchObject({
+      status: 'late',
+      recorded_by: 'tyler',
+      recorded_by_name: 'Tyler',
+    });
+    expect(bootAfter.thisWeek.rsvps.find((r) => r.user_slug === 'heath')).toMatchObject({
+      status: 'out',
+      recorded_by: 'tyler',
+      recorded_by_name: 'Tyler',
+    });
+
+    // Rejects inactive Don and unknown slug
+    const donRes = await worker.fetch(
+      makeReq('/api/week/rsvp', 'POST', { dinnerId, userSlug: 'don', status: 'in' }),
+      env,
+    );
+    expect(donRes.status).toBe(400);
+
+    const unknownRes = await worker.fetch(
+      makeReq('/api/week/rsvp', 'POST', { dinnerId, userSlug: 'nobody', status: 'in' }),
+      env,
+    );
+    expect(unknownRes.status).toBe(400);
+
+    const appJs = readFileSync(resolve(rootDir, 'public/app.js'), 'utf8');
+    const stylesCss = readFileSync(resolve(rootDir, 'public/styles.css'), 'utf8');
+    expect(appJs).toContain('open-crew-rsvp-modal');
+    expect(appJs).toContain('proxy-rsvp');
+    expect(appJs).toContain('RSVP for crew');
+    expect(appJs).toContain('recorded_by_name');
+    expect(stylesCss).toContain('.crew-rsvp-row');
+    expect(stylesCss).toContain('.chip-by');
+    expect(WHATS_NEW_RELEASES.some((e) => e.issueNumber === 27)).toBe(true);
+  });
+
+  it('supports threaded replies to dinner comments with author and @mention push notifications (issue #28)', async () => {
+    const pushSpy = vi.spyOn(pushModule, 'sendWebPushToSubscribers').mockResolvedValue({
+      sent: 1,
+      failed: 0,
+      removed: 0,
+      deliveredSlugs: [],
+    });
+
+    const boot = (await (await worker.fetch(makeReq('/api/bootstrap'), env)).json()) as {
+      thisWeek: { dinner: { id: number } };
+      upcoming: Array<{ id: number }>;
+    };
+    const dinnerId = boot.thisWeek.dinner.id;
+    const otherDinnerId = boot.upcoming[0].id;
+
+    // 1. Chuck posts a root comment
+    const rootRes = await worker.fetch(
+      makeReq(
+        '/api/week/comment',
+        'POST',
+        { dinnerId, body: 'Anyone want to carpool tonight?' },
+        { 'Cf-Access-Authenticated-User-Email': 'bigheadwillie@gmail.com' },
+      ),
+      env,
+    );
+    expect(rootRes.status).toBe(201);
+    const rootData = (await rootRes.json()) as {
+      comment: { id: number; parent_comment_id: number | null; user_slug: string };
+      notifiedSlugs: string[];
+    };
+    expect(rootData.comment.parent_comment_id).toBeNull();
+    expect(rootData.notifiedSlugs).toEqual([]);
+    expect(pushSpy).not.toHaveBeenCalled();
+
+    // 2. Tyler replies to Chuck and also @tags @Jacob (deduplicated + reply notification sent first)
+    const tylerReplyRes = await worker.fetch(
+      makeReq('/api/week/comment', 'POST', {
+        dinnerId,
+        parentCommentId: rootData.comment.id,
+        body: 'I can drive! Also looping in @Jacob',
+      }),
+      env,
+    );
+    expect(tylerReplyRes.status).toBe(201);
+    const tylerReplyData = (await tylerReplyRes.json()) as {
+      comment: { id: number; parent_comment_id: number | null; user_slug: string };
+      notifiedSlugs: string[];
+    };
+    expect(tylerReplyData.comment.parent_comment_id).toBe(rootData.comment.id);
+    expect(tylerReplyData.notifiedSlugs).toEqual(['chuck', 'jacob']);
+    expect(pushSpy).toHaveBeenCalledTimes(2);
+    expect(pushSpy.mock.calls[0][1].title).toContain('Tyler replied to your comment');
+    expect(pushSpy.mock.calls[0][3]).toEqual(['chuck']);
+    expect(pushSpy.mock.calls[1][1].title).toContain('Tyler tagged you');
+    expect(pushSpy.mock.calls[1][3]).toEqual(['jacob']);
+
+    // 3. Eric replies to Tyler's reply -> flattened 1 level under root comment, notifies Tyler
+    pushSpy.mockClear();
+    const ericReplyRes = await worker.fetch(
+      makeReq(
+        '/api/week/comment',
+        'POST',
+        { dinnerId, parentCommentId: tylerReplyData.comment.id, body: 'Save me a shotgun seat @Tyler' },
+        { 'Cf-Access-Authenticated-User-Email': 'storme2@gmail.com' },
+      ),
+      env,
+    );
+    expect(ericReplyRes.status).toBe(201);
+    const ericReplyData = (await ericReplyRes.json()) as {
+      comment: { id: number; parent_comment_id: number | null };
+      notifiedSlugs: string[];
+    };
+    expect(ericReplyData.comment.parent_comment_id).toBe(rootData.comment.id);
+    expect(ericReplyData.notifiedSlugs).toEqual(['tyler']);
+    expect(pushSpy).toHaveBeenCalledTimes(1);
+    expect(pushSpy.mock.calls[0][1].title).toContain('Eric replied to your comment');
+    expect(pushSpy.mock.calls[0][3]).toEqual(['tyler']);
+
+    // 4. Replying to own comment without @tags sends NO push
+    pushSpy.mockClear();
+    const selfReplyRes = await worker.fetch(
+      makeReq(
+        '/api/week/comment',
+        'POST',
+        { dinnerId, parentCommentId: rootData.comment.id, body: 'Leaving around 6 PM' },
+        { 'Cf-Access-Authenticated-User-Email': 'bigheadwillie@gmail.com' },
+      ),
+      env,
+    );
+    expect(selfReplyRes.status).toBe(201);
+    const selfReplyData = (await selfReplyRes.json()) as { notifiedSlugs: string[] };
+    expect(selfReplyData.notifiedSlugs).toEqual([]);
+    expect(pushSpy).not.toHaveBeenCalled();
+
+    // 5. Validation: bad parentCommentId (400), missing parent (404), and cross-dinner parent (404)
+    const badParentRes = await worker.fetch(
+      makeReq('/api/week/comment', 'POST', { dinnerId, parentCommentId: 'abc', body: 'hi' }),
+      env,
+    );
+    expect(badParentRes.status).toBe(400);
+
+    const missingParentRes = await worker.fetch(
+      makeReq('/api/week/comment', 'POST', { dinnerId, parentCommentId: 999999, body: 'hi' }),
+      env,
+    );
+    expect(missingParentRes.status).toBe(404);
+
+    const crossDinnerRes = await worker.fetch(
+      makeReq('/api/week/comment', 'POST', {
+        dinnerId: otherDinnerId,
+        parentCommentId: rootData.comment.id,
+        body: 'wrong week',
+      }),
+      env,
+    );
+    expect(crossDinnerRes.status).toBe(404);
+
+    // 6. Deleting root comment cascades cleanly to delete child replies
+    const delRes = await worker.fetch(
+      makeReq(
+        `/api/week/comment?id=${rootData.comment.id}`,
+        'DELETE',
+        undefined,
+        { 'Cf-Access-Authenticated-User-Email': 'bigheadwillie@gmail.com' },
+      ),
+      env,
+    );
+    expect(delRes.status).toBe(200);
+    const delData = (await delRes.json()) as { comments: unknown[] };
+    expect(delData.comments).toEqual([]);
+
+    const appJs = readFileSync(resolve(rootDir, 'public/app.js'), 'utf8');
+    const stylesCss = readFileSync(resolve(rootDir, 'public/styles.css'), 'utf8');
+    expect(appJs).toContain('reply-comment');
+    expect(appJs).toContain('cancel-reply-comment');
+    expect(appJs).toContain('comment-replies');
+    expect(stylesCss).toContain('.comment-replies');
+    expect(stylesCss).toContain('.comment-reply-banner');
+    expect(WHATS_NEW_RELEASES.some((e) => e.issueNumber === 28)).toBe(true);
   });
 });

@@ -28,12 +28,18 @@
   "ai": {
     "binding": "AI"
   },
+  "send_email": [
+    {
+      "name": "EMAIL"
+    }
+  ],
   "triggers": {
     "crons": ["*/5 * * * *"]
   },
   "vars": {
     "APP_URL": "https://dinner.tylermiranda.com",
     "CLUB_TIMEZONE": "America/Chicago",
+    "EMAIL_FROM": "reminders@dinner.tylermiranda.com",
     "GCAL_CALENDAR_ID": "cqubssbfpc3ofjf3anej422tec@group.calendar.google.com",
     "GITHUB_REPO": "tylermiranda/man-night"
   }

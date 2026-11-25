@@ -43,6 +43,11 @@ const state = {
   extraGuestNamesDinnerId: null,
   commentDraft: '',
   commentDinnerId: null,
+  replyToCommentId: null,
+  replyToAuthorName: '',
+  replyToSnippet: '',
+  crewRsvpModalDinnerId: null,
+  crewRsvpFocusSlug: null,
   selloutModalDinnerId: null,
   pollCandidateIds: [],
   pollSearchQuery: '',
@@ -1121,6 +1126,9 @@ function renderWeekView() {
   if (state.commentDinnerId !== d.id) {
     state.commentDinnerId = d.id;
     state.commentDraft = '';
+    state.replyToCommentId = null;
+    state.replyToAuthorName = '';
+    state.replyToSnippet = '';
   }
   const tueCount = tw.nightVotes.filter((v) => v.choice === 'tuesday' || v.choice === 'both').length;
   const wedCount = tw.nightVotes.filter((v) => v.choice === 'wednesday' || v.choice === 'both').length;
@@ -1430,11 +1438,17 @@ function renderWeekView() {
       const extra = r.status !== 'out' ? Math.max(0, Number(r.extra_guests) || 0) : 0;
       const extraNames = extra > 0 && r.extra_guest_names ? String(r.extra_guest_names).trim() : '';
       const extraLabel = extra > 0 ? (extraNames ? ` · +${extra} (${esc(extraNames)})` : ` · +${extra}`) : '';
+      const recorderName =
+        r.recorded_by && r.recorded_by !== r.user_slug
+          ? r.recorded_by_name || (b.users || []).find((x) => x.slug === r.recorded_by)?.name || r.recorded_by
+          : null;
+      const byLabel = recorderName ? ` <span class="chip-by">· by ${esc(recorderName)}</span>` : '';
       const tipParts = [];
       if (extraNames) tipParts.push(`+${extra}: ${extraNames}`);
       if (r.note) tipParts.push(r.note);
-      const tip = tipParts.length ? `${displayName}: ${tipParts.join(' · ')}` : '';
-      return `<span class="chip ${cls}"${tip ? ` title="${esc(tip)}"` : ''}>${avatarHtml(r.user_slug, displayName, 'sm')} ${esc(displayName)} · ${label}${extraLabel}</span>`;
+      if (recorderName) tipParts.push(`Logged by ${recorderName}`);
+      const tip = tipParts.length ? `${displayName}: ${tipParts.join(' · ')}` : `Update RSVP for ${displayName}`;
+      return `<button type="button" class="chip chip-btn ${cls}" data-action="open-crew-rsvp-modal" data-dinner-id="${d.id}" data-focus-slug="${esc(r.user_slug)}" title="${esc(tip)}">${avatarHtml(r.user_slug, displayName, 'sm')} <span>${esc(displayName)} · ${label}${extraLabel}</span>${byLabel}</button>`;
     })
     .join('');
 
@@ -1507,7 +1521,7 @@ function renderWeekView() {
     <div class="card">
       <div class="card-kicker">
         <span>Attendance · ${fmtShortDate(d.dinner_date)}${headcountBadge}</span>
-        <button class="link-btn" style="font-size:12px;" data-action="open-sellout-modal" data-dinner-id="${d.id}">Tag sellout →</button>
+        <button class="link-btn" style="font-size:12px;" data-action="open-crew-rsvp-modal" data-dinner-id="${d.id}">RSVP for crew →</button>
       </div>
       <div class="btn-row">
         <button class="btn btn-sm ${myRsvp === 'in' ? 'btn-primary' : 'btn-outline'}" data-action="rsvp" data-status="in">I’m in</button>
@@ -1522,42 +1536,81 @@ function renderWeekView() {
 
   const thisWeekComments = tw.comments || [];
   const taggableUsers = getTaggableUsers();
-  const commentsListHtml = thisWeekComments.length
+  const commentById = new Map(thisWeekComments.map((c) => [Number(c.id), c]));
+  const rootComments = [];
+  const repliesByParent = new Map();
+  for (const c of thisWeekComments) {
+    const parentId = c.parent_comment_id != null ? Number(c.parent_comment_id) : null;
+    if (parentId && commentById.has(parentId)) {
+      if (!repliesByParent.has(parentId)) repliesByParent.set(parentId, []);
+      repliesByParent.get(parentId).push(c);
+    } else {
+      rootComments.push(c);
+    }
+  }
+  const renderCommentCard = (c, isReply = false) => {
+    const authorName = c.user_name || (b.users || []).find((x) => x.slug === c.user_slug)?.name || c.user_slug;
+    const canDelete = c.user_slug === me.slug;
+    return `
+      <div class="comment-item${isReply ? ' is-reply' : ''}" data-comment-id="${Number(c.id)}">
+        <div class="comment-item-head">
+          <div class="comment-author">
+            ${avatarHtml(c.user_slug, authorName, 'sm')}
+            <span class="comment-author-name">${esc(authorName)}</span>
+            <span class="comment-time">${esc(fmtCommentTime(c.created_at))}</span>
+          </div>
+          <div class="comment-item-actions">
+            <button type="button" class="comment-reply-btn" data-action="reply-comment" data-comment-id="${Number(c.id)}" title="Reply to ${esc(authorName)}">Reply</button>
+            ${canDelete ? `<button type="button" class="comment-del-btn" data-action="delete-comment" data-comment-id="${Number(c.id)}" title="Delete comment" aria-label="Delete comment">✕</button>` : ''}
+          </div>
+        </div>
+        <div class="comment-body">${renderCommentBody(c.body)}</div>
+      </div>
+    `;
+  };
+  const activeReplyTarget = state.replyToCommentId ? commentById.get(Number(state.replyToCommentId)) : null;
+  if (state.replyToCommentId && !activeReplyTarget) {
+    state.replyToCommentId = null;
+    state.replyToAuthorName = '';
+    state.replyToSnippet = '';
+  }
+  const commentsListHtml = rootComments.length
     ? `<div class="comment-list">
-        ${thisWeekComments
+        ${rootComments
           .map((c) => {
-            const authorName = c.user_name || (b.users || []).find((x) => x.slug === c.user_slug)?.name || c.user_slug;
-            const canDelete = c.user_slug === me.slug;
-            return `
-              <div class="comment-item">
-                <div class="comment-item-head">
-                  <div class="comment-author">
-                    ${avatarHtml(c.user_slug, authorName, 'sm')}
-                    <span class="comment-author-name">${esc(authorName)}</span>
-                    <span class="comment-time">${esc(fmtCommentTime(c.created_at))}</span>
-                  </div>
-                  ${canDelete ? `<button type="button" class="comment-del-btn" data-action="delete-comment" data-comment-id="${Number(c.id)}" title="Delete comment" aria-label="Delete comment">✕</button>` : ''}
-                </div>
-                <div class="comment-body">${renderCommentBody(c.body)}</div>
-              </div>
-            `;
+            const replies = repliesByParent.get(Number(c.id)) || [];
+            const repliesHtml = replies.length
+              ? `<div class="comment-replies">${replies.map((r) => renderCommentCard(r, true)).join('')}</div>`
+              : '';
+            return `<div class="comment-thread">${renderCommentCard(c, false)}${repliesHtml}</div>`;
           })
           .join('')}
       </div>`
     : `<p class="hero-sub" style="margin:0 0 10px;font-size:13px;">No comments yet — say what’s up or tag someone with <span class="mention-tag">@Name</span> to ping them.</p>`;
 
+  const replyBannerHtml = state.replyToCommentId
+    ? `<div class="comment-reply-banner">
+        <div class="comment-reply-banner-text">
+          <span>↩️ Replying to <strong>${esc(state.replyToAuthorName)}</strong></span>
+          ${state.replyToSnippet ? `<span class="comment-reply-preview">“${esc(state.replyToSnippet)}”</span>` : ''}
+        </div>
+        <button type="button" class="comment-del-btn" data-action="cancel-reply-comment" title="Cancel reply" aria-label="Cancel reply">✕</button>
+      </div>`
+    : '';
+
   const commentsCard = `
     <div class="card">
       <div class="card-kicker">
         <span>Crew comments${thisWeekComments.length ? ` (${thisWeekComments.length})` : ''}</span>
-        <span style="font-size:11px;color:var(--muted);">Only @tagged crew get notified</span>
+        <span style="font-size:11px;color:var(--muted);">Replies notify author · @tag to ping others</span>
       </div>
       ${commentsListHtml}
       <div class="comment-composer">
+        ${replyBannerHtml}
         <div id="comment-mention-menu" class="mention-menu hidden" role="listbox" aria-label="Tag crew member"></div>
         <div class="comment-input-row">
-          <textarea id="week-comment-input" class="textarea comment-textarea" rows="2" maxlength="500" placeholder="Add a comment… (e.g. See you guys there! or Get the Italian loafer! @Tyler)">${esc(state.commentDraft || '')}</textarea>
-          <button type="button" class="btn btn-primary btn-sm" data-action="post-comment" data-dinner-id="${d.id}">Post</button>
+          <textarea id="week-comment-input" class="textarea comment-textarea" rows="2" maxlength="500" placeholder="${esc(state.replyToCommentId ? `Reply to ${state.replyToAuthorName}…` : 'Add a comment… (e.g. See you guys there! or Get the Italian loafer! @Tyler)')}">${esc(state.commentDraft || '')}</textarea>
+          <button type="button" class="btn btn-primary btn-sm" data-action="post-comment" data-dinner-id="${d.id}">${state.replyToCommentId ? 'Reply' : 'Post'}</button>
         </div>
         ${
           taggableUsers.length
@@ -3932,7 +3985,7 @@ function renderSelloutModalBody() {
     }
   }
 
-  const crew = (b?.users || []).filter((u) => u.is_rotation || outMap.has(u.slug));
+  const crew = (b?.users || []).filter((u) => u.is_active !== 0 || u.is_rotation || outMap.has(u.slug));
   listEl.innerHTML = crew
     .map((u) => {
       const outEntry = outMap.get(u.slug);
@@ -4009,6 +4062,107 @@ function openSelloutModal(dinnerId = null) {
     </div>
   `);
   renderSelloutModalBody();
+}
+
+function renderCrewRsvpModalBody() {
+  const listEl = document.getElementById('crew-rsvp-modal-list');
+  if (!listEl) return;
+
+  const b = state.bootstrap;
+  const tw = b?.thisWeek;
+  const dinnerId = Number(state.crewRsvpModalDinnerId || tw?.dinner?.id || 0);
+  state.crewRsvpModalDinnerId = dinnerId;
+
+  const rsvpMap = new Map();
+  if (Number(tw?.dinner?.id) === dinnerId) {
+    for (const r of tw?.rsvps || []) {
+      rsvpMap.set(r.user_slug, r);
+    }
+  }
+
+  const meSlug = b?.user?.slug;
+  const focusSlug = state.crewRsvpFocusSlug;
+  const crew = (b?.users || []).filter((u) => u.is_active !== 0);
+
+  listEl.innerHTML = crew
+    .map((u) => {
+      const r = rsvpMap.get(u.slug);
+      const status = r?.status || null;
+      const recorderName =
+        r?.recorded_by && r.recorded_by !== u.slug
+          ? r.recorded_by_name || (b?.users || []).find((x) => x.slug === r.recorded_by)?.name || r.recorded_by
+          : null;
+      const statusLabel =
+        status === 'in'
+          ? `In${r.extra_guests > 0 ? ` (+${r.extra_guests})` : ''}`
+          : status === 'late'
+            ? `Running ${r.eta_minutes || 15}m late${r.extra_guests > 0 ? ` (+${r.extra_guests})` : ''}`
+            : status === 'out'
+              ? r.note
+                ? `Sold out · “${r.note}”`
+                : 'Sold out'
+              : 'No RSVP yet';
+      const subParts = [statusLabel];
+      if (recorderName) subParts.push(`by ${recorderName}`);
+      const statusColor =
+        status === 'in' ? '#16a34a' : status === 'late' ? '#d97706' : status === 'out' ? 'var(--accent)' : 'var(--muted)';
+      const isFocused = Boolean(focusSlug && u.slug === focusSlug);
+
+      return `
+        <div class="crew-rsvp-row${isFocused ? ' is-focused' : ''}" data-user-slug="${esc(u.slug)}">
+          <div style="display:flex;align-items:center;gap:10px;min-width:0;flex:1;">
+            ${avatarHtml(u.slug, u.name)}
+            <div style="min-width:0;">
+              <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+                <span style="font-weight:650;font-size:14px;">${esc(u.name)}</span>
+                ${u.slug === meSlug ? '<span class="badge badge-muted" style="padding:1px 6px;font-size:10px;">You</span>' : ''}
+              </div>
+              <div style="font-size:12px;color:${statusColor};word-break:break-word;">${esc(subParts.join(' · '))}</div>
+            </div>
+          </div>
+          <div class="crew-rsvp-actions">
+            <button type="button" class="btn btn-sm ${status === 'in' ? 'btn-primary' : 'btn-outline'}" data-action="proxy-rsvp" data-dinner-id="${dinnerId}" data-user-slug="${esc(u.slug)}" data-status="in">In</button>
+            <button type="button" class="btn btn-sm ${status === 'late' ? 'btn-primary' : 'btn-outline'}" data-action="proxy-rsvp" data-dinner-id="${dinnerId}" data-user-slug="${esc(u.slug)}" data-status="late">Late</button>
+            <button type="button" class="btn btn-sm ${status === 'out' ? 'btn-primary' : 'btn-outline'}" data-action="proxy-rsvp" data-dinner-id="${dinnerId}" data-user-slug="${esc(u.slug)}" data-status="out">Out</button>
+            ${r ? `<button type="button" class="btn btn-sm btn-outline" data-action="proxy-rsvp" data-dinner-id="${dinnerId}" data-user-slug="${esc(u.slug)}" data-status="clear" title="Clear RSVP" aria-label="Clear RSVP for ${esc(u.name)}">✕</button>` : ''}
+          </div>
+        </div>
+      `;
+    })
+    .join('');
+
+  if (focusSlug) {
+    const focusedEl = listEl.querySelector('.crew-rsvp-row.is-focused');
+    focusedEl?.scrollIntoView?.({ block: 'nearest' });
+  }
+}
+
+function openCrewRsvpModal(dinnerId = null, focusSlug = null) {
+  const b = state.bootstrap;
+  const d = b?.thisWeek?.dinner;
+  const targetId = Number(dinnerId || d?.id || 0);
+  if (!targetId) {
+    toast('No active week found');
+    return;
+  }
+  state.crewRsvpModalDinnerId = targetId;
+  state.crewRsvpFocusSlug = focusSlug || null;
+
+  openModal(`
+    <h2 class="hero-title" style="font-size:20px;margin-bottom:6px;">Crew RSVPs</h2>
+    <p class="hero-sub" style="margin-bottom:12px;font-size:13px;">${d ? `${fmtShortDate(d.dinner_date)} · ${esc(d.host_label)}’s week — ` : ''}Tap In, Late, Out, or ✕ for yourself or another crew member.</p>
+    <div class="stack" style="gap:10px;">
+      <div>
+        <div style="font-size:12px;font-weight:700;color:var(--muted);margin-bottom:4px;">Note / excuse (optional, applies to next update)</div>
+        <input id="crew-rsvp-note-input" class="input" style="width:100%;" maxlength="140" placeholder="e.g. riding with Eric, out of town…" />
+      </div>
+      <div id="crew-rsvp-modal-list" class="stack" style="gap:8px;max-height:340px;overflow-y:auto;"></div>
+      <div class="btn-row" style="justify-content:flex-end;margin-top:4px;">
+        <button type="button" class="btn btn-secondary btn-sm" data-action="close-modal">Done</button>
+      </div>
+    </div>
+  `);
+  renderCrewRsvpModalBody();
 }
 
 function openNewPlaceModal() {
@@ -4698,6 +4852,27 @@ document.addEventListener('click', async (e) => {
       insertMentionIntoComment(actEl.dataset.name || '', false);
     } else if (action === 'pick-mention') {
       insertMentionIntoComment(actEl.dataset.name || '', true);
+    } else if (action === 'reply-comment') {
+      const commentId = Number(actEl.dataset.commentId);
+      const target = (state.bootstrap?.thisWeek?.comments || []).find((c) => Number(c.id) === commentId);
+      if (!target) return;
+      const authorName =
+        target.user_name ||
+        (state.bootstrap?.users || []).find((x) => x.slug === target.user_slug)?.name ||
+        target.user_slug;
+      const flat = String(target.body || '').replace(/\s+/g, ' ').trim();
+      state.commentDinnerId = state.bootstrap?.thisWeek?.dinner?.id ?? null;
+      state.replyToCommentId = commentId;
+      state.replyToAuthorName = authorName;
+      state.replyToSnippet = flat.length > 70 ? `${flat.slice(0, 67)}…` : flat;
+      render();
+      document.getElementById('week-comment-input')?.focus();
+    } else if (action === 'cancel-reply-comment') {
+      state.replyToCommentId = null;
+      state.replyToAuthorName = '';
+      state.replyToSnippet = '';
+      render();
+      document.getElementById('week-comment-input')?.focus();
     } else if (action === 'post-comment') {
       const tw = state.bootstrap?.thisWeek;
       const dinnerId = Number(actEl.dataset.dinnerId || tw?.dinner?.id || 0);
@@ -4709,13 +4884,18 @@ document.addEventListener('click', async (e) => {
         inputEl?.focus();
         return;
       }
+      const parentCommentId = state.replyToCommentId || undefined;
       actEl.disabled = true;
       try {
         const res = await api('/api/week/comment', {
           method: 'POST',
-          body: JSON.stringify({ dinnerId, body: rawText }),
+          body: JSON.stringify({ dinnerId, body: rawText, ...(parentCommentId ? { parentCommentId } : {}) }),
         });
+        const wasReply = Boolean(parentCommentId);
         state.commentDraft = '';
+        state.replyToCommentId = null;
+        state.replyToAuthorName = '';
+        state.replyToSnippet = '';
         if (state.bootstrap?.thisWeek?.dinner?.id === dinnerId) {
           state.bootstrap.thisWeek.comments = res.comments || [];
         }
@@ -4727,9 +4907,13 @@ document.addEventListener('click', async (e) => {
             .map((s) => users.find((u) => u.slug === s)?.name || s)
             .map((n) => `@${n}`)
             .join(', ');
-          toast(res.pushResult?.sent > 0 ? `Comment posted · Notified ${names}` : `Comment posted · Tagged ${names} (no push set up)`);
+          toast(
+            res.pushResult?.sent > 0
+              ? `${wasReply ? 'Reply posted' : 'Comment posted'} · Notified ${names}`
+              : `${wasReply ? 'Reply posted' : 'Comment posted'} · For ${names} (no push set up)`,
+          );
         } else {
-          toast('Comment posted');
+          toast(wasReply ? 'Reply posted' : 'Comment posted');
         }
       } finally {
         actEl.disabled = false;
@@ -4738,11 +4922,58 @@ document.addEventListener('click', async (e) => {
       const commentId = Number(actEl.dataset.commentId);
       if (!commentId) return;
       const res = await api(`/api/week/comment?id=${commentId}`, { method: 'DELETE' });
+      if (state.replyToCommentId === commentId) {
+        state.replyToCommentId = null;
+        state.replyToAuthorName = '';
+        state.replyToSnippet = '';
+      }
       if (state.bootstrap?.thisWeek && res.dinnerId === state.bootstrap.thisWeek.dinner?.id) {
         state.bootstrap.thisWeek.comments = res.comments || [];
       }
       render();
       toast('Comment deleted');
+    } else if (action === 'open-crew-rsvp-modal') {
+      openCrewRsvpModal(
+        actEl.dataset.dinnerId ? Number(actEl.dataset.dinnerId) : null,
+        actEl.dataset.focusSlug || null,
+      );
+    } else if (action === 'proxy-rsvp') {
+      const dinnerId = Number(actEl.dataset.dinnerId);
+      const userSlug = actEl.dataset.userSlug;
+      const status = actEl.dataset.status;
+      if (!dinnerId || !userSlug || !['in', 'late', 'out', 'clear'].includes(status)) return;
+      const noteEl = document.getElementById('crew-rsvp-note-input');
+      const noteVal = noteEl ? noteEl.value.trim() : '';
+      const payload = {
+        dinnerId,
+        userSlug,
+        status,
+        ...(status === 'late' ? { etaMinutes: 15 } : {}),
+        ...(status !== 'clear' && noteVal ? { note: noteVal } : {}),
+      };
+      actEl.disabled = true;
+      try {
+        await api('/api/week/rsvp', {
+          method: 'POST',
+          body: JSON.stringify(payload),
+        });
+        if (noteEl && noteVal && status !== 'clear') noteEl.value = '';
+        const memberName = (state.bootstrap?.users || []).find((u) => u.slug === userSlug)?.name || userSlug;
+        const statusMsg =
+          status === 'in'
+            ? 'In'
+            : status === 'late'
+              ? 'Running 15m late'
+              : status === 'out'
+                ? 'Can’t make it'
+                : 'Cleared';
+        toast(`Updated ${memberName}: ${statusMsg}`);
+        state.crewRsvpFocusSlug = userSlug;
+        await refreshBootstrap();
+        renderCrewRsvpModalBody();
+      } finally {
+        actEl.disabled = false;
+      }
     } else if (action === 'open-sellout-modal') {
       openSelloutModal(actEl.dataset.dinnerId ? Number(actEl.dataset.dinnerId) : null);
     } else if (action === 'toggle-member-sellout') {
@@ -5699,8 +5930,46 @@ async function boot() {
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/sw.js').catch(() => {});
   }
+  const params = new URLSearchParams(window.location.search);
+  const rsvpParam = (params.get('rsvp') || '').trim().toLowerCase();
+  const dinnerParam = Number(params.get('dinner') || 0);
+  const hasAutoRsvp = ['in', 'out', 'late'].includes(rsvpParam);
+
   try {
     await refreshBootstrap();
+
+    if (hasAutoRsvp) {
+      window.history.replaceState({}, '', `${window.location.pathname}${window.location.hash || ''}`);
+      const targetDinnerId =
+        Number.isInteger(dinnerParam) && dinnerParam > 0
+          ? dinnerParam
+          : state.bootstrap?.thisWeek?.dinner?.id;
+      if (targetDinnerId) {
+        try {
+          await api('/api/week/rsvp', {
+            method: 'POST',
+            body: JSON.stringify({
+              dinnerId: targetDinnerId,
+              status: rsvpParam,
+              ...(rsvpParam === 'late' ? { etaMinutes: 15 } : {}),
+            }),
+          });
+          state.tab = 'week';
+          await refreshBootstrap();
+          toast(
+            rsvpParam === 'in'
+              ? 'RSVP recorded: You’re in!'
+              : rsvpParam === 'late'
+                ? 'RSVP recorded: Running 15m late'
+                : 'RSVP recorded: Can’t make it',
+          );
+        } catch (rsvpErr) {
+          toast(rsvpErr.message || 'Could not record RSVP');
+        }
+      }
+      return;
+    }
+
     if (state.bootstrap?.user && !state.bootstrap.user.walkthrough_seen) {
       showWalkthrough(0);
     } else if (hasUnseenWhatsNew()) {

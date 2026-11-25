@@ -115,9 +115,9 @@ export async function sendWebPushToSubscribers(
   payload: PushPayload,
   prefColumn: 'notify_night_vote' | 'notify_place' | 'notify_reminder' | 'all' = 'all',
   targetSlugs?: string[],
-): Promise<{ sent: number; failed: number; removed: number }> {
+): Promise<{ sent: number; failed: number; removed: number; deliveredSlugs?: string[] }> {
   if (!env.VAPID_PUBLIC_KEY || !env.VAPID_PRIVATE_KEY) {
-    return { sent: 0, failed: 0, removed: 0 };
+    return { sent: 0, failed: 0, removed: 0, deliveredSlugs: [] };
   }
 
   let sql = `
@@ -138,13 +138,14 @@ export async function sendWebPushToSubscribers(
   const rows = (targetSlugs && targetSlugs.length > 0 ? await stmt.bind(...targetSlugs).all() : await stmt.all())
     .results as Array<{ id: number; user_slug: string; endpoint: string; p256dh: string; auth: string }>;
 
-  if (rows.length === 0) return { sent: 0, failed: 0, removed: 0 };
+  if (rows.length === 0) return { sent: 0, failed: 0, removed: 0, deliveredSlugs: [] };
 
   const subject = env.VAPID_SUBJECT || 'mailto:tyler.miranda@gmail.com';
   const jsonBody = JSON.stringify(payload);
   let sent = 0;
   let failed = 0;
   let removed = 0;
+  const deliveredSet = new Set<string>();
 
   const notifType = payload.tag || (prefColumn === 'all' ? 'general' : prefColumn.replace(/^notify_/, ''));
 
@@ -171,6 +172,7 @@ export async function sendWebPushToSubscribers(
         });
         if (resp.status === 201 || resp.status === 200 || resp.status === 202) {
           sent++;
+          deliveredSet.add(sub.user_slug);
           await env.DB.prepare("UPDATE push_subscriptions SET last_used_at = datetime('now') WHERE id = ?")
             .bind(sub.id)
             .run();
@@ -210,5 +212,5 @@ export async function sendWebPushToSubscribers(
     }),
   );
 
-  return { sent, failed, removed };
+  return { sent, failed, removed, deliveredSlugs: Array.from(deliveredSet) };
 }

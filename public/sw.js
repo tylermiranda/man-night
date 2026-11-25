@@ -1,4 +1,4 @@
-const CACHE_NAME = 'man-night-shell-v29';
+const CACHE_NAME = 'man-night-shell-v30';
 const SHELL_ASSETS = [
   '/',
   '/index.html',
@@ -96,6 +96,28 @@ self.addEventListener('notificationclick', (event) => {
           note: 'Running late (from notification)',
         }),
       }).catch(() => {}),
+    );
+    return;
+  }
+
+  if ((event.action === 'rsvp-in' || event.action === 'rsvp-out') && data.dinnerId) {
+    const status = event.action === 'rsvp-in' ? 'in' : 'out';
+    const fallbackUrl = `/?rsvp=${status}&dinner=${encodeURIComponent(data.dinnerId)}`;
+    event.waitUntil(
+      fetch('/api/week/rsvp', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          dinnerId: data.dinnerId,
+          status,
+        }),
+      })
+        .then((resp) => {
+          if (!resp.ok) return clients.openWindow(fallbackUrl);
+          return undefined;
+        })
+        .catch(() => clients.openWindow(fallbackUrl)),
     );
     return;
   }

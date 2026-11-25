@@ -1689,7 +1689,7 @@ export async function getDinnerComments(db: D1Database, dinnerId: number): Promi
   const rows = (
     await db
       .prepare(
-        `SELECT c.id, c.dinner_id, c.user_slug, u.name AS user_name, c.body, c.mentioned_slugs, c.created_at
+        `SELECT c.id, c.dinner_id, c.parent_comment_id, c.user_slug, u.name AS user_name, c.body, c.mentioned_slugs, c.created_at
          FROM dinner_comments c
          LEFT JOIN users u ON u.slug = c.user_slug
          WHERE c.dinner_id = ?
@@ -1699,6 +1699,7 @@ export async function getDinnerComments(db: D1Database, dinnerId: number): Promi
       .all<{
         id: number;
         dinner_id: number;
+        parent_comment_id: number | null;
         user_slug: string;
         user_name: string | null;
         body: string;
@@ -1720,6 +1721,7 @@ export async function getDinnerComments(db: D1Database, dinnerId: number): Promi
     return {
       id: Number(r.id),
       dinner_id: Number(r.dinner_id),
+      parent_comment_id: r.parent_comment_id != null ? Number(r.parent_comment_id) : null,
       user_slug: r.user_slug,
       user_name: r.user_name ?? null,
       body: r.body,
@@ -1734,6 +1736,7 @@ export async function addDinnerComment(
   dinnerId: number,
   author: UserRow,
   rawBody: string,
+  parentCommentId?: number | null,
 ): Promise<{
   comment: DinnerCommentViewRow;
   comments: DinnerCommentViewRow[];
@@ -1760,6 +1763,25 @@ export async function addDinnerComment(
     throw new Error('Dinner not found');
   }
 
+  let resolvedParentId: number | null = null;
+  let replyTargetSlug: string | null = null;
+  if (parentCommentId !== undefined && parentCommentId !== null) {
+    if (!Number.isInteger(parentCommentId) || parentCommentId <= 0) {
+      throw new Error('Valid parentCommentId is required');
+    }
+    const parent = await env.DB.prepare(
+      'SELECT id, dinner_id, user_slug, parent_comment_id FROM dinner_comments WHERE id = ?',
+    )
+      .bind(parentCommentId)
+      .first<{ id: number; dinner_id: number; user_slug: string; parent_comment_id: number | null }>();
+    if (!parent || Number(parent.dinner_id) !== dinnerId) {
+      throw new Error('Parent comment not found');
+    }
+    // Keep threads 1 level deep so mobile conversations stay clean
+    resolvedParentId = parent.parent_comment_id != null ? Number(parent.parent_comment_id) : Number(parent.id);
+    replyTargetSlug = parent.user_slug;
+  }
+
   const crewUsers = (
     await env.DB.prepare("SELECT slug, name FROM users WHERE email NOT LIKE '%@history.local'")
       .all<{ slug: string; name: string }>()
@@ -1768,19 +1790,44 @@ export async function addDinnerComment(
   const mentionedSlugs = parseCommentMentions(cleanBody, crewUsers);
 
   const ins = await env.DB.prepare(
-    `INSERT INTO dinner_comments (dinner_id, user_slug, body, mentioned_slugs)
-     VALUES (?, ?, ?, ?)`,
+    `INSERT INTO dinner_comments (dinner_id, parent_comment_id, user_slug, body, mentioned_slugs)
+     VALUES (?, ?, ?, ?, ?)`,
   )
-    .bind(dinnerId, author.slug, cleanBody, JSON.stringify(mentionedSlugs))
+    .bind(dinnerId, resolvedParentId, author.slug, cleanBody, JSON.stringify(mentionedSlugs))
     .run();
 
   const commentId = Number(ins.meta.last_row_id);
 
-  let pushResult = { sent: 0, failed: 0, removed: 0 };
-  if (mentionedSlugs.length > 0) {
-    const contextLabel = dinner.restaurant_name || `${dinner.day_of_week} ${formatShortDate(dinner.dinner_date)}`;
-    const snippet = cleanBody.length > 160 ? `${cleanBody.slice(0, 157)}…` : cleanBody;
-    pushResult = await sendWebPushToSubscribers(
+  const notifyReplySlug = replyTargetSlug && replyTargetSlug !== author.slug ? replyTargetSlug : null;
+  const otherMentionSlugs = mentionedSlugs.filter((s) => s !== notifyReplySlug);
+  const notifiedSlugs = [...(notifyReplySlug ? [notifyReplySlug] : []), ...otherMentionSlugs];
+
+  const contextLabel = dinner.restaurant_name || `${dinner.day_of_week} ${formatShortDate(dinner.dinner_date)}`;
+  const snippet = cleanBody.length > 160 ? `${cleanBody.slice(0, 157)}…` : cleanBody;
+  let sent = 0;
+  let failed = 0;
+  let removed = 0;
+
+  if (notifyReplySlug) {
+    const replyPush = await sendWebPushToSubscribers(
+      env,
+      {
+        title: `↩️ ${author.name} replied to your comment (${contextLabel})`,
+        body: `“${snippet}”`,
+        tag: `dinner-comment-${dinnerId}-${commentId}`,
+        url: env.APP_URL,
+        dinnerId,
+      },
+      'all',
+      [notifyReplySlug],
+    );
+    sent += replyPush.sent;
+    failed += replyPush.failed;
+    removed += replyPush.removed;
+  }
+
+  if (otherMentionSlugs.length > 0) {
+    const mentionPush = await sendWebPushToSubscribers(
       env,
       {
         title: `💬 ${author.name} tagged you (${contextLabel})`,
@@ -1790,13 +1837,17 @@ export async function addDinnerComment(
         dinnerId,
       },
       'all',
-      mentionedSlugs,
+      otherMentionSlugs,
     );
+    sent += mentionPush.sent;
+    failed += mentionPush.failed;
+    removed += mentionPush.removed;
   }
 
+  const pushResult = { sent, failed, removed };
   const comments = await getDinnerComments(env.DB, dinnerId);
   const comment = comments.find((c) => c.id === commentId) ?? comments[comments.length - 1];
-  return { comment, comments, notifiedSlugs: mentionedSlugs, pushResult };
+  return { comment, comments, notifiedSlugs, pushResult };
 }
 
 export async function deleteDinnerComment(
@@ -1814,7 +1865,7 @@ export async function deleteDinnerComment(
   if (existing.user_slug !== userSlug) {
     throw new Error('Forbidden: you can only delete your own comments');
   }
-  await db.prepare('DELETE FROM dinner_comments WHERE id = ?').bind(commentId).run();
+  await db.prepare('DELETE FROM dinner_comments WHERE id = ? OR parent_comment_id = ?').bind(commentId, commentId).run();
   const comments = await getDinnerComments(db, Number(existing.dinner_id));
   return { deleted: true, id: commentId, dinnerId: Number(existing.dinner_id), comments };
 }
@@ -3910,6 +3961,7 @@ export async function getBootstrapPayload(env: Env, currentUser: UserRow) {
     extra_guest_names: string;
     note: string;
     recorded_by: string | null;
+    recorded_by_name: string | null;
     updated_at: string;
   }> = [];
   let headcount: Awaited<ReturnType<typeof computeDinnerHeadcount>> | null = null;
@@ -3933,9 +3985,11 @@ export async function getBootstrapPayload(env: Env, currentUser: UserRow) {
     noonVotes = (await env.DB.prepare('SELECT user_slug, restaurant_id FROM noon_votes WHERE dinner_id = ?').bind(active.id).all()).results as typeof noonVotes;
     rsvps = (
       await env.DB.prepare(
-        `SELECT r.user_slug, u.name AS user_name, r.status, r.eta_minutes, r.extra_guests, r.extra_guest_names, r.note, r.recorded_by, r.updated_at
+        `SELECT r.user_slug, u.name AS user_name, r.status, r.eta_minutes, r.extra_guests, r.extra_guest_names, r.note,
+                r.recorded_by, rb.name AS recorded_by_name, r.updated_at
          FROM rsvps r
          LEFT JOIN users u ON u.slug = r.user_slug
+         LEFT JOIN users rb ON rb.slug = r.recorded_by
          WHERE r.dinner_id = ?
          ORDER BY r.updated_at ASC, r.id ASC`,
       )

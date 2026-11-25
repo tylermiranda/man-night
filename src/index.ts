@@ -1588,16 +1588,30 @@ export async function handleApiRequest(request: Request, env: Env): Promise<Resp
     }
 
     if (path === '/api/week/comment' && method === 'POST') {
-      const body = await readJson<{ dinnerId?: number; body?: unknown }>(request);
+      const body = await readJson<{ dinnerId?: number; body?: unknown; parentCommentId?: unknown }>(request);
       if (typeof body.body !== 'string') {
         return json({ error: 'Comment body must be a string' }, 400);
+      }
+      let parentCommentId: number | null = null;
+      if (body.parentCommentId !== undefined && body.parentCommentId !== null && body.parentCommentId !== '') {
+        const parsed = typeof body.parentCommentId === 'number' ? body.parentCommentId : Number(body.parentCommentId);
+        if (!Number.isInteger(parsed) || parsed <= 0) {
+          return json({ error: 'Valid parentCommentId is required' }, 400);
+        }
+        parentCommentId = parsed;
       }
       const dinner = body.dinnerId
         ? await env.DB.prepare('SELECT id FROM dinners WHERE id = ?').bind(body.dinnerId).first<{ id: number }>()
         : await getActiveDinner(env.DB);
       if (!dinner) return json({ error: 'No active dinner found' }, 404);
-      const res = await addDinnerComment(env, dinner.id, user, body.body);
-      return json({ ok: true, ...res }, 201);
+      try {
+        const res = await addDinnerComment(env, dinner.id, user, body.body, parentCommentId);
+        return json({ ok: true, ...res }, 201);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Failed to post comment';
+        if (msg.includes('not found')) return json({ error: msg }, 404);
+        return json({ error: msg }, 400);
+      }
     }
 
     if (path === '/api/week/comment' && method === 'DELETE') {

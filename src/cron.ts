@@ -1,3 +1,4 @@
+import { sendRsvpReminderEmail } from './email';
 import { buildDirectionsUrl } from './gcal';
 import { sendWebPushToSubscribers } from './push';
 import type { DinnerHeadcount, DinnerRow, Env, PushPayload, RestaurantRow } from './types';
@@ -6,9 +7,32 @@ import {
   completeDinner,
   computeDinnerHeadcount,
   ensureNextScheduledDinner,
+  formatShortDate,
+  formatTime12h,
   lockNight,
   openNoonDraw,
 } from './workflow';
+
+export function buildRsvpCheckInPayload(
+  dinner: DinnerRow,
+  place: RestaurantRow | null,
+  appUrl: string,
+): PushPayload {
+  const dateLabel = formatShortDate(dinner.dinner_date);
+  const timeLabel = formatTime12h(dinner.start_time || '18:30');
+  const wherePart = place ? place.address || place.name : `Host: ${dinner.host_label}`;
+  return {
+    title: place ? `Are you in tonight? — ${place.name}` : 'Are you in for Man Night tonight?',
+    body: `${dinner.day_of_week} ${dateLabel} at ${timeLabel} CT · ${wherePart} · Tap I’m in or Can’t make it.`,
+    tag: `rsvp-reminder-${dinner.id}`,
+    url: appUrl || '/',
+    actions: [
+      { action: 'rsvp-in', title: "I'm in" },
+      { action: 'rsvp-out', title: "Can't make it" },
+    ],
+    dinnerId: dinner.id,
+  };
+}
 
 export function buildThirtyMinReminderPayload(
   dinnerId: number,
@@ -219,6 +243,62 @@ export async function runWeeklyCronTick(env: Env, now = new Date()): Promise<{ a
     if (!postPick) continue;
 
     const startMin = parseHHMMMinutes(postPick.start_time || '18:30');
+
+    // 5. 5:00 PM CT on dinner day (before start_time): prompt un-RSVP'd crew (push first, email fallback)
+    if (
+      postPick.status !== 'cancelled' &&
+      postPick.status !== 'completed' &&
+      !postPick.rsvp_reminder_sent_at &&
+      clock.dateStr === postPick.dinner_date &&
+      clock.minutesOfDay >= 17 * 60 &&
+      clock.minutesOfDay < startMin
+    ) {
+      const claim = await env.DB.prepare(
+        "UPDATE dinners SET rsvp_reminder_sent_at = datetime('now') WHERE id = ? AND rsvp_reminder_sent_at IS NULL",
+      )
+        .bind(postPick.id)
+        .run();
+
+      if ((claim.meta?.changes ?? 0) > 0) {
+        const unRsvpd =
+          (
+            await env.DB.prepare(
+              `SELECT u.slug, u.name, u.email
+               FROM users u
+               WHERE u.email NOT LIKE '%@history.local'
+                 AND u.notify_reminder = 1
+                 AND NOT EXISTS (
+                   SELECT 1 FROM rsvps r
+                   WHERE r.dinner_id = ? AND r.user_slug = u.slug
+                 )
+               ORDER BY COALESCE(u.rotation_order, 99), u.id`,
+            )
+              .bind(postPick.id)
+              .all<{ slug: string; name: string; email: string }>()
+          ).results ?? [];
+
+        if (unRsvpd.length > 0) {
+          const place = postPick.restaurant_id
+            ? await env.DB.prepare('SELECT * FROM restaurants WHERE id = ?')
+                .bind(postPick.restaurant_id)
+                .first<RestaurantRow>()
+            : null;
+          const pushRes = await sendWebPushToSubscribers(
+            env,
+            buildRsvpCheckInPayload(postPick, place ?? null, env.APP_URL || '/'),
+            'notify_reminder',
+            unRsvpd.map((u) => u.slug),
+          );
+          const pushedSlugs = new Set(pushRes.deliveredSlugs || []);
+          for (const member of unRsvpd) {
+            if (!pushedSlugs.has(member.slug)) {
+              await sendRsvpReminderEmail(env, member, postPick, place ?? null);
+            }
+          }
+          actions.push(`sent_rsvp_reminder:${postPick.week_key}`);
+        }
+      }
+    }
 
     // 5a. 30 minutes before dinner: push reminder prompting crew to add extra people before 5-min headcount
     if (

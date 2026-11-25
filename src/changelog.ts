@@ -11,6 +11,42 @@ import type { WhatsNewEntry, WhatsNewPayload, WhatsNewViewEntry } from './types'
  */
 export const WHATS_NEW_RELEASES: readonly WhatsNewEntry[] = [
   {
+    id: '2026-11-24-comment-replies',
+    date: '2026-11-24',
+    kind: 'feature',
+    title: '↩️ Threaded Replies on Crew Comments',
+    summary:
+      'Tap Reply on any comment on This Week to respond right underneath it in a clean thread—automatically push-notifying the comment author plus anyone you @tag.',
+    creditSlug: 'tyler',
+    creditName: 'Tyler',
+    creditRole: 'idea',
+    issueNumber: 28,
+  },
+  {
+    id: '2026-11-24-proxy-crew-rsvp',
+    date: '2026-11-24',
+    kind: 'feature',
+    title: '🙋 RSVP for Other Crew Members',
+    summary:
+      'Tap “RSVP for crew →” (or tap any RSVP pill) on This Week to mark another guy In, Running 15m late, Can’t make it, or Clear on their behalf—with clear “by Name” attribution.',
+    creditSlug: 'tyler',
+    creditName: 'Tyler',
+    creditRole: 'idea',
+    issueNumber: 27,
+  },
+  {
+    id: '2026-11-24-rsvp-reminders',
+    date: '2026-11-24',
+    kind: 'feature',
+    title: '⏰ 5:00 PM Dinner-Day RSVP Check-In (Push + Email)',
+    summary:
+      'Any active crew member who still hasn’t RSVP’d by 5:00 PM on dinner night now gets a quick check-in push notification with “I’m in” / “Can’t make it” actions—or an email fallback if they don’t have push enabled.',
+    creditSlug: 'tyler',
+    creditName: 'Tyler',
+    creditRole: 'idea',
+    issueNumber: 26,
+  },
+  {
     id: '2026-11-24-night-vote-results',
     date: '2026-11-24',
     kind: 'feature',

@@ -6,6 +6,8 @@ export interface Env {
   GCAL_CALENDAR_ID: string;
   GITHUB_REPO: string;
   AI?: Ai;
+  EMAIL?: SendEmail;
+  EMAIL_FROM?: string;
   VAPID_PUBLIC_KEY?: string;
   VAPID_PRIVATE_KEY?: string;
   VAPID_SUBJECT?: string;
@@ -198,6 +200,7 @@ export interface DinnerRow {
   noon_draw_opened_at: string | null;
   noon_draw_ids: string | null;
   place_locked_at: string | null;
+  rsvp_reminder_sent_at?: string | null;
   reminder_sent_at: string | null;
   pre_event_sent_at: string | null;
   completed_at: string | null;
@@ -402,6 +405,7 @@ export interface PushPayload {
 export interface DinnerCommentViewRow {
   id: number;
   dinner_id: number;
+  parent_comment_id: number | null;
   user_slug: string;
   user_name: string | null;
   body: string;
